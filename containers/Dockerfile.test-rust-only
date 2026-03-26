@@ -1,0 +1,43 @@
+# Deterministic Rust test build
+#
+# Usage (podman or docker):
+#   git archive $(git stash create | grep . || echo HEAD) | podman build -t spilman-test-rust -f containers/Dockerfile.test-rust-only -
+#   podman run --rm spilman-test-rust
+#
+#   git archive $(git stash create | grep . || echo HEAD) | docker build -t spilman-test-rust -f containers/Dockerfile.test-rust-only -
+#   docker run --rm spilman-test-rust
+#
+# The git archive pipe ensures:
+# - Layer caching is based on git state, not filesystem timestamps
+# - Only git-tracked files are included (no target/, .venv/, etc.)
+# - $(git stash create || echo HEAD) includes uncommitted changes
+
+FROM rust:1.94.0-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make \
+    pkg-config \
+    libssl-dev \
+    python3 \
+    protobuf-compiler \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Source from git archive - only git-tracked files are included
+COPY . .
+
+# Fetch all dependencies (so runtime has no network activity)
+RUN cargo fetch --manifest-path Cargo.toml
+
+# Pre-build test binaries (so runtime is fast)
+RUN cargo test --no-run --manifest-path Cargo.toml -p cdk-spilman --features configurable-host && \
+    cargo build --manifest-path Cargo.toml -p cdk-spilman-test-mint && \
+    cargo test --no-run --manifest-path Cargo.toml -p rust-ascii-art && \
+    SERVER_TYPE=rust cargo test --no-run --manifest-path Cargo.toml -p cdk-spilman-server-integration-tests
+
+# Prevent network access at runtime (all deps must be pre-fetched)
+ENV CARGO_NET_OFFLINE=true
+
+CMD ["make", "test-rust-only"]

@@ -1,0 +1,24 @@
+[package]
+name = "cdk-spilman-interop-tests"
+version = "0.15.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bip39 = "2.0"
+cdk = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk", default-features = false, features = ["mint", "wallet"] }
+cdk-common = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-common" }
+cdk-fake-wallet = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-fake-wallet" }
+cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-sqlite", default-features = false, features = ["mint", "wallet"] }
+cdk-spilman = { path = "../cdk-spilman", features = ["wallet"] }
+hex = "0.4"
+rand = "0.9.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { workspace = true, features = ["full"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

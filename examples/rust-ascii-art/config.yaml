@@ -1,0 +1,33 @@
+# ASCII Art Server - Spilman Payment Channel Configuration
+#
+# Usage variables track monotonically increasing counters per channel.
+# The amount due is computed as a linear combination:
+#   amount_due = sum(accumulated[var] * price[unit][var])
+#
+# The context JSON sent with each request uses the same keys:
+#   { "chars": 12 }
+
+mints:
+  "http://localhost:3338": [sat, msat, usd]
+min_expiry_seconds: 3600
+
+# Storage backend: "memory" (default, lost on restart) or "sqlite" (persistent).
+# Uncomment below to enable SQLite persistence:
+# storage:
+#   type: sqlite
+#   path: "./spilman.db"
+
+pricing:
+  sat:
+    min_capacity: 10
+    variables:
+      chars: 1          # 1 sat per character
+  msat:
+    min_capacity: 10000
+    variables:
+      chars: 1000       # 1000 msat per character (= 1 sat)
+  usd:
+    min_capacity: 10
+    max_amount_per_output: 64
+    variables:
+      chars: 1          # 1 cent per character

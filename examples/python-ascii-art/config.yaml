@@ -1,0 +1,26 @@
+# ASCII Art Server - Spilman Payment Channel Configuration (Python)
+mints:
+  "http://localhost:3338": [sat, msat, usd]
+min_expiry_seconds: 3600
+pricing_scale: 1
+
+# Storage backend: "memory" (default) or "sqlite"
+storage:
+  type: memory
+  # type: sqlite
+  # path: "./spilman.py.db"
+
+pricing:
+  sat:
+    min_capacity: 10
+    variables:
+      chars: 1          # 1 sat per character
+  msat:
+    min_capacity: 10000
+    variables:
+      chars: 1000       # 1000 msat per character (= 1 sat)
+  usd:
+    min_capacity: 10
+    max_amount_per_output: 64
+    variables:
+      chars: 1          # 1 cent per character

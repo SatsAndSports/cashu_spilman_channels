@@ -1,0 +1,46 @@
+[package]
+name = "cdk-spilman-server-integration-tests"
+version = "0.15.1"
+edition = "2021"
+license = "MIT"
+description = "Integration tests for Spilman payment channel servers"
+publish = false
+
+# This crate is for tests only - no lib to publish
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dependencies]
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cdk-spilman = { path = "../cdk-spilman", version = "=0.15.1", features = ["wallet"] }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["full", "process"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
+rand = "0.9.1"
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures = "0.3"
+command-group = { version = "5.0", features = ["tokio"] }
+libc = "0.2"
+
+[dev-dependencies]
+test-log = { version = "0.2", features = ["trace"] }
+
+[lints.rust]
+# We need unsafe for libc::atexit to register cleanup handlers
+unsafe_code = "warn"
+
+[lints.clippy]
+unwrap_used = "allow"
+
+[lints.rustdoc]
+missing_docs = "warn"
+bare_urls = "warn"

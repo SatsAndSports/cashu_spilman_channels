@@ -1,0 +1,20 @@
+[package]
+name = "cdk-spilman-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for CDK Spilman payment channels"
+license = "MIT"
+
+[lib]
+name = "cdk_spilman"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+spilman-core = { package = "cdk-spilman", path = "../cdk-spilman", default-features = false, features = ["wallet"], version = "=0.15.1" }
+hex = "0.4"
+serde_json = "1.0"
+
+[build-dependencies]
+pyo3-build-config = "0.22"

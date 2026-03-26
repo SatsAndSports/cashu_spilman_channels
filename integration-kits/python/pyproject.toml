@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cdk-spilman-kit"
+version = "0.1.0"
+description = "Integration kit for CDK Spilman payment channels (Flask/FastAPI)"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.25.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+flask = ["flask>=2.0.0"]
+fastapi = ["fastapi>=0.68.0"]
+
+[tool.setuptools]
+packages = ["cdk_spilman_kit", "cdk_spilman_kit.ext"]

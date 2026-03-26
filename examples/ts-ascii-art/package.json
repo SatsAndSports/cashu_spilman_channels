@@ -1,0 +1,29 @@
+{
+  "name": "ts-ascii-art",
+  "version": "1.0.0",
+  "description": "TypeScript ASCII Art Server - Spilman Payment Channel Demo",
+  "type": "module",
+  "scripts": {
+    "server": "tsx src/index.ts server",
+    "client": "tsx src/index.ts client",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/secp256k1": "^2.1.0",
+    "better-sqlite3": "^11.0.0",
+    "cdk-spilman-kit": "file:../../integration-kits/ts",
+    "express": "^4.21.0",
+    "figlet": "^1.8.0",
+    "qrcode-terminal": "^0.12.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/figlet": "^1.7.0",
+    "@types/node": "^22.10.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,11 @@
+# Ignore pre-built libraries (built by scripts/build-go-libs.sh)
+# Remove this file when ready to commit libraries for distribution
+lib/*/*.a
+lib/*/*.so
+lib/*/*.dylib
+lib/*/*.dll
+
+# Keep the directory structure
+!lib/
+!lib/*/
+!lib/*/.gitkeep

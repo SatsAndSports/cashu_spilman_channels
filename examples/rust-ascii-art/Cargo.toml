@@ -1,0 +1,30 @@
+[package]
+name = "rust-ascii-art"
+version = "0.15.1"
+edition = "2021"
+license = "MIT"
+description = "Rust ASCII Art demo server for Spilman payment channels"
+
+[[bin]]
+name = "rust-ascii-art"
+path = "src/main.rs"
+
+[dependencies]
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cdk-spilman = { path = "../../crates/cdk-spilman", version = "=0.15.1", features = ["spilman-axum", "configurable-host-reqwest"] }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+figlet-rs = "0.1"
+base64 = "0.22"
+hex = "0.4"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

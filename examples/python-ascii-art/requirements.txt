@@ -1,0 +1,4 @@
+flask>=2.0
+requests>=2.25
+pyfiglet>=0.8
+qrcode>=7.0
