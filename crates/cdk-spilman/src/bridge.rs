@@ -183,13 +183,60 @@ pub struct SpilmanBridge<H: SpilmanHost<C>, C = String> {
     _phantom: std::marker::PhantomData<C>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct PaymentRequest {
+/// A signed payment for a Spilman channel.
+///
+/// This is the core protocol message exchanged between client and server.
+/// The client creates it via `SpilmanClientBridge::create_payment()`,
+/// the server validates it via `SpilmanBridge::process_payment()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Payment {
+    /// Channel identifier
     pub channel_id: String,
+    /// Cumulative balance the receiver can claim (monotonically increasing)
     pub balance: u64,
+    /// BIP-340 Schnorr signature over the balance commitment
     pub signature: String,
+    /// Channel parameters (required on first payment to register channel)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// Funding proofs (required on first payment to register channel)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub funding_proofs: Option<Vec<Proof>>,
+}
+
+impl Payment {
+    /// Create a payment without funding data (for subsequent payments)
+    pub fn new(channel_id: String, balance: u64, signature: String) -> Self {
+        Self {
+            channel_id,
+            balance,
+            signature,
+            params: None,
+            funding_proofs: None,
+        }
+    }
+
+    /// Create a payment with funding data (for first payment)
+    pub fn with_funding(
+        channel_id: String,
+        balance: u64,
+        signature: String,
+        params: serde_json::Value,
+        funding_proofs: Vec<Proof>,
+    ) -> Self {
+        Self {
+            channel_id,
+            balance,
+            signature,
+            params: Some(params),
+            funding_proofs: Some(funding_proofs),
+        }
+    }
+
+    /// Check if this payment includes funding data
+    pub fn has_funding(&self) -> bool {
+        self.params.is_some() && self.funding_proofs.is_some()
+    }
 }
 
 /// Result of a successful payment
@@ -921,7 +968,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         &self.host
     }
 
-    fn decode_payment_header(base64_header: &str) -> Result<PaymentRequest, BridgeError> {
+    fn decode_payment_header(base64_header: &str) -> Result<Payment, BridgeError> {
         let decoded = BASE64
             .decode(base64_header)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
@@ -968,7 +1015,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         payment_json: &str,
         context: &C,
     ) -> Result<PaymentSuccess, BridgeError> {
-        let p: PaymentRequest = serde_json::from_str(payment_json)
+        let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         self.process_payment(
             &p.channel_id,
@@ -1068,7 +1115,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         payment_json: &str,
         context: &C,
     ) -> Result<PaymentValidationResult, BridgeError> {
-        let p: PaymentRequest = serde_json::from_str(payment_json)
+        let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         self.validate_payment(
             &p.channel_id,
@@ -1126,7 +1173,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         payment_json: &str,
         context: &C,
     ) -> Result<u64, BridgeError> {
-        let p: PaymentRequest = serde_json::from_str(payment_json)
+        let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         self.verify_payment_covers_amount_due(
             &p.channel_id,
@@ -1186,7 +1233,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         payment_json: &str,
         context: &C,
     ) -> Result<bool, BridgeError> {
-        let p: PaymentRequest = serde_json::from_str(payment_json)
+        let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         self.payment_covers_amount_due(
             &p.channel_id,
@@ -1269,7 +1316,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     }
 
     pub fn fund_channel_via_json(&self, json: &str) -> Result<FundChannelResult, BridgeError> {
-        let p: PaymentRequest =
+        let p: Payment =
             serde_json::from_str(json).map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         self.fund_channel(
             &p.channel_id,
@@ -1608,7 +1655,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         &self,
         json: &str,
     ) -> Result<CloseData, BridgeError> {
-        let p: PaymentRequest =
+        let p: Payment =
             serde_json::from_str(json).map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
         if p.channel_id.is_empty() {
             return Err(BridgeError::InvalidRequest("missing channel_id".into()));

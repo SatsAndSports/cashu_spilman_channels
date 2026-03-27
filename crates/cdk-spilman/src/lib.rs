@@ -16,6 +16,8 @@ mod balance_update;
 mod bindings;
 mod bridge;
 mod client_bridge;
+mod client_storage;
+mod configurable_client_host;
 #[cfg(feature = "configurable-host")]
 pub mod configurable_host;
 #[cfg(feature = "configurable-host-reqwest")]
@@ -26,7 +28,7 @@ mod keysets_and_amounts;
 mod params;
 mod sender_and_receiver;
 
-pub use balance_update::{get_signatures_from_swap_request, BalanceUpdateMessage};
+pub use balance_update::{get_signatures_from_swap_request, BalanceUpdateMessage, UnsignedBalanceUpdate};
 pub use bindings::{
     attach_signature_to_balance_update, build_cashu_a_token, build_cashu_b_token,
     channel_parameters_get_channel_id, compute_channel_from_token, compute_channel_secret_from_hex,
@@ -41,14 +43,19 @@ pub use bindings::{
 pub use bridge::{
     unblind_and_verify_stage1_response, BridgeError, BridgeErrorResponse, ChannelFunding,
     ChannelPolicy, ChannelState, CloseData, CloseError, ClosePreparationError, CloseSuccess,
-    ClosingData, FundChannelResult, PaymentProof, PaymentSuccess, PaymentValidationResult,
-    PreparedClose, SpilmanAsyncNetworking, SpilmanBridge, SpilmanHost, SpilmanNetworking,
-    UnblindResult,
+    ClosingData, FundChannelResult, Payment, PaymentProof, PaymentSuccess,
+    PaymentValidationResult, PreparedClose, SpilmanAsyncNetworking, SpilmanBridge, SpilmanHost,
+    SpilmanNetworking, UnblindResult,
 };
 pub use client_bridge::{
-    base64_decode, ChannelData, ClientChannelInfo, OpenChannelResult, SpilmanClientBridge,
-    SpilmanClientHost,
+    base64_decode, ClientChannelInfo, OpenChannelResult, SpilmanClientBridge, SpilmanClientHost,
+    SpilmanClientNetworking,
 };
+pub use client_storage::{
+    ClientChannelFunding, ClientChannelState, ClientPaymentState, ClientStorage,
+    MemoryClientStorage,
+};
+pub use configurable_client_host::ConfigurableClientHost;
 pub use deterministic::{
     CommitmentOutputs, DeterministicOutputsForOneContext, DeterministicSecretWithBlinding,
     MintConnection,

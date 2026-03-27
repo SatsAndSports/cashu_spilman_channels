@@ -3,29 +3,33 @@
 //! This module provides a high-level client-side API for managing Spilman payment channels,
 //! mirroring the server-side `SpilmanBridge` / `SpilmanHost` pattern.
 //!
-//! The `SpilmanClientHost` trait provides storage and mint communication callbacks,
-//! while `SpilmanClientBridge` orchestrates channel creation, payment signing, and
-//! header construction.
+//! The `SpilmanClientHost` trait handles storage and crypto callbacks, while
+//! `SpilmanClientNetworking` handles mint communication. The `SpilmanClientBridge`
+//! orchestrates channel creation, payment signing, and header construction.
 //!
 //! # Example (pseudocode)
 //! ```ignore
 //! let host = MyClientHost::new();
-//! let bridge = SpilmanClientBridge::new(host, None)?;
+//! let networking = MyNetworking::new();
+//! let bridge = SpilmanClientBridge::new(host, networking);
 //!
 //! // Open a channel from an existing Cashu token
-//! let result = bridge.open_channel_from_token(token, receiver_pubkey, expiry_timestamp, keyset_info, 64)?;
+//! let result = bridge.open_channel_from_token(...)?;
 //!
 //! // Make payments
-//! let header = bridge.build_payment_header(&result.channel_id, 10, true)?;  // first request
-//! let header = bridge.build_payment_header(&result.channel_id, 20, false)?; // subsequent
+//! let payment = bridge.create_payment(&result.channel_id, 10)?;
+//! let payment_with_funding = bridge.create_payment_with_funding(&result.channel_id, 10)?;
 //! ```
 
 use base64::Engine;
+use cashu::nuts::Proof;
 use serde::{Deserialize, Serialize};
 
-use super::bindings::{attach_signature_to_balance_update, create_unsigned_balance_update};
+use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{complete_funding_swap, compute_channel_from_token, create_funding_swap};
+use super::bridge::Payment;
+use super::client_storage::{ClientChannelFunding, ClientChannelState, ClientPaymentState};
 
 // ============================================================================
 // SpilmanClientHost trait
@@ -33,38 +37,94 @@ use super::bindings::{complete_funding_swap, compute_channel_from_token, create_
 
 /// Trait for client-side host callbacks.
 ///
-/// Provides mint communication and channel storage. This is the client-side
+/// Provides storage and crypto operations. This is the client-side
 /// counterpart of the server-side `SpilmanHost` trait.
 ///
-/// Implementations are responsible for:
-/// - Making HTTP calls to the mint's `/v1/swap` endpoint
-/// - Persisting channel state (in-memory, database, etc.)
+/// The trait separates immutable funding data from mutable payment state,
+/// mirroring the server-side pattern. Networking is handled by a separate
+/// `SpilmanClientNetworking` trait.
 pub trait SpilmanClientHost {
-    /// Execute a swap with the mint.
-    ///
-    /// Posts `swap_request_json` to `{mint_url}/v1/swap` and returns the
-    /// response body as a JSON string.
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
+    // ========================================================================
+    // Funding Data (immutable after creation)
+    // ========================================================================
 
-    /// Save channel state. Called after successful channel creation.
+    /// Save funding data for a newly created channel.
     ///
-    /// The `channel_json` is an opaque JSON blob managed by the bridge.
-    /// The `channel_secret_hex` is the hashed ECDH secret (32 bytes, hex),
-    /// passed separately so the host can store it with appropriate protection.
-    fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str);
+    /// Called once after successful channel creation. The funding data
+    /// is immutable after this point.
+    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding);
 
-    /// Retrieve channel state by channel ID.
+    /// Get funding data for a channel.
     ///
-    /// Returns `None` if the channel is not found. The returned `ChannelData`
-    /// contains the opaque channel JSON and the channel secret, matching
-    /// what was passed to `save_channel`.
-    fn get_channel(&self, channel_id: &str) -> Option<ChannelData>;
+    /// Returns `None` if the channel does not exist.
+    fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
+
+    // ========================================================================
+    // Payment State (mutable)
+    // ========================================================================
+
+    /// Get the current payment state for a channel.
+    ///
+    /// Returns `None` if no payments have been made yet.
+    fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState>;
+
+    /// Record a new payment state.
+    ///
+    /// Called after each successful payment signing. Updates the stored
+    /// balance, signature, payment count, and timestamp.
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState);
+
+    // ========================================================================
+    // Channel Lifecycle
+    // ========================================================================
+
+    /// Get the lifecycle state of a channel.
+    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState;
+
+    /// Mark a channel as closed.
+    ///
+    /// After this, the channel cannot accept new payments.
+    fn mark_channel_closed(&self, channel_id: &str);
 
     /// List all stored channel IDs.
     fn list_channel_ids(&self) -> Vec<String>;
 
-    /// Delete a channel from storage.
+    /// Delete a channel and all its data.
     fn delete_channel(&self, channel_id: &str);
+
+    // ========================================================================
+    // Time
+    // ========================================================================
+
+    /// Get the current time in seconds since Unix epoch.
+    fn now_seconds(&self) -> u64;
+
+    // ========================================================================
+    // Crypto (delegated to host)
+    // ========================================================================
+
+    /// Compute the hashed ECDH channel secret for a channel.
+    ///
+    /// The host performs ECDH between the sender's secret key (identified by
+    /// `sender_pubkey_hex`) and the receiver's public key, then hashes the result
+    /// with a domain separator:
+    ///   SHA256("Cashu_Spilman_channel_secret_v1" || ECDH(sender_secret, receiver_pubkey))
+    ///
+    /// For hosts that hold raw secret keys, the convenience function
+    /// `crate::bindings::compute_channel_secret_from_hex()` provides
+    /// a standard implementation.
+    ///
+    /// # Arguments
+    /// * `sender_pubkey_hex` - Sender's public key (identifies which secret key to use)
+    /// * `receiver_pubkey_hex` - Receiver's public key
+    ///
+    /// # Returns
+    /// The hashed channel secret as a 64-char hex string (32 bytes).
+    fn compute_channel_secret(
+        &self,
+        sender_pubkey_hex: &str,
+        receiver_pubkey_hex: &str,
+    ) -> Result<String, String>;
 
     /// Sign a message with a tweaked key (BIP-340 Schnorr).
     ///
@@ -93,29 +153,22 @@ pub trait SpilmanClientHost {
         message_hex: &str,
         tweak_scalar_hex: &str,
     ) -> Result<String, String>;
+}
 
-    /// Compute the hashed ECDH channel secret for a channel.
+// ============================================================================
+// SpilmanClientNetworking trait
+// ============================================================================
+
+/// Networking trait for client-side mint communication.
+///
+/// Separated from `SpilmanClientHost` to allow different networking
+/// implementations (sync, async, mock for testing).
+pub trait SpilmanClientNetworking {
+    /// Execute a swap with the mint.
     ///
-    /// The host performs ECDH between the sender's secret key (identified by
-    /// `sender_pubkey_hex`) and the receiver's public key, then hashes the result
-    /// with a domain separator:
-    ///   SHA256("Cashu_Spilman_channel_secret_v1" || ECDH(sender_secret, receiver_pubkey))
-    ///
-    /// For hosts that hold raw secret keys, the convenience function
-    /// `crate::bindings::compute_channel_secret_from_hex()` provides
-    /// a standard implementation.
-    ///
-    /// # Arguments
-    /// * `sender_pubkey_hex` - Sender's public key (identifies which secret key to use)
-    /// * `receiver_pubkey_hex` - Receiver's public key
-    ///
-    /// # Returns
-    /// The hashed channel secret as a 64-char hex string (32 bytes).
-    fn compute_channel_secret(
-        &self,
-        sender_pubkey_hex: &str,
-        receiver_pubkey_hex: &str,
-    ) -> Result<String, String>;
+    /// Posts `swap_request_json` to `{mint_url}/v1/swap` and returns the
+    /// response body as a JSON string.
+    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
 }
 
 // ============================================================================
@@ -134,8 +187,6 @@ pub struct OpenChannelResult {
     /// Mint URL associated with the channel's funding proofs.
     pub mint_url: String,
     /// Sender public key used for this channel.
-    /// The caller passes this to `open_channel_from_token` and gets it back
-    /// here so it can be associated with the channel.
     pub sender_pubkey_hex: String,
 }
 
@@ -150,37 +201,12 @@ pub struct ClientChannelInfo {
     pub funding_token_amount: u64,
     /// Mint URL associated with the channel.
     pub mint_url: String,
-    /// Serialized channel parameters used to reconstruct the channel state.
-    pub params_json: String,
-}
-
-/// Channel data returned by `SpilmanClientHost::get_channel`.
-///
-/// Separates the opaque channel JSON from the sensitive channel secret,
-/// allowing hosts to store them differently (e.g., encrypt the secret).
-#[derive(Debug, Clone)]
-pub struct ChannelData {
-    /// Opaque channel state JSON (managed by the bridge).
-    pub channel_json: String,
-    /// The hashed ECDH channel secret (32 bytes, hex-encoded).
-    pub channel_secret_hex: String,
-}
-
-/// Internal channel state stored via the host.
-///
-/// This is serialized as the `channel_json` blob in `ChannelData`.
-/// The `channel_secret_hex` is stored separately via the host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredChannel {
-    channel_id: String,
-    params_json: String,
-    keyset_info_json: String,
-    funding_proofs_json: String,
-    capacity: u64,
-    funding_token_amount: u64,
-    mint_url: String,
-    /// Sender public key for this channel (per-channel, not from bridge).
-    sender_pubkey_hex: String,
+    /// Current balance (last signed amount).
+    pub current_balance: u64,
+    /// Number of payments made through this channel.
+    pub payment_count: u64,
+    /// Channel state (Open/Closed).
+    pub state: ClientChannelState,
 }
 
 // ============================================================================
@@ -196,8 +222,10 @@ struct StoredChannel {
 /// The bridge never holds or sees Alice's secret key; all operations requiring
 /// the key are delegated to the host via callbacks.
 #[derive(Debug)]
-pub struct SpilmanClientBridge<H: SpilmanClientHost> {
+pub struct SpilmanClientBridge<H: SpilmanClientHost, N: SpilmanClientNetworking> {
     host: H,
+    #[allow(dead_code)] // Used only with "wallet" feature for open_channel_from_token
+    networking: N,
 }
 
 #[cfg(feature = "wallet")]
@@ -207,14 +235,14 @@ fn normalize_mint_error_string(raw: String) -> String {
         .unwrap_or(raw)
 }
 
-impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
+impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N> {
     /// Create a new client bridge.
     ///
     /// The bridge is stateless and keyless — it delegates all key operations
     /// to the host. The caller passes `sender_pubkey_hex` per channel when
     /// opening channels.
-    pub fn new(host: H) -> Self {
-        Self { host }
+    pub fn new(host: H, networking: N) -> Self {
+        Self { host, networking }
     }
 
     /// Open a new channel from a Cashu token.
@@ -223,9 +251,9 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
     /// 1. Compute ECDH channel secret via `host.compute_channel_secret()`
     /// 2. Parse the token and compute channel parameters
     /// 3. Create a funding swap request (deterministic 2-of-2 locked outputs)
-    /// 4. Submit the swap to the mint via `host.call_mint_swap()`
+    /// 4. Submit the swap to the mint via `networking.call_mint_swap()`
     /// 5. Unblind signatures and verify DLEQ proofs
-    /// 6. Save the channel via `host.save_channel()`
+    /// 6. Save the channel via `host.save_channel_funding()`
     ///
     /// # Arguments
     /// * `token_string` - Cashu token (cashuA... or cashuB...)
@@ -300,7 +328,7 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
 
         // Step 4: Submit swap to mint
         let swap_response_json = self
-            .host
+            .networking
             .call_mint_swap(&mint_url, swap_request_json)
             .map_err(normalize_mint_error_string)?;
 
@@ -322,23 +350,20 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
             keyset_info_json,
         )?;
 
-        // Step 6: Save channel state
-        let stored = StoredChannel {
-            channel_id: channel_id.clone(),
+        // Step 6: Save channel funding data
+        let funding = ClientChannelFunding {
             params_json: params_json.to_string(),
-            keyset_info_json: keyset_info_json.to_string(),
             funding_proofs_json: funding_proofs_json.to_string(),
+            channel_secret_hex: channel_secret_hex.clone(),
+            keyset_info_json: keyset_info_json.to_string(),
+            sender_pubkey_hex: sender_pubkey_hex.to_string(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
-            sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            created_at: self.host.now_seconds(),
         };
 
-        let channel_json = serde_json::to_string(&stored)
-            .map_err(|e| format!("Failed to serialize channel state: {}", e))?;
-
-        self.host
-            .save_channel(&channel_id, &channel_json, &channel_secret_hex);
+        self.host.save_channel_funding(&channel_id, funding);
 
         Ok(OpenChannelResult {
             channel_id,
@@ -349,57 +374,97 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
         })
     }
 
-    /// Create a signed balance update for a channel.
+    /// Create a payment for a channel (without funding data).
     ///
-    /// Returns JSON with `{channel_id, amount, signature}`.
+    /// Returns a `Payment` struct ready to send to the server.
+    /// Use this for subsequent payments after the channel is registered.
     ///
-    /// The `balance` is the cumulative amount the receiver (Charlie) can claim.
-    /// It must increase monotonically across calls.
+    /// The `balance` is the cumulative amount the receiver can claim.
     ///
-    /// Signing is delegated to the host via `sign_with_tweaked_key()`.
-    pub fn sign_balance_update(&self, channel_id: &str, balance: u64) -> Result<String, String> {
-        let (stored, channel_secret_hex) = self.load_channel(channel_id)?;
+    /// # Errors
+    /// - Returns an error if the channel doesn't exist or is closed
+    /// - Returns an error if `balance` exceeds the channel capacity
+    pub fn create_payment(&self, channel_id: &str, balance: u64) -> Result<Payment, String> {
+        self.create_payment_internal(channel_id, balance, false)
+    }
 
-        // Step 1: Create unsigned balance update (computes message hash + tweak)
-        let unsigned_json = create_unsigned_balance_update(
-            &stored.params_json,
-            &stored.keyset_info_json,
-            &channel_secret_hex,
-            &stored.funding_proofs_json,
-            balance,
-        )?;
+    /// Create a payment with funding data (for first payment).
+    ///
+    /// Returns a `Payment` struct with `params` and `funding_proofs` included.
+    /// Use this for the first payment when registering a channel with the server.
+    ///
+    /// The same validation rules apply as `create_payment()`.
+    pub fn create_payment_with_funding(
+        &self,
+        channel_id: &str,
+        balance: u64,
+    ) -> Result<Payment, String> {
+        self.create_payment_internal(channel_id, balance, true)
+    }
 
-        let unsigned: serde_json::Value = serde_json::from_str(&unsigned_json)
-            .map_err(|e| format!("Failed to parse unsigned update: {}", e))?;
+    /// Internal implementation for creating payments.
+    fn create_payment_internal(
+        &self,
+        channel_id: &str,
+        balance: u64,
+        include_funding: bool,
+    ) -> Result<Payment, String> {
+        // Load channel funding data
+        let funding = self
+            .host
+            .get_channel_funding(channel_id)
+            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
 
-        let unsigned_swap_request_json = unsigned["unsigned_swap_request_json"]
-            .as_str()
-            .ok_or("Missing 'unsigned_swap_request_json'")?;
-        let message_hex = unsigned["message_hex"]
-            .as_str()
-            .ok_or("Missing 'message_hex'")?;
-        let tweak_scalar_hex = unsigned["tweak_scalar_hex"]
-            .as_str()
-            .ok_or("Missing 'tweak_scalar_hex'")?;
-        let channel_id_from_update = unsigned["channel_id"]
-            .as_str()
-            .ok_or("Missing 'channel_id'")?;
-        let amount = unsigned["amount"].as_u64().ok_or("Missing 'amount'")?;
+        // Check channel state
+        if self.host.get_channel_state(channel_id) == ClientChannelState::Closed {
+            return Err(format!("Channel is closed: {}", channel_id));
+        }
 
-        // Step 2: Delegate signing to the host (use per-channel sender pubkey)
-        let signature_hex = self.host.sign_with_tweaked_key(
-            &stored.sender_pubkey_hex,
-            message_hex,
-            tweak_scalar_hex,
-        )?;
+        // Validate balance doesn't exceed capacity
+        if balance > funding.capacity {
+            return Err(format!(
+                "Balance {} exceeds channel capacity {}",
+                balance, funding.capacity
+            ));
+        }
 
-        // Step 3: Attach signature and build the BalanceUpdateMessage
-        attach_signature_to_balance_update(
-            unsigned_swap_request_json,
-            &signature_hex,
-            channel_id_from_update,
-            amount,
-        )
+        // Create unsigned balance update and sign it
+        let unsigned = self.create_unsigned_balance_update(channel_id, balance, &funding)?;
+        let balance_update = self.sign_balance_update(unsigned, &funding.sender_pubkey_hex)?;
+
+        let signature = balance_update.signature.to_string();
+
+        // Record the payment state
+        let payment_state = self.host.get_payment_state(channel_id);
+        let payment_count = payment_state.map(|s| s.payment_count).unwrap_or(0) + 1;
+
+        self.host.record_payment(
+            channel_id,
+            ClientPaymentState {
+                balance,
+                signature: signature.clone(),
+                payment_count,
+                last_payment_at: self.host.now_seconds(),
+            },
+        );
+
+        // Build the Payment struct
+        if include_funding {
+            let params: serde_json::Value = serde_json::from_str(&funding.params_json)
+                .map_err(|e| format!("Failed to parse params: {}", e))?;
+            let funding_proofs: Vec<Proof> = serde_json::from_str(&funding.funding_proofs_json)
+                .map_err(|e| format!("Failed to parse funding proofs: {}", e))?;
+
+            Ok(Payment::with_funding(
+                channel_id.to_string(),
+                balance,
+                signature,
+                params,
+                funding_proofs,
+            ))
+        } else {
+            Ok(Payment::new(channel_id.to_string(), balance, signature))
+        }
     }
 
     /// Build a complete `X-Cashu-Channel` payment header value.
@@ -408,57 +473,33 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
     ///
     /// If `include_funding` is true, the header includes `params` and `funding_proofs`
     /// (needed for the first request, or when the server doesn't know this channel yet).
-    /// Subsequent requests can set `include_funding` to false for smaller headers.
-    ///
-    /// Signing is delegated to the host via `sign_with_tweaked_key()`.
     pub fn build_payment_header(
         &self,
         channel_id: &str,
         balance: u64,
         include_funding: bool,
     ) -> Result<String, String> {
-        // Sign the balance update (uses host.sign_with_tweaked_key internally)
-        let update_json = self.sign_balance_update(channel_id, balance)?;
-
-        let update: serde_json::Value = serde_json::from_str(&update_json)
-            .map_err(|e| format!("Failed to parse balance update: {}", e))?;
-
-        // Build the payment header JSON
-        let mut header = serde_json::json!({
-            "channel_id": update["channel_id"],
-            "balance": update["amount"],
-            "signature": update["signature"]
-        });
-
-        if include_funding {
-            let (stored, _) = self.load_channel(channel_id)?;
-
-            // Parse params_json into a JSON object for inclusion
-            let params: serde_json::Value = serde_json::from_str(&stored.params_json)
-                .map_err(|e| format!("Failed to parse params: {}", e))?;
-            let funding_proofs: serde_json::Value =
-                serde_json::from_str(&stored.funding_proofs_json)
-                    .map_err(|e| format!("Failed to parse funding proofs: {}", e))?;
-
-            header["params"] = params;
-            header["funding_proofs"] = funding_proofs;
-        }
-
-        // Base64 encode
-        let header_str = header.to_string();
-        Ok(base64::prelude::BASE64_STANDARD.encode(header_str))
+        let payment = self.create_payment_internal(channel_id, balance, include_funding)?;
+        let header_json =
+            serde_json::to_string(&payment).map_err(|e| format!("Failed to serialize: {}", e))?;
+        Ok(base64::prelude::BASE64_STANDARD.encode(header_json))
     }
 
     /// Get information about a stored channel.
     pub fn get_channel_info(&self, channel_id: &str) -> Option<ClientChannelInfo> {
-        let data = self.host.get_channel(channel_id)?;
-        let stored: StoredChannel = serde_json::from_str(&data.channel_json).ok()?;
+        let funding = self.host.get_channel_funding(channel_id)?;
+        let payment_state = self.host.get_payment_state(channel_id);
+        let current_balance = payment_state.as_ref().map(|s| s.balance).unwrap_or(0);
+        let payment_count = payment_state.as_ref().map(|s| s.payment_count).unwrap_or(0);
+
         Some(ClientChannelInfo {
-            channel_id: stored.channel_id,
-            capacity: stored.capacity,
-            funding_token_amount: stored.funding_token_amount,
-            mint_url: stored.mint_url,
-            params_json: stored.params_json,
+            channel_id: channel_id.to_string(),
+            capacity: funding.capacity,
+            funding_token_amount: funding.funding_token_amount,
+            mint_url: funding.mint_url,
+            current_balance,
+            payment_count,
+            state: self.host.get_channel_state(channel_id),
         })
     }
 
@@ -467,40 +508,38 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
         self.host.list_channel_ids()
     }
 
-    /// Remove a channel from storage.
-    pub fn remove_channel(&self, channel_id: &str) {
+    /// Close a channel locally.
+    ///
+    /// Marks the channel as closed so no more payments can be made.
+    /// Does not communicate with the server.
+    pub fn close_channel(&self, channel_id: &str) {
+        self.host.mark_channel_closed(channel_id);
+    }
+
+    /// Delete a channel from storage.
+    ///
+    /// Removes all data associated with the channel.
+    pub fn delete_channel(&self, channel_id: &str) {
         self.host.delete_channel(channel_id);
     }
 
     /// Create a cooperative close request for a channel.
     ///
-    /// This creates a signed balance update for the `final_balance` and
-    /// returns a JSON string ready to be sent to the server's close endpoint.
+    /// Creates a payment at the final balance that can be sent to the
+    /// server's close endpoint.
     pub fn create_cooperative_close_request(
         &self,
         channel_id: &str,
         final_balance: u64,
-    ) -> Result<String, String> {
-        // Sign the final balance update
-        let update_json = self.sign_balance_update(channel_id, final_balance)?;
-
-        let update: serde_json::Value = serde_json::from_str(&update_json)
-            .map_err(|e| format!("Failed to parse balance update: {}", e))?;
-
-        // Build the close request JSON
-        let request = serde_json::json!({
-            "balance": update["amount"],
-            "signature": update["signature"]
-        });
-
-        Ok(request.to_string())
+    ) -> Result<Payment, String> {
+        // Use create_payment which validates and records the payment
+        self.create_payment(channel_id, final_balance)
     }
 
     /// Process a cooperative close response from the server.
     ///
-    /// This marks the channel as closed locally and removes it from storage.
+    /// Marks the channel as closed locally.
     pub fn process_cooperative_close_response(&self, response_json: &str) -> Result<(), String> {
-        // Parse the response to verify it's valid JSON
         let response: serde_json::Value = serde_json::from_str(response_json)
             .map_err(|e| format!("Failed to parse close response: {}", e))?;
 
@@ -508,27 +547,54 @@ impl<H: SpilmanClientHost> SpilmanClientBridge<H> {
             .as_str()
             .ok_or("Missing 'channel_id' in close response")?;
 
-        // For now, we just delete the channel locally.
-        // In the future, we might want to store the refund proofs.
-        self.host.delete_channel(channel_id);
+        self.host.mark_channel_closed(channel_id);
 
         Ok(())
     }
 
     // ========================================================================
-    // Internal helpers
+    // Balance Update Helpers
     // ========================================================================
 
-    fn load_channel(&self, channel_id: &str) -> Result<(StoredChannel, String), String> {
-        let data = self
-            .host
-            .get_channel(channel_id)
-            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
-        let stored: StoredChannel = serde_json::from_str(&data.channel_json)
-            .map_err(|e| format!("Failed to parse channel state: {}", e))?;
-        Ok((stored, data.channel_secret_hex))
+    /// Create an unsigned balance update for a channel.
+    ///
+    /// This computes the message hash and tweak scalar needed for signing.
+    /// The caller can inspect the `UnsignedBalanceUpdate`, then call
+    /// `sign_balance_update()` to produce a `BalanceUpdateMessage`.
+    ///
+    /// For most use cases, prefer `create_payment()` which handles signing
+    /// automatically via the host.
+    pub fn create_unsigned_balance_update(
+        &self,
+        channel_id: &str,
+        balance: u64,
+        funding: &ClientChannelFunding,
+    ) -> Result<UnsignedBalanceUpdate, String> {
+        UnsignedBalanceUpdate::new(channel_id, balance, funding)
+    }
+
+    /// Sign an unsigned balance update using the host.
+    ///
+    /// Delegates to `host.sign_with_tweaked_key()` to produce the signature,
+    /// then assembles the final `BalanceUpdateMessage`.
+    pub fn sign_balance_update(
+        &self,
+        unsigned: UnsignedBalanceUpdate,
+        sender_pubkey_hex: &str,
+    ) -> Result<BalanceUpdateMessage, String> {
+        let signature_hex = self.host.sign_with_tweaked_key(
+            sender_pubkey_hex,
+            &unsigned.message_hex,
+            &unsigned.tweak_scalar_hex,
+        )?;
+
+        unsigned.sign(&signature_hex)
     }
 }
+
+// ============================================================================
+// Utility functions
+// ============================================================================
 
 /// Base64 decode a string (standard encoding).
 pub fn base64_decode(input: &str) -> Result<String, String> {

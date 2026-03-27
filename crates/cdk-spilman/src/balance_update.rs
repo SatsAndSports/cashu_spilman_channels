@@ -1,11 +1,18 @@
 //! Balance Update Message
 //!
-//! Represents a signed balance update in a Spilman payment channel
+//! Represents signed and unsigned balance updates in a Spilman payment channel.
+//!
+//! The typical flow is:
+//! 1. Create an `UnsignedBalanceUpdate` from channel funding data
+//! 2. Sign it using a host/signer (using `message_hex` and `tweak_scalar_hex`)
+//! 3. Call `sign()` to produce a `BalanceUpdateMessage`
 
 use bitcoin::secp256k1::schnorr::Signature;
 use cashu::nuts::nut10::SpendingConditionVerification;
 use cashu::nuts::{P2PKWitness, SwapRequest, Witness};
+use std::str::FromStr;
 
+use super::client_storage::ClientChannelFunding;
 use super::deterministic::CommitmentOutputs;
 use super::established_channel::EstablishedChannel;
 
@@ -135,5 +142,91 @@ impl BalanceUpdateMessage {
             })?;
 
         Ok(())
+    }
+}
+
+// ============================================================================
+// UnsignedBalanceUpdate
+// ============================================================================
+
+/// An unsigned balance update, ready for signing.
+///
+/// Contains the precomputed message hash and tweak scalar needed for signing.
+/// Once signed, use `sign()` to produce a `BalanceUpdateMessage`.
+///
+/// # Example
+/// ```ignore
+/// let unsigned = UnsignedBalanceUpdate::new(channel_id, balance, &funding)?;
+/// let signature = host.sign_with_tweaked_key(
+///     &funding.sender_pubkey_hex,
+///     &unsigned.message_hex,
+///     &unsigned.tweak_scalar_hex,
+/// )?;
+/// let balance_update = unsigned.sign(&signature)?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct UnsignedBalanceUpdate {
+    /// Channel ID
+    pub channel_id: String,
+    /// Balance (cumulative amount receiver can claim)
+    pub balance: u64,
+    /// SHA-256 hash of the SIG_ALL message (32 bytes, hex-encoded)
+    pub message_hex: String,
+    /// P2BK blinding scalar for the sender (32 bytes, hex-encoded)
+    pub tweak_scalar_hex: String,
+}
+
+impl UnsignedBalanceUpdate {
+    /// Create an unsigned balance update from channel funding data.
+    ///
+    /// Computes the message hash and tweak scalar needed for signing.
+    pub fn new(
+        channel_id: &str,
+        balance: u64,
+        funding: &ClientChannelFunding,
+    ) -> Result<Self, String> {
+        // Use the existing bindings function (Option B: pragmatic approach)
+        let unsigned_json = super::bindings::create_unsigned_balance_update(
+            &funding.params_json,
+            &funding.keyset_info_json,
+            &funding.channel_secret_hex,
+            &funding.funding_proofs_json,
+            balance,
+        )?;
+
+        let unsigned: serde_json::Value = serde_json::from_str(&unsigned_json)
+            .map_err(|e| format!("Failed to parse unsigned update: {}", e))?;
+
+        let message_hex = unsigned["message_hex"]
+            .as_str()
+            .ok_or("Missing 'message_hex'")?
+            .to_string();
+
+        let tweak_scalar_hex = unsigned["tweak_scalar_hex"]
+            .as_str()
+            .ok_or("Missing 'tweak_scalar_hex'")?
+            .to_string();
+
+        Ok(Self {
+            channel_id: channel_id.to_string(),
+            balance,
+            message_hex,
+            tweak_scalar_hex,
+        })
+    }
+
+    /// Attach a signature and produce a `BalanceUpdateMessage`.
+    ///
+    /// The signature should be a BIP-340 Schnorr signature (64 bytes, hex-encoded)
+    /// produced by signing `message_hex` with the tweaked key.
+    pub fn sign(self, signature_hex: &str) -> Result<BalanceUpdateMessage, String> {
+        let signature =
+            Signature::from_str(signature_hex).map_err(|e| format!("Invalid signature: {}", e))?;
+
+        Ok(BalanceUpdateMessage {
+            channel_id: self.channel_id,
+            amount: self.balance,
+            signature,
+        })
     }
 }
