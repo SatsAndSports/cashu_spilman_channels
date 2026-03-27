@@ -172,6 +172,28 @@ pub trait SpilmanClientNetworking {
 }
 
 // ============================================================================
+// SpilmanClientAsyncNetworking trait (for WASM)
+// ============================================================================
+
+/// Async networking trait for client-side mint communication.
+///
+/// This is the async counterpart of `SpilmanClientNetworking`, designed for
+/// environments like WASM where networking must be asynchronous.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait SpilmanClientAsyncNetworking {
+    /// Execute a swap with the mint (async version).
+    ///
+    /// Posts `swap_request_json` to `{mint_url}/v1/swap` and returns the
+    /// response body as a JSON string.
+    async fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, String>;
+}
+
+// ============================================================================
 // Result/info types
 // ============================================================================
 
@@ -330,6 +352,126 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let swap_response_json = self
             .networking
             .call_mint_swap(&mint_url, swap_request_json)
+            .map_err(normalize_mint_error_string)?;
+
+        // Step 5: Unblind signatures and verify DLEQ
+        let complete_result =
+            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)?;
+
+        let complete_json: serde_json::Value = serde_json::from_str(&complete_result)
+            .map_err(|e| format!("Failed to parse complete result: {}", e))?;
+
+        let funding_proofs_json = complete_json["funding_proofs_json"]
+            .as_str()
+            .ok_or("Missing 'funding_proofs_json' in complete result")?;
+
+        // Compute channel ID
+        let channel_id = super::bindings::channel_parameters_get_channel_id(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+
+        // Step 6: Save channel funding data
+        let funding = ClientChannelFunding {
+            params_json: params_json.to_string(),
+            funding_proofs_json: funding_proofs_json.to_string(),
+            channel_secret_hex: channel_secret_hex.clone(),
+            keyset_info_json: keyset_info_json.to_string(),
+            sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            capacity,
+            funding_token_amount,
+            mint_url: mint_url.clone(),
+            created_at: self.host.now_seconds(),
+        };
+
+        self.host.save_channel_funding(&channel_id, funding);
+
+        Ok(OpenChannelResult {
+            channel_id,
+            capacity,
+            funding_token_amount,
+            mint_url,
+            sender_pubkey_hex: sender_pubkey_hex.to_string(),
+        })
+    }
+
+    /// Open a channel from a Cashu token (async version for WASM).
+    ///
+    /// This is the async counterpart of `open_channel_from_token`, designed for
+    /// environments like WASM where networking must be asynchronous.
+    ///
+    /// Takes an async networking implementation instead of using the bridge's
+    /// sync networking.
+    #[cfg(feature = "wallet")]
+    pub async fn open_channel_from_token_async<AN: SpilmanClientAsyncNetworking>(
+        &self,
+        token_string: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        keyset_info_json: &str,
+        max_amount: u64,
+        async_networking: &AN,
+    ) -> Result<OpenChannelResult, String> {
+        // Step 1: Compute channel secret via host (ECDH delegation)
+        let channel_secret_hex = self
+            .host
+            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)?;
+
+        // Step 2: Parse token and compute channel parameters
+        let compute_result = compute_channel_from_token(
+            token_string,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            &channel_secret_hex,
+            expiry_timestamp,
+            keyset_info_json,
+            max_amount,
+        )?;
+
+        let compute_json: serde_json::Value = serde_json::from_str(&compute_result)
+            .map_err(|e| format!("Failed to parse compute result: {}", e))?;
+
+        let capacity = compute_json["capacity"]
+            .as_u64()
+            .ok_or("Missing 'capacity' in compute result")?;
+        let funding_token_amount = compute_json["funding_token_amount"]
+            .as_u64()
+            .ok_or("Missing 'funding_token_amount' in compute result")?;
+        let mint_url = compute_json["mint_url"]
+            .as_str()
+            .ok_or("Missing 'mint_url' in compute result")?
+            .to_string();
+        let params_json = compute_json["params_json"]
+            .as_str()
+            .ok_or("Missing 'params_json' in compute result")?;
+        let proofs_json = compute_json["proofs_json"]
+            .as_str()
+            .ok_or("Missing 'proofs_json' in compute result")?;
+
+        // Step 3: Create funding swap request
+        let swap_result = create_funding_swap(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+            proofs_json,
+        )?;
+
+        let swap_json: serde_json::Value = serde_json::from_str(&swap_result)
+            .map_err(|e| format!("Failed to parse swap result: {}", e))?;
+
+        let swap_request_json = swap_json["swap_request_json"]
+            .as_str()
+            .ok_or("Missing 'swap_request_json' in swap result")?;
+        let funding_secrets_json = swap_json["funding_secrets_json"]
+            .as_str()
+            .ok_or("Missing 'funding_secrets_json' in swap result")?;
+
+        // Step 4: Submit swap to mint (async)
+        let swap_response_json = async_networking
+            .call_mint_swap(&mint_url, swap_request_json)
+            .await
             .map_err(normalize_mint_error_string)?;
 
         // Step 5: Unblind signatures and verify DLEQ

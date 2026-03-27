@@ -640,6 +640,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-spilman-client-integration-tests"
+version = "0.15.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bip39",
+ "cashu",
+ "cdk",
+ "cdk-common",
+ "cdk-fake-wallet",
+ "cdk-spilman",
+ "cdk-sqlite",
+ "hex",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cdk-spilman-go"
 version = "0.1.0"
 dependencies = [

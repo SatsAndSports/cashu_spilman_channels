@@ -1014,31 +1014,22 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk::nuts::PublicKey;
     use cdk_spilman::{
-        base64_decode, BridgeError, ChannelData, SpilmanClientBridge, SpilmanClientHost,
+        base64_decode, BridgeError, ClientChannelFunding, ClientChannelState, ClientPaymentState,
+        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     // ====================================================================
-    // Test Client Host: wraps an in-process mint
+    // Test Client Networking: handles mint swap calls
     // ====================================================================
 
-    struct TestClientHost {
+    struct TestClientNetworking {
         mint: Arc<Mint>,
-        channels: Mutex<HashMap<String, (String, String)>>,
-        keys: Mutex<HashMap<String, String>>,
     }
 
-    impl TestClientHost {
-        fn register_key(&self, secret_hex: &str, pubkey_hex: &str) {
-            self.keys
-                .lock()
-                .unwrap()
-                .insert(pubkey_hex.to_string(), secret_hex.to_string());
-        }
-    }
-
-    impl SpilmanClientHost for TestClientHost {
+    impl SpilmanClientNetworking for TestClientNetworking {
         fn call_mint_swap(
             &self,
             _mint_url: &str,
@@ -1058,29 +1049,82 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize swap response: {}", e))
         }
+    }
 
-        fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str) {
-            self.channels.lock().unwrap().insert(
-                channel_id.to_string(),
-                (channel_json.to_string(), channel_secret_hex.to_string()),
-            );
+    // ====================================================================
+    // Test Client Host: storage and crypto
+    // ====================================================================
+
+    struct TestClientHost {
+        funding: Mutex<HashMap<String, ClientChannelFunding>>,
+        payments: Mutex<HashMap<String, ClientPaymentState>>,
+        states: Mutex<HashMap<String, ClientChannelState>>,
+        keys: Mutex<HashMap<String, String>>,
+    }
+
+    impl TestClientHost {
+        fn register_key(&self, secret_hex: &str, pubkey_hex: &str) {
+            self.keys
+                .lock()
+                .unwrap()
+                .insert(pubkey_hex.to_string(), secret_hex.to_string());
+        }
+    }
+
+    impl SpilmanClientHost for TestClientHost {
+        fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+            self.funding
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), funding);
         }
 
-        fn get_channel(&self, channel_id: &str) -> Option<ChannelData> {
-            let channels = self.channels.lock().unwrap();
-            let (json, secret) = channels.get(channel_id)?;
-            Some(ChannelData {
-                channel_json: json.clone(),
-                channel_secret_hex: secret.clone(),
-            })
+        fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
+            self.funding.lock().unwrap().get(channel_id).cloned()
+        }
+
+        fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
+            self.payments.lock().unwrap().get(channel_id).cloned()
+        }
+
+        fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+            self.payments
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), state);
+        }
+
+        fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+            self.states
+                .lock()
+                .unwrap()
+                .get(channel_id)
+                .copied()
+                .unwrap_or(ClientChannelState::Open)
+        }
+
+        fn mark_channel_closed(&self, channel_id: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::Closed);
         }
 
         fn list_channel_ids(&self) -> Vec<String> {
-            self.channels.lock().unwrap().keys().cloned().collect()
+            self.funding.lock().unwrap().keys().cloned().collect()
         }
 
         fn delete_channel(&self, channel_id: &str) {
-            self.channels.lock().unwrap().remove(channel_id);
+            self.funding.lock().unwrap().remove(channel_id);
+            self.payments.lock().unwrap().remove(channel_id);
+            self.states.lock().unwrap().remove(channel_id);
+        }
+
+        fn now_seconds(&self) -> u64 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
         }
 
         fn sign_with_tweaked_key(
@@ -1314,13 +1358,17 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     let sender_pubkey_hex = alice_secret.public_key().to_hex();
 
     let client_host = TestClientHost {
-        mint: Arc::clone(&shared_mint),
-        channels: Mutex::new(HashMap::new()),
+        funding: Mutex::new(HashMap::new()),
+        payments: Mutex::new(HashMap::new()),
+        states: Mutex::new(HashMap::new()),
         keys: Mutex::new(HashMap::new()),
     };
     client_host.register_key(&alice_secret.to_secret_hex(), &sender_pubkey_hex);
 
-    let client_bridge = SpilmanClientBridge::new(client_host);
+    let client_networking = TestClientNetworking {
+        mint: Arc::clone(&shared_mint),
+    };
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
 
     // ====================================================================
     // Open channel from token
@@ -1353,20 +1401,18 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     assert_eq!(info.capacity, open_result.capacity);
 
     // ====================================================================
-    // Sign balance updates
+    // Create payment (tests signature creation)
     // ====================================================================
 
-    let update_json = client_bridge
-        .sign_balance_update(&open_result.channel_id, 10)
+    // Use create_payment_with_funding for the first payment
+    let payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
         .map_err(anyhow::Error::msg)?;
 
-    let update: serde_json::Value = serde_json::from_str(&update_json)?;
-    assert_eq!(
-        update["channel_id"].as_str().unwrap(),
-        open_result.channel_id
-    );
-    assert_eq!(update["amount"].as_u64().unwrap(), 10);
-    assert!(update["signature"].as_str().is_some());
+    assert_eq!(payment.channel_id, open_result.channel_id);
+    assert_eq!(payment.balance, 10);
+    assert!(!payment.signature.is_empty());
+    assert!(payment.has_funding());
 
     // ====================================================================
     // Build payment header (with funding)
@@ -1490,10 +1536,10 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     }
 
     // ====================================================================
-    // Remove channel
+    // Delete channel
     // ====================================================================
 
-    client_bridge.remove_channel(&open_result.channel_id);
+    client_bridge.delete_channel(&open_result.channel_id);
     assert!(client_bridge
         .get_channel_info(&open_result.channel_id)
         .is_none());
@@ -1505,12 +1551,27 @@ async fn test_client_bridge() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
-    use cdk_spilman::{ChannelData, SpilmanClientBridge, SpilmanClientHost};
+    use cdk_spilman::{
+        ClientChannelFunding, ClientChannelState, ClientPaymentState, SpilmanClientBridge,
+        SpilmanClientHost, SpilmanClientNetworking,
+    };
     use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Networking that always returns an error
+    struct FailingClientNetworking {
+        mint_error_json: String,
+    }
+
+    impl SpilmanClientNetworking for FailingClientNetworking {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+    }
+
+    // Host that stores nothing (swap will fail before storage is used)
     struct FailingClientHost {
         keys: Mutex<HashMap<String, String>>,
-        mint_error_json: String,
     }
 
     impl FailingClientHost {
@@ -1523,21 +1584,36 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientHost for FailingClientHost {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
-            Err(self.mint_error_json.clone())
-        }
+        fn save_channel_funding(&self, _: &str, _: ClientChannelFunding) {}
 
-        fn save_channel(&self, _: &str, _: &str, _: &str) {}
-
-        fn get_channel(&self, _: &str) -> Option<ChannelData> {
+        fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
             None
         }
+
+        fn get_payment_state(&self, _: &str) -> Option<ClientPaymentState> {
+            None
+        }
+
+        fn record_payment(&self, _: &str, _: ClientPaymentState) {}
+
+        fn get_channel_state(&self, _: &str) -> ClientChannelState {
+            ClientChannelState::Open
+        }
+
+        fn mark_channel_closed(&self, _: &str) {}
 
         fn list_channel_ids(&self) -> Vec<String> {
             Vec::new()
         }
 
         fn delete_channel(&self, _: &str) {}
+
+        fn now_seconds(&self) -> u64 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        }
 
         fn sign_with_tweaked_key(&self, _: &str, _: &str, _: &str) -> Result<String, String> {
             Err("not used in this test".to_string())
@@ -1605,14 +1681,17 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
     let host = FailingClientHost {
         keys: Mutex::new(HashMap::new()),
+    };
+    host.register_key(&alice_secret.to_secret_hex(), &sender_pubkey_hex);
+
+    let networking = FailingClientNetworking {
         mint_error_json: serde_json::to_string_pretty(&serde_json::json!({
             "code": 12001,
             "detail": "Unknown Keyset"
         }))?,
     };
-    host.register_key(&alice_secret.to_secret_hex(), &sender_pubkey_hex);
 
-    let bridge = SpilmanClientBridge::new(host);
+    let bridge = SpilmanClientBridge::new(host, networking);
     let err = bridge
         .open_channel_from_token(
             &token_string,

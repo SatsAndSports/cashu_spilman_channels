@@ -61,12 +61,20 @@ def main():
     sigs = mint_funding_token(mint_url, funding["funding_token_nominal"], funding["blinded_messages"])
     proofs = construct_proofs(json.dumps(sigs), json.dumps(funding["secrets_with_blinding"]), json.dumps(keyset_info))
     
-    # Save to local host so bridge can see it
-    host.save_channel(cid, json.dumps({
-        "channel_id": cid, "params_json": json.dumps(cp), "keyset_info_json": json.dumps(keyset_info),
-        "funding_proofs_json": proofs, "capacity": capacity, "funding_token_amount": fta,
-        "mint_url": mint_url, "sender_pubkey_hex": sender_pubkey,
-    }), ss)
+    # Save to local host so bridge can see it (new interface)
+    # ClientChannelFunding contains all immutable data - field names must match Rust struct
+    funding_data = {
+        "params_json": json.dumps(cp),
+        "funding_proofs_json": proofs,
+        "channel_secret_hex": ss,
+        "keyset_info_json": json.dumps(keyset_info),
+        "sender_pubkey_hex": sender_pubkey,
+        "capacity": capacity,
+        "funding_token_amount": fta,
+        "mint_url": mint_url,
+        "created_at": int(time.time()),
+    }
+    host.save_channel_funding(cid, json.dumps(funding_data))
 
     # 5. Make Requests
     balance = 0

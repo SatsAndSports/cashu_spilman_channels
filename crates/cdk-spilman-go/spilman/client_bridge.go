@@ -7,6 +7,7 @@ package spilman
 
 /*
 #include <stdlib.h>
+#include <stdint.h>
 #include "client_bridge_types.h"
 
 // From client_gateway.c
@@ -15,7 +16,8 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data);
 // From Rust FFI (cdk-spilman-go/src/lib.rs)
 void* spilman_client_bridge_new(SpilmanClientHostCallbacks callbacks);
 void spilman_client_bridge_free(void* ptr);
-void spilman_client_bridge_remove_channel(void* ptr, const char* channel_id);
+void spilman_client_bridge_close_channel(void* ptr, const char* channel_id);
+void spilman_client_bridge_delete_channel(void* ptr, const char* channel_id);
 void spilman_free_string(char* ptr);
 */
 import "C"
@@ -77,15 +79,21 @@ func (b *ClientBridge) Free() {
 //  3. Create a funding swap request (deterministic 2-of-2 locked outputs)
 //  4. Submit the swap to the mint via host.CallMintSwap()
 //  5. Unblind signatures and verify DLEQ proofs
-//  6. Save the channel via host.SaveChannel()
+//  6. Save the channel via host.SaveChannelFunding()
 func (b *ClientBridge) OpenChannelFromToken(token, receiverPubkeyHex, senderPubkeyHex string, expiryTimestamp uint64, keysetInfoJSON string, maxAmount uint64) (*OpenChannelResult, error) {
 	return clientBridgeOpenChannel(b.ptr, token, receiverPubkeyHex, senderPubkeyHex, expiryTimestamp, keysetInfoJSON, maxAmount)
 }
 
-// SignBalanceUpdate creates a signed balance update for a channel.
-// Returns JSON with {channel_id, amount, signature}.
-func (b *ClientBridge) SignBalanceUpdate(channelID string, balance uint64) (string, error) {
-	return clientBridgeSignBalanceUpdate(b.ptr, channelID, balance)
+// CreatePayment creates a payment for a channel (without funding data).
+// Returns JSON with the Payment struct.
+func (b *ClientBridge) CreatePayment(channelID string, balance uint64) (string, error) {
+	return clientBridgeCreatePayment(b.ptr, channelID, balance)
+}
+
+// CreatePaymentWithFunding creates a payment with funding data (for first payment).
+// Returns JSON with the Payment struct including params and funding_proofs.
+func (b *ClientBridge) CreatePaymentWithFunding(channelID string, balance uint64) (string, error) {
+	return clientBridgeCreatePaymentWithFunding(b.ptr, channelID, balance)
 }
 
 // BuildPaymentHeader builds a complete X-Cashu-Channel payment header value.
@@ -108,11 +116,19 @@ func (b *ClientBridge) ListChannels() []string {
 	return clientBridgeListChannels(b.ptr)
 }
 
-// RemoveChannel removes a channel from storage.
-func (b *ClientBridge) RemoveChannel(channelID string) {
+// CloseChannel marks a channel as closed locally.
+// The channel cannot accept new payments after this.
+func (b *ClientBridge) CloseChannel(channelID string) {
 	cID := C.CString(channelID)
 	defer C.free(unsafe.Pointer(cID))
-	C.spilman_client_bridge_remove_channel(b.ptr, cID)
+	C.spilman_client_bridge_close_channel(b.ptr, cID)
+}
+
+// DeleteChannel removes a channel from storage.
+func (b *ClientBridge) DeleteChannel(channelID string) {
+	cID := C.CString(channelID)
+	defer C.free(unsafe.Pointer(cID))
+	C.spilman_client_bridge_delete_channel(b.ptr, cID)
 }
 
 // CreateCooperativeCloseRequest creates a JSON request for cooperative closing.
@@ -128,40 +144,64 @@ func (b *ClientBridge) ProcessCooperativeCloseResponse(responseJSON string) erro
 // --- Client Host Callbacks Implementation ---
 // These are exported to C and called by the Rust client bridge via client_gateway.c
 
-//export go_client_call_mint_swap
-func go_client_call_mint_swap(userData unsafe.Pointer, mintURL *C.char, swapRequestJSON *C.char, responseOut **C.char) C.int {
+// Funding Data
+
+//export go_client_save_channel_funding
+func go_client_save_channel_funding(userData unsafe.Pointer, channelID *C.char, fundingJSON *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	resp, err := host.CallMintSwap(C.GoString(mintURL), C.GoString(swapRequestJSON))
-	if err != nil {
-		*responseOut = C.CString(err.Error())
-		return 0
-	}
-	*responseOut = C.CString(resp)
-	return 1
+	host.SaveChannelFunding(C.GoString(channelID), C.GoString(fundingJSON))
 }
 
-//export go_client_save_channel
-func go_client_save_channel(userData unsafe.Pointer, channelID *C.char, channelJSON *C.char, channelSecretHex *C.char) {
+//export go_client_get_channel_funding
+func go_client_get_channel_funding(userData unsafe.Pointer, channelID *C.char) *C.char {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.SaveChannel(C.GoString(channelID), C.GoString(channelJSON), C.GoString(channelSecretHex))
-}
-
-//export go_client_get_channel
-func go_client_get_channel(userData unsafe.Pointer, channelID *C.char) *C.char {
-	h := cgo.Handle(userData)
-	host := h.Value().(SpilmanClientHost)
-	data := host.GetChannel(C.GoString(channelID))
-	if data == nil {
+	result := host.GetChannelFunding(C.GoString(channelID))
+	if result == "" {
 		return nil
 	}
-	// Return as JSON so the Rust side can parse both fields
-	j, _ := json.Marshal(map[string]string{
-		"channel_json":       data.ChannelJSON,
-		"channel_secret_hex": data.ChannelSecretHex,
-	})
-	return C.CString(string(j))
+	return C.CString(result)
+}
+
+// Payment State
+
+//export go_client_get_payment_state
+func go_client_get_payment_state(userData unsafe.Pointer, channelID *C.char) *C.char {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	result := host.GetPaymentState(C.GoString(channelID))
+	if result == "" {
+		return nil
+	}
+	return C.CString(result)
+}
+
+//export go_client_record_payment
+func go_client_record_payment(userData unsafe.Pointer, channelID *C.char, stateJSON *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.RecordPayment(C.GoString(channelID), C.GoString(stateJSON))
+}
+
+// Lifecycle
+
+//export go_client_get_channel_state
+func go_client_get_channel_state(userData unsafe.Pointer, channelID *C.char) *C.char {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	result := host.GetChannelState(C.GoString(channelID))
+	if result == "" {
+		return C.CString("open") // default
+	}
+	return C.CString(result)
+}
+
+//export go_client_mark_channel_closed
+func go_client_mark_channel_closed(userData unsafe.Pointer, channelID *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.MarkChannelClosed(C.GoString(channelID))
 }
 
 //export go_client_list_channel_ids
@@ -183,6 +223,17 @@ func go_client_delete_channel(userData unsafe.Pointer, channelID *C.char) {
 	host.DeleteChannel(C.GoString(channelID))
 }
 
+// Time
+
+//export go_client_now_seconds
+func go_client_now_seconds(userData unsafe.Pointer) C.uint64_t {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	return C.uint64_t(host.NowSeconds())
+}
+
+// Crypto
+
 //export go_client_sign_with_tweaked_key
 func go_client_sign_with_tweaked_key(userData unsafe.Pointer, signerPubkeyHex *C.char, messageHex *C.char, tweakScalarHex *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
@@ -201,6 +252,21 @@ func go_client_compute_channel_secret(userData unsafe.Pointer, senderPubkeyHex *
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	resp, err := host.ComputeChannelSecret(C.GoString(senderPubkeyHex), C.GoString(receiverPubkeyHex))
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = C.CString(resp)
+	return 1
+}
+
+// Networking
+
+//export go_client_call_mint_swap
+func go_client_call_mint_swap(userData unsafe.Pointer, mintURL *C.char, swapRequestJSON *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	resp, err := host.CallMintSwap(C.GoString(mintURL), C.GoString(swapRequestJSON))
 	if err != nil {
 		*responseOut = C.CString(err.Error())
 		return 0

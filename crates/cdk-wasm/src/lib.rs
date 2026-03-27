@@ -11,9 +11,10 @@ use cashu::util::hex;
 use cdk_spilman::{
     compute_funding_token_amount as rust_compute_funding_token_amount, BalanceUpdateMessage,
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
-    ChannelState, ClosingData, EstablishedChannel, PaymentProof, SpilmanAsyncNetworking,
-    SpilmanBridge, SpilmanClientBridge as RustSpilmanClientBridge,
-    SpilmanClientHost as RustSpilmanClientHost, SpilmanHost,
+    ChannelState, ClientChannelFunding, ClientChannelState, ClientPaymentState, ClosingData,
+    EstablishedChannel, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge,
+    SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
+    SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
 #[wasm_bindgen(start)]
@@ -117,25 +118,37 @@ extern "C" {
     ) -> Result<String, JsValue>;
 
     pub type JsSpilmanClientHost;
-    #[wasm_bindgen(method, js_name = callMintSwap)]
-    fn client_call_mint_swap(
-        this: &JsSpilmanClientHost,
-        mint_url: &str,
-        swap_request_json: &str,
-    ) -> js_sys::Promise;
-    #[wasm_bindgen(method, js_name = saveChannel)]
-    fn save_channel(
+    // Funding data (immutable)
+    #[wasm_bindgen(method, js_name = saveChannelFunding)]
+    fn save_channel_funding(
         this: &JsSpilmanClientHost,
         channel_id: &str,
-        channel_json: &str,
-        channel_secret_hex: &str,
+        funding_json: &str,
     );
-    #[wasm_bindgen(method, js_name = getChannel)]
-    fn get_channel(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    #[wasm_bindgen(method, js_name = getChannelFunding)]
+    fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    // Payment state (mutable)
+    #[wasm_bindgen(method, js_name = getPaymentState)]
+    fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    #[wasm_bindgen(method, js_name = recordPayment)]
+    fn client_record_payment(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+        state_json: &str,
+    );
+    // Lifecycle
+    #[wasm_bindgen(method, js_name = getChannelState)]
+    fn client_get_channel_state(this: &JsSpilmanClientHost, channel_id: &str) -> String;
+    #[wasm_bindgen(method, js_name = markChannelClosed)]
+    fn client_mark_channel_closed(this: &JsSpilmanClientHost, channel_id: &str);
     #[wasm_bindgen(method, js_name = listChannelIds)]
     fn list_channel_ids(this: &JsSpilmanClientHost) -> JsValue;
     #[wasm_bindgen(method, js_name = deleteChannel)]
     fn delete_channel(this: &JsSpilmanClientHost, channel_id: &str);
+    // Time
+    #[wasm_bindgen(method, js_name = nowSeconds)]
+    fn client_now_seconds(this: &JsSpilmanClientHost) -> u64;
+    // Crypto
     #[wasm_bindgen(method, catch, js_name = signWithTweakedKey)]
     fn client_sign_with_tweaked_key(
         this: &JsSpilmanClientHost,
@@ -149,6 +162,13 @@ extern "C" {
         sender_pubkey_hex: &str,
         receiver_pubkey_hex: &str,
     ) -> Result<String, JsValue>;
+    // Networking (for async operations)
+    #[wasm_bindgen(method, js_name = callMintSwap)]
+    fn client_call_mint_swap(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> js_sys::Promise;
 }
 
 struct WasmSpilmanHostProxy {
@@ -401,34 +421,82 @@ unsafe impl Send for WasmSpilmanClientHostProxy {}
 unsafe impl Sync for WasmSpilmanClientHostProxy {}
 
 impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
-    fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
-        // This is a dummy because the core bridge methods we use from WASM currently don't need it.
-        Err("call_mint_swap not supported in sync WASM context".to_string())
+    // ========================================================================
+    // Funding Data (immutable after creation)
+    // ========================================================================
+
+    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+        let funding_json =
+            serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
+        self.js_host.save_channel_funding(channel_id, &funding_json);
     }
-    fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str) {
-        self.js_host
-            .save_channel(channel_id, channel_json, channel_secret_hex);
-    }
-    fn get_channel(&self, channel_id: &str) -> Option<cdk_spilman::ChannelData> {
-        let val = self.js_host.get_channel(channel_id);
+
+    fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
+        let val = self.js_host.get_channel_funding(channel_id);
         if val.is_null() || val.is_undefined() {
             return None;
         }
-        let arr = js_sys::Array::from(&val);
-        Some(cdk_spilman::ChannelData {
-            channel_json: arr.get(0).as_string()?,
-            channel_secret_hex: arr.get(1).as_string()?,
-        })
+        let json_str = val.as_string()?;
+        serde_json::from_str(&json_str).ok()
     }
+
+    // ========================================================================
+    // Payment State (mutable)
+    // ========================================================================
+
+    fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
+        let val = self.js_host.get_payment_state(channel_id);
+        if val.is_null() || val.is_undefined() {
+            return None;
+        }
+        let json_str = val.as_string()?;
+        serde_json::from_str(&json_str).ok()
+    }
+
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+        let state_json =
+            serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
+        self.js_host.client_record_payment(channel_id, &state_json);
+    }
+
+    // ========================================================================
+    // Channel Lifecycle
+    // ========================================================================
+
+    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+        match self.js_host.client_get_channel_state(channel_id).as_str() {
+            "closed" | "Closed" => ClientChannelState::Closed,
+            _ => ClientChannelState::Open,
+        }
+    }
+
+    fn mark_channel_closed(&self, channel_id: &str) {
+        self.js_host.client_mark_channel_closed(channel_id);
+    }
+
     fn list_channel_ids(&self) -> Vec<String> {
         js_sys::Array::from(&self.js_host.list_channel_ids())
             .iter()
             .filter_map(|v| v.as_string())
             .collect()
     }
+
     fn delete_channel(&self, channel_id: &str) {
         self.js_host.delete_channel(channel_id);
     }
+
+    // ========================================================================
+    // Time
+    // ========================================================================
+
+    fn now_seconds(&self) -> u64 {
+        self.js_host.client_now_seconds()
+    }
+
+    // ========================================================================
+    // Crypto (delegated to host)
+    // ========================================================================
+
     fn sign_with_tweaked_key(
         &self,
         signer_pubkey_hex: &str,
@@ -439,6 +507,7 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
             .client_sign_with_tweaked_key(signer_pubkey_hex, message_hex, tweak_scalar_hex)
             .map_err(js_error_to_string)
     }
+
     fn compute_channel_secret(
         &self,
         sender_pubkey_hex: &str,
@@ -447,6 +516,56 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
         self.js_host
             .client_compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
             .map_err(js_error_to_string)
+    }
+}
+
+// ============================================================================
+// Dummy sync networking (not used in WASM async flow)
+// ============================================================================
+
+struct WasmDummyNetworking;
+
+impl SpilmanClientNetworking for WasmDummyNetworking {
+    fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use openChannelFromTokenAsync".to_string())
+    }
+}
+
+// ============================================================================
+// Async networking proxy for WASM
+// ============================================================================
+
+struct WasmSpilmanClientAsyncNetworkingProxy {
+    js_host: JsSpilmanClientHost,
+}
+unsafe impl Send for WasmSpilmanClientAsyncNetworkingProxy {}
+unsafe impl Sync for WasmSpilmanClientAsyncNetworkingProxy {}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
+    async fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, String> {
+        JsFuture::from(self.js_host.client_call_mint_swap(mint_url, swap_request_json))
+            .await
+            .map_err(js_error_to_string)?
+            .as_string()
+            .ok_or_else(|| "Result not a string".to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait::async_trait]
+impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
+    async fn call_mint_swap(
+        &self,
+        _mint_url: &str,
+        _swap_request_json: &str,
+    ) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
     }
 }
 
@@ -550,20 +669,33 @@ impl WasmSpilmanBridge {
 
 #[wasm_bindgen]
 pub struct WasmSpilmanClientBridge {
-    bridge: RustSpilmanClientBridge<WasmSpilmanClientHostProxy>,
+    bridge: RustSpilmanClientBridge<WasmSpilmanClientHostProxy, WasmDummyNetworking>,
+    // Keep a reference to the JS host for async networking
+    js_host: JsSpilmanClientHost,
 }
 
 #[wasm_bindgen]
 impl WasmSpilmanClientBridge {
     #[wasm_bindgen(constructor)]
     pub fn new(js_host: JsSpilmanClientHost) -> WasmSpilmanClientBridge {
+        // Clone the JsValue for use in the proxy
+        let js_host_for_bridge: JsSpilmanClientHost = js_host.clone().unchecked_into();
         WasmSpilmanClientBridge {
-            bridge: RustSpilmanClientBridge::new(WasmSpilmanClientHostProxy { js_host }),
+            bridge: RustSpilmanClientBridge::new(
+                WasmSpilmanClientHostProxy {
+                    js_host: js_host_for_bridge,
+                },
+                WasmDummyNetworking,
+            ),
+            js_host,
         }
     }
 
-    #[wasm_bindgen(js_name = openChannelFromToken)]
-    pub fn open_channel_from_token(
+    /// Open a channel from a Cashu token (async version for WASM).
+    ///
+    /// This uses async networking which is required in the browser environment.
+    #[wasm_bindgen(js_name = openChannelFromTokenAsync)]
+    pub async fn open_channel_from_token_async(
         &self,
         token_string: &str,
         receiver_pubkey_hex: &str,
@@ -572,16 +704,47 @@ impl WasmSpilmanClientBridge {
         keyset_info_json: &str,
         max_amount: u64,
     ) -> Result<JsValue, JsValue> {
+        // Create an async networking proxy using the stored JS host
+        let async_networking = WasmSpilmanClientAsyncNetworkingProxy {
+            js_host: self.js_host.clone().unchecked_into(),
+        };
+
         self.bridge
-            .open_channel_from_token(
+            .open_channel_from_token_async(
                 token_string,
                 receiver_pubkey_hex,
                 sender_pubkey_hex,
                 expiry_timestamp,
                 keyset_info_json,
                 max_amount,
+                &async_networking,
             )
+            .await
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Create a payment for a channel (without funding data).
+    /// Returns the Payment struct as a JSON string.
+    #[wasm_bindgen(js_name = createPayment)]
+    pub fn create_payment(&self, channel_id: &str, balance: u64) -> Result<String, JsValue> {
+        self.bridge
+            .create_payment(channel_id, balance)
+            .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Create a payment with funding data (for first payment).
+    /// Returns the Payment struct as a JSON string.
+    #[wasm_bindgen(js_name = createPaymentWithFunding)]
+    pub fn create_payment_with_funding(
+        &self,
+        channel_id: &str,
+        balance: u64,
+    ) -> Result<String, JsValue> {
+        self.bridge
+            .create_payment_with_funding(channel_id, balance)
+            .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
             .map_err(|e| JsValue::from_str(&e))
     }
 
@@ -602,9 +765,10 @@ impl WasmSpilmanClientBridge {
         &self,
         channel_id: &str,
         final_balance: u64,
-    ) -> Result<String, JsValue> {
+    ) -> Result<JsValue, JsValue> {
         self.bridge
             .create_cooperative_close_request(channel_id, final_balance)
+            .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
             .map_err(|e| JsValue::from_str(&e))
     }
 
@@ -629,9 +793,15 @@ impl WasmSpilmanClientBridge {
         serde_wasm_bindgen::to_value(&channels).unwrap()
     }
 
-    #[wasm_bindgen(js_name = removeChannel)]
-    pub fn remove_channel(&self, channel_id: &str) {
-        self.bridge.remove_channel(channel_id);
+    /// Mark a channel as closed locally.
+    #[wasm_bindgen(js_name = closeChannel)]
+    pub fn close_channel(&self, channel_id: &str) {
+        self.bridge.close_channel(channel_id);
+    }
+
+    #[wasm_bindgen(js_name = deleteChannel)]
+    pub fn delete_channel(&self, channel_id: &str) {
+        self.bridge.delete_channel(channel_id);
     }
 }
 

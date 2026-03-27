@@ -85,10 +85,13 @@ func runServer() {
 }
 
 type DemoClientHost struct {
-	aliceSecret string
-	channels    map[string]*spilman.ChannelData
+	aliceSecret  string
+	funding      map[string]string // channel_id -> funding_json
+	paymentState map[string]string // channel_id -> payment_state_json
+	channelState map[string]string // channel_id -> "open" or "closed"
 }
 
+// Networking
 func (h *DemoClientHost) CallMintSwap(url, req string) (string, error) {
 	resp, _ := http.Post(url+"/v1/swap", "application/json", strings.NewReader(req))
 	defer resp.Body.Close()
@@ -101,18 +104,54 @@ func (h *DemoClientHost) CallMintSwap(url, req string) (string, error) {
 	}
 	return string(body), nil
 }
-func (h *DemoClientHost) SaveChannel(id, json, sec string) {
-	h.channels[id] = &spilman.ChannelData{ChannelJSON: json, ChannelSecretHex: sec}
+
+// Funding Data
+func (h *DemoClientHost) SaveChannelFunding(id, fundingJSON string) {
+	h.funding[id] = fundingJSON
+	h.channelState[id] = "open"
 }
-func (h *DemoClientHost) GetChannel(id string) *spilman.ChannelData { return h.channels[id] }
+func (h *DemoClientHost) GetChannelFunding(id string) string {
+	return h.funding[id]
+}
+
+// Payment State
+func (h *DemoClientHost) GetPaymentState(id string) string {
+	return h.paymentState[id]
+}
+func (h *DemoClientHost) RecordPayment(id, stateJSON string) {
+	h.paymentState[id] = stateJSON
+}
+
+// Lifecycle
+func (h *DemoClientHost) GetChannelState(id string) string {
+	state := h.channelState[id]
+	if state == "" {
+		return "open"
+	}
+	return state
+}
+func (h *DemoClientHost) MarkChannelClosed(id string) {
+	h.channelState[id] = "closed"
+}
 func (h *DemoClientHost) ListChannelIDs() []string {
 	ids := []string{}
-	for id := range h.channels {
+	for id := range h.funding {
 		ids = append(ids, id)
 	}
 	return ids
 }
-func (h *DemoClientHost) DeleteChannel(id string) { delete(h.channels, id) }
+func (h *DemoClientHost) DeleteChannel(id string) {
+	delete(h.funding, id)
+	delete(h.paymentState, id)
+	delete(h.channelState, id)
+}
+
+// Time
+func (h *DemoClientHost) NowSeconds() uint64 {
+	return uint64(time.Now().Unix())
+}
+
+// Crypto
 func (h *DemoClientHost) SignWithTweakedKey(pk, msg, tw string) (string, error) {
 	return spilman.SignWithTweakedKeyUtil(h.aliceSecret, msg, tw)
 }
@@ -151,7 +190,12 @@ func runClient(args []string) {
 	ki, _ := spilmankit.DemoFetchActiveKeysetInfo(mintUrl, "sat")
 	kiJ, _ := json.Marshal(ki)
 
-	host := &DemoClientHost{aliceSecret: aliceSecret, channels: make(map[string]*spilman.ChannelData)}
+	host := &DemoClientHost{
+		aliceSecret:  aliceSecret,
+		funding:      make(map[string]string),
+		paymentState: make(map[string]string),
+		channelState: make(map[string]string),
+	}
 	bridge, _ := spilman.NewClientBridge(host)
 	defer bridge.Free()
 
@@ -181,11 +225,19 @@ func runClient(args []string) {
 	sigsJ, _ := json.Marshal(sigs)
 	swbJ, _ := json.Marshal(f.Secrets_with_blinding)
 	proofsJ, _ := spilman.ConstructProofs(string(sigsJ), string(swbJ), string(kiJ))
-	storedJ, _ := json.Marshal(map[string]interface{}{
-		"channel_id": cid, "params_json": string(cpJ), "keyset_info_json": string(kiJ), "funding_proofs_json": proofsJ,
-		"capacity": cap, "funding_token_amount": fta, "mint_url": mintUrl, "sender_pubkey_hex": alicePub,
+	// ClientChannelFunding structure - field names must match Rust struct
+	fundingJ, _ := json.Marshal(map[string]interface{}{
+		"params_json":          string(cpJ),
+		"funding_proofs_json":  proofsJ,
+		"channel_secret_hex":   ss,
+		"keyset_info_json":     string(kiJ),
+		"sender_pubkey_hex":    alicePub,
+		"capacity":             cap,
+		"funding_token_amount": fta,
+		"mint_url":             mintUrl,
+		"created_at":           time.Now().Unix(),
 	})
-	host.SaveChannel(cid, string(storedJ), ss)
+	host.SaveChannelFunding(cid, string(fundingJ))
 
 	fmt.Printf("Full channel ID: %s\nChannel ready! Sending requests...\n", cid)
 	balance := uint64(0)

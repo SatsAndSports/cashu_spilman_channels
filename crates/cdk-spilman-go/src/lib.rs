@@ -9,7 +9,8 @@
 use cashu::nuts::SecretKey;
 use cdk_spilman::{
     self, BridgeError, BridgeErrorResponse, ChannelFunding, ChannelPolicy, ChannelState,
-    ClosingData, PaymentProof, SpilmanBridge, SpilmanClientBridge, SpilmanClientHost, SpilmanHost,
+    ClientChannelFunding, ClientChannelState, ClientPaymentState, ClosingData, PaymentProof,
+    SpilmanBridge, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
     SpilmanNetworking,
 };
 pub use libc::{c_char, c_int};
@@ -945,25 +946,37 @@ pub unsafe extern "C" fn spilman_mint_proofs_from_mint(
 // Client Bridge: SpilmanClientBridge via C callbacks
 // ============================================================================
 
+/// Callbacks for SpilmanClientHost trait (storage and crypto).
+///
+/// The Go host must implement these callbacks.
 #[repr(C)]
 pub struct SpilmanClientHostCallbacks {
     pub user_data: *mut libc::c_void,
-    pub call_mint_swap: extern "C" fn(
-        user_data: *mut libc::c_void,
-        mint_url: *const c_char,
-        swap_request_json: *const c_char,
-        response_out: *mut *mut c_char,
-    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
-    pub save_channel: extern "C" fn(
+    // Funding Data (immutable after creation)
+    pub save_channel_funding: extern "C" fn(
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
-        channel_json: *const c_char,
-        channel_secret_hex: *const c_char,
+        funding_json: *const c_char, // JSON-serialized ClientChannelFunding
     ),
-    pub get_channel:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON: {"channel_json":"...","channel_secret_hex":"..."}
+    pub get_channel_funding:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
+    // Payment State (mutable)
+    pub get_payment_state:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = no payments yet, otherwise JSON
+    pub record_payment: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        state_json: *const c_char, // JSON-serialized ClientPaymentState
+    ),
+    // Lifecycle
+    pub get_channel_state:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "open" or "closed"
+    pub mark_channel_closed: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
     pub list_channel_ids: extern "C" fn(user_data: *mut libc::c_void) -> *mut c_char, // JSON array string
     pub delete_channel: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
+    // Time
+    pub now_seconds: extern "C" fn(user_data: *mut libc::c_void) -> u64,
+    // Crypto
     pub sign_with_tweaked_key: extern "C" fn(
         user_data: *mut libc::c_void,
         signer_pubkey_hex: *const c_char,
@@ -977,6 +990,13 @@ pub struct SpilmanClientHostCallbacks {
         receiver_pubkey_hex: *const c_char,
         response_out: *mut *mut c_char,
     ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    // Networking
+    pub call_mint_swap: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        swap_request_json: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
 }
 
 struct CGoSpilmanClientHost {
@@ -988,54 +1008,78 @@ unsafe impl Send for CGoSpilmanClientHost {}
 unsafe impl Sync for CGoSpilmanClientHost {}
 
 impl SpilmanClientHost for CGoSpilmanClientHost {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        let mint_c = CString::new(mint_url).unwrap();
-        let req_c = CString::new(swap_request_json).unwrap();
-        let mut response_ptr: *mut c_char = ptr::null_mut();
+    // ========================================================================
+    // Funding Data (immutable after creation)
+    // ========================================================================
 
-        let ok = (self.callbacks.call_mint_swap)(
-            self.callbacks.user_data,
-            mint_c.as_ptr(),
-            req_c.as_ptr(),
-            &mut response_ptr,
-        );
-
-        unsafe {
-            let response = CString::from_raw(response_ptr).into_string().unwrap();
-            if ok != 0 {
-                Ok(response)
-            } else {
-                Err(response)
-            }
-        }
-    }
-
-    fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str) {
+    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
         let id_c = CString::new(channel_id).unwrap();
-        let json_c = CString::new(channel_json).unwrap();
-        let secret_c = CString::new(channel_secret_hex).unwrap();
-        (self.callbacks.save_channel)(
+        let funding_json =
+            serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
+        let funding_c = CString::new(funding_json).unwrap();
+        (self.callbacks.save_channel_funding)(
             self.callbacks.user_data,
             id_c.as_ptr(),
-            json_c.as_ptr(),
-            secret_c.as_ptr(),
+            funding_c.as_ptr(),
         );
     }
 
-    fn get_channel(&self, channel_id: &str) -> Option<cdk_spilman::ChannelData> {
+    fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
         let id_c = CString::new(channel_id).unwrap();
-        let ptr = (self.callbacks.get_channel)(self.callbacks.user_data, id_c.as_ptr());
+        let ptr = (self.callbacks.get_channel_funding)(self.callbacks.user_data, id_c.as_ptr());
         if ptr.is_null() {
             return None;
         }
         unsafe {
             let json_str = CString::from_raw(ptr).into_string().unwrap();
-            let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-            Some(cdk_spilman::ChannelData {
-                channel_json: v["channel_json"].as_str()?.to_string(),
-                channel_secret_hex: v["channel_secret_hex"].as_str()?.to_string(),
-            })
+            serde_json::from_str(&json_str).ok()
         }
+    }
+
+    // ========================================================================
+    // Payment State (mutable)
+    // ========================================================================
+
+    fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
+        let id_c = CString::new(channel_id).unwrap();
+        let ptr = (self.callbacks.get_payment_state)(self.callbacks.user_data, id_c.as_ptr());
+        if ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            let json_str = CString::from_raw(ptr).into_string().unwrap();
+            serde_json::from_str(&json_str).ok()
+        }
+    }
+
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+        let id_c = CString::new(channel_id).unwrap();
+        let state_json =
+            serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
+        let state_c = CString::new(state_json).unwrap();
+        (self.callbacks.record_payment)(self.callbacks.user_data, id_c.as_ptr(), state_c.as_ptr());
+    }
+
+    // ========================================================================
+    // Channel Lifecycle
+    // ========================================================================
+
+    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+        let id_c = CString::new(channel_id).unwrap();
+        let ptr = (self.callbacks.get_channel_state)(self.callbacks.user_data, id_c.as_ptr());
+        if ptr.is_null() {
+            return ClientChannelState::Open;
+        }
+        let state_str = unsafe { CString::from_raw(ptr).into_string().unwrap_or_default() };
+        match state_str.as_str() {
+            "closed" | "Closed" => ClientChannelState::Closed,
+            _ => ClientChannelState::Open,
+        }
+    }
+
+    fn mark_channel_closed(&self, channel_id: &str) {
+        let id_c = CString::new(channel_id).unwrap();
+        (self.callbacks.mark_channel_closed)(self.callbacks.user_data, id_c.as_ptr());
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -1053,6 +1097,18 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         let id_c = CString::new(channel_id).unwrap();
         (self.callbacks.delete_channel)(self.callbacks.user_data, id_c.as_ptr());
     }
+
+    // ========================================================================
+    // Time
+    // ========================================================================
+
+    fn now_seconds(&self) -> u64 {
+        (self.callbacks.now_seconds)(self.callbacks.user_data)
+    }
+
+    // ========================================================================
+    // Crypto (delegated to host)
+    // ========================================================================
 
     fn sign_with_tweaked_key(
         &self,
@@ -1110,16 +1166,85 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
     }
 }
 
+// Networking is in the same callbacks struct for convenience
+struct CGoSpilmanClientNetworking {
+    callbacks: SpilmanClientHostCallbacks,
+}
+
+unsafe impl Send for CGoSpilmanClientNetworking {}
+unsafe impl Sync for CGoSpilmanClientNetworking {}
+
+impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
+    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let req_c = CString::new(swap_request_json).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_swap)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            req_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
+}
+
 pub struct ClientBridgeInstance {
-    bridge: SpilmanClientBridge<CGoSpilmanClientHost>,
+    bridge: SpilmanClientBridge<CGoSpilmanClientHost, CGoSpilmanClientNetworking>,
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spilman_client_bridge_new(
     callbacks: SpilmanClientHostCallbacks,
 ) -> *mut ClientBridgeInstance {
-    let host = CGoSpilmanClientHost { callbacks };
-    let bridge = SpilmanClientBridge::new(host);
+    // We need to create two separate copies of the callbacks pointer for host and networking
+    // Since the callbacks struct contains the same user_data, both will work with the same Go object
+    let host_callbacks = SpilmanClientHostCallbacks {
+        user_data: callbacks.user_data,
+        save_channel_funding: callbacks.save_channel_funding,
+        get_channel_funding: callbacks.get_channel_funding,
+        get_payment_state: callbacks.get_payment_state,
+        record_payment: callbacks.record_payment,
+        get_channel_state: callbacks.get_channel_state,
+        mark_channel_closed: callbacks.mark_channel_closed,
+        list_channel_ids: callbacks.list_channel_ids,
+        delete_channel: callbacks.delete_channel,
+        now_seconds: callbacks.now_seconds,
+        sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
+        compute_channel_secret: callbacks.compute_channel_secret,
+        call_mint_swap: callbacks.call_mint_swap,
+    };
+    let networking_callbacks = SpilmanClientHostCallbacks {
+        user_data: callbacks.user_data,
+        save_channel_funding: callbacks.save_channel_funding,
+        get_channel_funding: callbacks.get_channel_funding,
+        get_payment_state: callbacks.get_payment_state,
+        record_payment: callbacks.record_payment,
+        get_channel_state: callbacks.get_channel_state,
+        mark_channel_closed: callbacks.mark_channel_closed,
+        list_channel_ids: callbacks.list_channel_ids,
+        delete_channel: callbacks.delete_channel,
+        now_seconds: callbacks.now_seconds,
+        sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
+        compute_channel_secret: callbacks.compute_channel_secret,
+        call_mint_swap: callbacks.call_mint_swap,
+    };
+    let host = CGoSpilmanClientHost {
+        callbacks: host_callbacks,
+    };
+    let networking = CGoSpilmanClientNetworking {
+        callbacks: networking_callbacks,
+    };
+    let bridge = SpilmanClientBridge::new(host, networking);
     Box::into_raw(Box::new(ClientBridgeInstance { bridge }))
 }
 
@@ -1162,8 +1287,9 @@ pub unsafe extern "C" fn spilman_client_bridge_open_channel_from_token(
     }
 }
 
+/// Create a payment for a channel (without funding data).
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_sign_balance_update(
+pub unsafe extern "C" fn spilman_client_bridge_create_payment(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
     balance: u64,
@@ -1171,8 +1297,30 @@ pub unsafe extern "C" fn spilman_client_bridge_sign_balance_update(
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
 
-    match instance.bridge.sign_balance_update(id, balance) {
-        Ok(json) => CResult::success(json),
+    match instance.bridge.create_payment(id, balance) {
+        Ok(payment) => {
+            let json = serde_json::to_string(&payment).unwrap();
+            CResult::success(json)
+        }
+        Err(e) => CResult::error(e),
+    }
+}
+
+/// Create a payment with funding data (for first payment).
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_create_payment_with_funding(
+    ptr: *mut ClientBridgeInstance,
+    channel_id: *const c_char,
+    balance: u64,
+) -> CResult {
+    let instance = &*ptr;
+    let id = CStr::from_ptr(channel_id).to_str().unwrap();
+
+    match instance.bridge.create_payment_with_funding(id, balance) {
+        Ok(payment) => {
+            let json = serde_json::to_string(&payment).unwrap();
+            CResult::success(json)
+        }
         Err(e) => CResult::error(e),
     }
 }
@@ -1223,6 +1371,17 @@ pub unsafe extern "C" fn spilman_client_bridge_list_channels(
     CResult::success(json)
 }
 
+/// Close a channel locally (marks it as closed).
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_close_channel(
+    ptr: *mut ClientBridgeInstance,
+    channel_id: *const c_char,
+) {
+    let instance = &*ptr;
+    let id = CStr::from_ptr(channel_id).to_str().unwrap();
+    instance.bridge.close_channel(id);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn spilman_client_bridge_create_cooperative_close_request(
     ptr: *mut ClientBridgeInstance,
@@ -1236,7 +1395,10 @@ pub unsafe extern "C" fn spilman_client_bridge_create_cooperative_close_request(
         .bridge
         .create_cooperative_close_request(id, final_balance)
     {
-        Ok(json) => CResult::success(json),
+        Ok(payment) => {
+            let json = serde_json::to_string(&payment).unwrap();
+            CResult::success(json)
+        }
         Err(e) => CResult::error(e),
     }
 }
@@ -1255,14 +1417,15 @@ pub unsafe extern "C" fn spilman_client_bridge_process_cooperative_close_respons
     }
 }
 
+/// Delete a channel from storage.
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_remove_channel(
+pub unsafe extern "C" fn spilman_client_bridge_delete_channel(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
 ) {
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
-    instance.bridge.remove_channel(id);
+    instance.bridge.delete_channel(id);
 }
 
 /// Utility function for signing with a tweaked key.

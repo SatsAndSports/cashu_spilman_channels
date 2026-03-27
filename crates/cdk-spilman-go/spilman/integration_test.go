@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,17 +135,21 @@ func TestFundingOutputsAndChannelId(t *testing.T) {
 
 // testClientHost implements SpilmanClientHost with HTTP swap and in-memory storage.
 type testClientHost struct {
-	mintURL  string
-	mu       sync.Mutex
-	channels map[string]string
-	keys     map[string]string // pubkey_hex -> secret_hex
+	mintURL      string
+	mu           sync.Mutex
+	funding      map[string]string // channelID -> fundingJSON
+	paymentState map[string]string // channelID -> paymentStateJSON
+	channelState map[string]string // channelID -> "open" or "closed"
+	keys         map[string]string // pubkey_hex -> secret_hex
 }
 
 func newTestClientHost(mintURL string) *testClientHost {
 	return &testClientHost{
-		mintURL:  mintURL,
-		channels: make(map[string]string),
-		keys:     make(map[string]string),
+		mintURL:      mintURL,
+		funding:      make(map[string]string),
+		paymentState: make(map[string]string),
+		channelState: make(map[string]string),
+		keys:         make(map[string]string),
 	}
 }
 
@@ -178,35 +181,58 @@ func (h *testClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, 
 	return string(body), nil
 }
 
-func (h *testClientHost) SaveChannel(channelID, channelJSON, channelSecretHex string) {
+// Funding Data
+
+func (h *testClientHost) SaveChannelFunding(channelID, fundingJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.channels[channelID] = channelJSON + "\x00" + channelSecretHex // store both, separated by null
+	h.funding[channelID] = fundingJSON
+	h.channelState[channelID] = "open"
 }
 
-func (h *testClientHost) GetChannel(channelID string) *ChannelData {
+func (h *testClientHost) GetChannelFunding(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	v, ok := h.channels[channelID]
-	if !ok {
-		return nil
+	return h.funding[channelID]
+}
+
+// Payment State
+
+func (h *testClientHost) GetPaymentState(channelID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.paymentState[channelID]
+}
+
+func (h *testClientHost) RecordPayment(channelID, stateJSON string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.paymentState[channelID] = stateJSON
+}
+
+// Lifecycle
+
+func (h *testClientHost) GetChannelState(channelID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state := h.channelState[channelID]
+	if state == "" {
+		return "open"
 	}
-	// Split on null byte to recover channel_json and channel_secret_hex
-	parts := strings.SplitN(v, "\x00", 2)
-	if len(parts) != 2 {
-		return nil
-	}
-	return &ChannelData{
-		ChannelJSON:      parts[0],
-		ChannelSecretHex: parts[1],
-	}
+	return state
+}
+
+func (h *testClientHost) MarkChannelClosed(channelID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.channelState[channelID] = "closed"
 }
 
 func (h *testClientHost) ListChannelIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ids := make([]string, 0, len(h.channels))
-	for id := range h.channels {
+	ids := make([]string, 0, len(h.funding))
+	for id := range h.funding {
 		ids = append(ids, id)
 	}
 	return ids
@@ -215,7 +241,15 @@ func (h *testClientHost) ListChannelIDs() []string {
 func (h *testClientHost) DeleteChannel(channelID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.channels, channelID)
+	delete(h.funding, channelID)
+	delete(h.paymentState, channelID)
+	delete(h.channelState, channelID)
+}
+
+// Time
+
+func (h *testClientHost) NowSeconds() uint64 {
+	return uint64(time.Now().Unix())
 }
 
 func (h *testClientHost) SignWithTweakedKey(signerPubkeyHex, messageHex, tweakScalarHex string) (string, error) {
@@ -488,27 +522,27 @@ func TestClientBridge(t *testing.T) {
 	t.Log("Channel stored and retrievable")
 
 	// ================================================================
-	// Step 3: Sign balance updates
+	// Step 3: Create payments
 	// ================================================================
 
-	updateJSON, err := clientBridge.SignBalanceUpdate(openResult.ChannelID, 10)
+	paymentJSON, err := clientBridge.CreatePayment(openResult.ChannelID, 10)
 	if err != nil {
-		t.Fatalf("SignBalanceUpdate failed: %v", err)
+		t.Fatalf("CreatePayment failed: %v", err)
 	}
 
-	var update map[string]interface{}
-	json.Unmarshal([]byte(updateJSON), &update)
+	var payment map[string]interface{}
+	json.Unmarshal([]byte(paymentJSON), &payment)
 
-	if update["channel_id"].(string) != openResult.ChannelID {
-		t.Fatal("Balance update channel_id mismatch")
+	if payment["channel_id"].(string) != openResult.ChannelID {
+		t.Fatal("Payment channel_id mismatch")
 	}
-	if uint64(update["amount"].(float64)) != 10 {
-		t.Fatal("Balance update amount mismatch")
+	if uint64(payment["balance"].(float64)) != 10 {
+		t.Fatal("Payment balance mismatch")
 	}
-	if _, ok := update["signature"]; !ok {
-		t.Fatal("Balance update missing signature")
+	if _, ok := payment["signature"]; !ok {
+		t.Fatal("Payment missing signature")
 	}
-	t.Log("SignBalanceUpdate returned valid JSON")
+	t.Log("CreatePayment returned valid JSON")
 
 	// ================================================================
 	// Step 4: Build payment headers
@@ -613,10 +647,10 @@ func TestClientBridge(t *testing.T) {
 	t.Logf("Server accepted second payment (balance=%d)", paymentResult2.Balance)
 
 	// ================================================================
-	// Step 6: Remove channel
+	// Step 6: Delete channel
 	// ================================================================
 
-	clientBridge.RemoveChannel(openResult.ChannelID)
+	clientBridge.DeleteChannel(openResult.ChannelID)
 
 	if clientBridge.GetChannelInfo(openResult.ChannelID) != nil {
 		t.Fatal("Channel should be removed")

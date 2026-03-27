@@ -1,41 +1,64 @@
 package spilman
 
-// ChannelData holds channel state returned by GetChannel.
-// Separates the opaque channel JSON from the sensitive channel secret.
-type ChannelData struct {
-	ChannelJSON      string
-	ChannelSecretHex string
-}
-
 // SpilmanClientHost is the interface that client applications must implement
-// to provide mint communication and channel storage for the client bridge.
+// to provide storage, time, crypto, and networking for the client bridge.
 //
 // This is the client-side counterpart of the server-side SpilmanHost interface.
-// It has only 5 methods compared to the server's 17, because clients don't need
-// pricing policy, payment validation, or close orchestration.
+// Funding data and payment state are stored separately, with payment state
+// serialized as JSON.
 type SpilmanClientHost interface {
-	// CallMintSwap executes a swap with the mint.
-	// Posts swapRequestJSON to {mintURL}/v1/swap and returns the response body.
-	// Returns the response JSON string on success, or an error.
-	CallMintSwap(mintURL, swapRequestJSON string) (string, error)
+	// ========================================================================
+	// Funding Data (immutable after creation)
+	// ========================================================================
 
-	// SaveChannel persists channel state.
-	// The channelJSON is an opaque JSON blob managed by the bridge.
-	// The channelSecretHex is the hashed ECDH secret (32 bytes, hex),
-	// passed separately so the host can store it with appropriate protection.
-	SaveChannel(channelID, channelJSON, channelSecretHex string)
+	// SaveChannelFunding persists immutable channel funding data.
+	// fundingJSON is a JSON-serialized ClientChannelFunding struct.
+	SaveChannelFunding(channelID, fundingJSON string)
 
-	// GetChannel retrieves channel state by channel ID.
-	// Returns nil if the channel is not found.
-	// The returned ChannelData contains both the opaque channel JSON
-	// and the channel secret, matching what was passed to SaveChannel.
-	GetChannel(channelID string) *ChannelData
+	// GetChannelFunding retrieves channel funding data.
+	// Returns empty string if the channel doesn't exist.
+	GetChannelFunding(channelID string) string
+
+	// ========================================================================
+	// Payment State (mutable)
+	// ========================================================================
+
+	// GetPaymentState retrieves the current payment state.
+	// Returns empty string if no payments have been made.
+	// The return value is a JSON-serialized ClientPaymentState.
+	GetPaymentState(channelID string) string
+
+	// RecordPayment stores a new payment state.
+	// stateJSON is a JSON-serialized ClientPaymentState.
+	RecordPayment(channelID, stateJSON string)
+
+	// ========================================================================
+	// Channel Lifecycle
+	// ========================================================================
+
+	// GetChannelState returns the lifecycle state of a channel.
+	// Returns "open" or "closed".
+	GetChannelState(channelID string) string
+
+	// MarkChannelClosed marks a channel as closed.
+	MarkChannelClosed(channelID string)
 
 	// ListChannelIDs returns all stored channel IDs.
 	ListChannelIDs() []string
 
-	// DeleteChannel removes a channel from storage.
+	// DeleteChannel removes a channel and all its data.
 	DeleteChannel(channelID string)
+
+	// ========================================================================
+	// Time
+	// ========================================================================
+
+	// NowSeconds returns the current Unix timestamp in seconds.
+	NowSeconds() uint64
+
+	// ========================================================================
+	// Crypto (delegated to host)
+	// ========================================================================
 
 	// SignWithTweakedKey signs a message with a tweaked key (BIP-340 Schnorr).
 	//
@@ -65,6 +88,15 @@ type SpilmanClientHost interface {
 	//
 	// Returns the hashed channel secret as a 64-char hex string (32 bytes).
 	ComputeChannelSecret(senderPubkeyHex, receiverPubkeyHex string) (string, error)
+
+	// ========================================================================
+	// Networking
+	// ========================================================================
+
+	// CallMintSwap executes a swap with the mint.
+	// Posts swapRequestJSON to {mintURL}/v1/swap and returns the response body.
+	// Returns the response JSON string on success, or an error.
+	CallMintSwap(mintURL, swapRequestJSON string) (string, error)
 }
 
 // OpenChannelResult contains the result of opening a new channel.
@@ -82,5 +114,7 @@ type ClientChannelInfo struct {
 	Capacity           uint64 `json:"capacity"`
 	FundingTokenAmount uint64 `json:"funding_token_amount"`
 	MintURL            string `json:"mint_url"`
-	ParamsJSON         string `json:"params_json"`
+	CurrentBalance     uint64 `json:"current_balance"`
+	PaymentCount       uint64 `json:"payment_count"`
+	State              string `json:"state"` // "Open" or "Closed"
 }

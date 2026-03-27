@@ -2,6 +2,7 @@
 members = [
     "crates/cdk-spilman-test-mint",
     "crates/cdk-spilman",
+    "crates/cdk-spilman-client-integration-tests",
     "crates/cdk-spilman-go",
     "crates/cdk-spilman-interop-tests",
     "crates/cdk-spilman-python",

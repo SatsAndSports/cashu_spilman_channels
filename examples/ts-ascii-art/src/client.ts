@@ -15,8 +15,12 @@ import * as secp from "@noble/secp256k1";
 const SERVER_URL = process.env.SERVER_URL || "http://localhost:5001";
 
 class DemoClientHost {
-  channels: Record<string, any> = {};
+  funding: Record<string, string> = {};
+  paymentState: Record<string, string> = {};
+  channelState: Record<string, string> = {};
   constructor(private aliceSecret: string) {}
+
+  // Networking
   async callMintSwap(url: string, req: string) {
     const r = await fetch(`${url}/v1/swap`, { method: "POST", body: req, headers: { "Content-Type": "application/json" } });
     const text = await r.text();
@@ -25,10 +29,32 @@ class DemoClientHost {
     }
     return text;
   }
-  saveChannel(id: string, json: string, sec: string) { this.channels[id] = { json, sec }; }
-  getChannel(id: string) { const c = this.channels[id]; return c ? [c.json, c.sec] : null; }
-  listChannelIds() { return Object.keys(this.channels); }
-  deleteChannel(id: string) { delete this.channels[id]; }
+
+  // Funding Data
+  saveChannelFunding(id: string, fundingJson: string) {
+    this.funding[id] = fundingJson;
+    this.channelState[id] = "open";
+  }
+  getChannelFunding(id: string): string | null { return this.funding[id] || null; }
+
+  // Payment State
+  getPaymentState(id: string): string | null { return this.paymentState[id] || null; }
+  recordPayment(id: string, stateJson: string) { this.paymentState[id] = stateJson; }
+
+  // Lifecycle
+  getChannelState(id: string) { return this.channelState[id] || "open"; }
+  markChannelClosed(id: string) { this.channelState[id] = "closed"; }
+  listChannelIds() { return Object.keys(this.funding); }
+  deleteChannel(id: string) {
+    delete this.funding[id];
+    delete this.paymentState[id];
+    delete this.channelState[id];
+  }
+
+  // Time
+  nowSeconds() { return BigInt(Math.floor(Date.now() / 1000)); }
+
+  // Crypto
   signWithTweakedKey(pk: string, msg: string, tw: string) {
     return sign_with_tweaked_key(this.aliceSecret, msg, tw);
   }
@@ -66,11 +92,18 @@ export async function runClient(args: string[]) {
   const sigs = await demoMintFundingToken(mintUrl, funding.funding_token_nominal, funding.blinded_messages);
   const proofs = construct_proofs(JSON.stringify(sigs), JSON.stringify(funding.secrets_with_blinding), JSON.stringify(ki));
 
-  host.saveChannel(cid, JSON.stringify({
-    channel_id: cid, params_json: JSON.stringify(cp), keyset_info_json: JSON.stringify(ki),
-    funding_proofs_json: proofs, capacity: cap, funding_token_amount: Number(fta),
-    mint_url: mintUrl, sender_pubkey_hex: alicePub,
-  }), ss);
+  // ClientChannelFunding structure - field names must match Rust struct
+  host.saveChannelFunding(cid, JSON.stringify({
+    params_json: JSON.stringify(cp),
+    funding_proofs_json: proofs,
+    channel_secret_hex: ss,
+    keyset_info_json: JSON.stringify(ki),
+    sender_pubkey_hex: alicePub,
+    capacity: cap,
+    funding_token_amount: Number(fta),
+    mint_url: mintUrl,
+    created_at: Math.floor(Date.now() / 1000),
+  }));
 
   console.log(`Full channel ID: ${cid}\nChannel ready! Sending requests...`);
   let balance = 0;

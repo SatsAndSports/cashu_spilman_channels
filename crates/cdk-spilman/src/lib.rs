@@ -48,8 +48,8 @@ pub use bridge::{
     SpilmanNetworking, UnblindResult,
 };
 pub use client_bridge::{
-    base64_decode, ClientChannelInfo, OpenChannelResult, SpilmanClientBridge, SpilmanClientHost,
-    SpilmanClientNetworking,
+    base64_decode, ClientChannelInfo, OpenChannelResult, SpilmanClientAsyncNetworking,
+    SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
 };
 pub use client_storage::{
     ClientChannelFunding, ClientChannelState, ClientPaymentState, ClientStorage,

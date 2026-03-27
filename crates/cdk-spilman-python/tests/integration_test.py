@@ -210,12 +210,18 @@ class MockClientHost:
 
     def __init__(self, mint_url: str):
         self.mint_url = mint_url
-        self.channels: dict[str, tuple[str, str]] = {}  # channel_id -> (channel_json, channel_secret_hex)
+        self.funding: dict[str, str] = {}  # channel_id -> funding_json
+        self.payment_state: dict[str, str] = {}  # channel_id -> payment_state_json
+        self.channel_state: dict[str, str] = {}  # channel_id -> "open" or "closed"
         self.keys: dict[str, str] = {}  # pubkey_hex -> secret_hex
 
     def register_key(self, secret_hex: str, pubkey_hex: str):
         """Store a keypair so the host can sign on behalf of this key."""
         self.keys[pubkey_hex] = secret_hex
+
+    # ========================================================================
+    # Networking
+    # ========================================================================
 
     def call_mint_swap(self, mint_url: str, swap_request_json: str) -> str:
         resp = requests.post(
@@ -227,17 +233,55 @@ class MockClientHost:
             raise RuntimeError(resp.text or f"swap failed with status {resp.status_code}")
         return resp.text
 
-    def save_channel(self, channel_id: str, channel_json: str, channel_secret_hex: str):
-        self.channels[channel_id] = (channel_json, channel_secret_hex)
+    # ========================================================================
+    # Funding Data (immutable after creation)
+    # ========================================================================
 
-    def get_channel(self, channel_id: str) -> tuple[str, str] | None:
-        return self.channels.get(channel_id)
+    def save_channel_funding(self, channel_id: str, funding_json: str):
+        self.funding[channel_id] = funding_json
+        self.channel_state[channel_id] = "open"
+
+    def get_channel_funding(self, channel_id: str) -> str | None:
+        return self.funding.get(channel_id)
+
+    # ========================================================================
+    # Payment State (mutable)
+    # ========================================================================
+
+    def get_payment_state(self, channel_id: str) -> str | None:
+        return self.payment_state.get(channel_id)
+
+    def record_payment(self, channel_id: str, state_json: str):
+        self.payment_state[channel_id] = state_json
+
+    # ========================================================================
+    # Channel Lifecycle
+    # ========================================================================
+
+    def get_channel_state(self, channel_id: str) -> str:
+        return self.channel_state.get(channel_id, "open")
+
+    def mark_channel_closed(self, channel_id: str):
+        self.channel_state[channel_id] = "closed"
 
     def list_channel_ids(self) -> list[str]:
-        return list(self.channels.keys())
+        return list(self.funding.keys())
 
     def delete_channel(self, channel_id: str):
-        self.channels.pop(channel_id, None)
+        self.funding.pop(channel_id, None)
+        self.payment_state.pop(channel_id, None)
+        self.channel_state.pop(channel_id, None)
+
+    # ========================================================================
+    # Time
+    # ========================================================================
+
+    def now_seconds(self) -> int:
+        return int(time.time())
+
+    # ========================================================================
+    # Crypto
+    # ========================================================================
 
     def sign_with_tweaked_key(self, signer_pubkey_hex: str, message_hex: str, tweak_scalar_hex: str) -> str:
         secret_hex = self.keys.get(signer_pubkey_hex)
@@ -434,16 +478,16 @@ class TestClientBridge:
         print("Channel stored and retrievable")
 
         # ================================================================
-        # Step 3: Sign balance updates
+        # Step 3: Create payments
         # ================================================================
 
-        update_json = client_bridge.sign_balance_update(result.channel_id, 10)
-        update = json.loads(update_json)
+        payment_json = client_bridge.create_payment(result.channel_id, 10)
+        payment = json.loads(payment_json)
 
-        assert update["channel_id"] == result.channel_id, "Balance update channel_id mismatch"
-        assert update["amount"] == 10, "Balance update amount mismatch"
-        assert "signature" in update, "Balance update missing signature"
-        print("sign_balance_update returned valid JSON")
+        assert payment["channel_id"] == result.channel_id, "Payment channel_id mismatch"
+        assert payment["balance"] == 10, "Payment balance mismatch"
+        assert "signature" in payment, "Payment missing signature"
+        print("create_payment returned valid JSON")
 
         # ================================================================
         # Step 4: Build payment headers
@@ -498,14 +542,14 @@ class TestClientBridge:
         print(f"Server accepted second payment (balance={payment_result2.balance})")
 
         # ================================================================
-        # Step 6: Remove channel
+        # Step 6: Delete channel
         # ================================================================
 
-        client_bridge.remove_channel(result.channel_id)
+        client_bridge.delete_channel(result.channel_id)
 
-        assert client_bridge.get_channel_info(result.channel_id) is None, "Channel should be removed"
+        assert client_bridge.get_channel_info(result.channel_id) is None, "Channel should be deleted"
         assert len(client_bridge.list_channels()) == 0, "Channel list should be empty"
-        print("Channel removed from storage")
+        print("Channel deleted from storage")
 
     def test_open_channel_preserves_structured_mint_error(self):
         mint_url = get_mint_url()

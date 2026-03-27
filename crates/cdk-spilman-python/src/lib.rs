@@ -14,9 +14,10 @@ use std::str::FromStr;
 
 use cashu::nuts::{Id, PublicKey, SecretKey};
 use spilman_core::{
-    self, BridgeError, BridgeErrorResponse, ChannelPolicy, ChannelState, ClosingData,
-    SpilmanBridge as RustSpilmanBridge, SpilmanClientBridge as RustSpilmanClientBridge,
-    SpilmanClientHost, SpilmanHost,
+    self, BridgeError, BridgeErrorResponse, ChannelPolicy, ChannelState, ClientChannelFunding,
+    ClientChannelState, ClientPaymentState, ClosingData, SpilmanBridge as RustSpilmanBridge,
+    SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+    SpilmanHost,
 };
 
 // ============================================================================
@@ -1073,20 +1074,44 @@ pub struct ClientChannelInfo {
     pub capacity: u64,
     pub funding_token_amount: u64,
     pub mint_url: String,
-    pub params_json: String,
+    pub current_balance: u64,
+    pub payment_count: u64,
+    pub state: String,
 }
 
 /// Wrapper that delegates SpilmanClientHost trait calls to a Python object.
 ///
 /// The Python object must implement these methods:
-/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Raises on error
-/// - save_channel(channel_id: str, channel_json: str, channel_secret_hex: str)
-/// - get_channel(channel_id: str) -> Optional[tuple[str, str]]  # (channel_json, channel_secret_hex)
+///
+/// Storage (immutable funding data):
+/// - save_channel_funding(channel_id: str, funding_json: str)
+/// - get_channel_funding(channel_id: str) -> Optional[str]  # Returns funding JSON or None
+///
+/// Storage (mutable payment state):
+/// - get_payment_state(channel_id: str) -> Optional[str]  # Returns payment state JSON or None
+/// - record_payment(channel_id: str, state_json: str)
+///
+/// Lifecycle:
+/// - get_channel_state(channel_id: str) -> str  # Returns "open" or "closed"
+/// - mark_channel_closed(channel_id: str)
 /// - list_channel_ids() -> List[str]
 /// - delete_channel(channel_id: str)
+///
+/// Time:
+/// - now_seconds() -> int
+///
+/// Crypto:
 /// - sign_with_tweaked_key(signer_pubkey_hex: str, message_hex: str, tweak_scalar_hex: str) -> str
 /// - compute_channel_secret(sender_pubkey_hex: str, receiver_pubkey_hex: str) -> str
 struct PySpilmanClientHost {
+    py_host: PyObject,
+}
+
+/// Wrapper that delegates SpilmanClientNetworking trait calls to a Python object.
+///
+/// The Python object must implement:
+/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Raises on error
+struct PySpilmanClientNetworking {
     py_host: PyObject,
 }
 
@@ -1098,45 +1123,94 @@ fn python_error_message(py: Python<'_>, err: PyErr) -> String {
 }
 
 impl SpilmanClientHost for PySpilmanClientHost {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        Python::with_gil(|py| {
-            match self
-                .py_host
-                .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
-            {
-                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
-                Err(e) => Err(python_error_message(py, e)),
-            }
-        })
-    }
+    // ========================================================================
+    // Funding Data (immutable after creation)
+    // ========================================================================
 
-    fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str) {
+    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
         Python::with_gil(|py| {
-            let _ = self.py_host.call_method1(
-                py,
-                "save_channel",
-                (channel_id, channel_json, channel_secret_hex),
-            );
+            let funding_json =
+                serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
+            let _ =
+                self.py_host
+                    .call_method1(py, "save_channel_funding", (channel_id, funding_json));
         });
     }
 
-    fn get_channel(&self, channel_id: &str) -> Option<spilman_core::ChannelData> {
+    fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
         Python::with_gil(|py| {
             let result = self
                 .py_host
-                .call_method1(py, "get_channel", (channel_id,))
+                .call_method1(py, "get_channel_funding", (channel_id,))
                 .ok()?;
 
             if result.is_none(py) {
-                None
-            } else {
-                let tuple = result.extract::<(String, String)>(py).ok()?;
-                Some(spilman_core::ChannelData {
-                    channel_json: tuple.0,
-                    channel_secret_hex: tuple.1,
-                })
+                return None;
+            }
+
+            let json_str = result.extract::<String>(py).ok()?;
+            serde_json::from_str(&json_str).ok()
+        })
+    }
+
+    // ========================================================================
+    // Payment State (mutable)
+    // ========================================================================
+
+    fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
+        Python::with_gil(|py| {
+            let result = self
+                .py_host
+                .call_method1(py, "get_payment_state", (channel_id,))
+                .ok()?;
+
+            if result.is_none(py) {
+                return None;
+            }
+
+            let json_str = result.extract::<String>(py).ok()?;
+            serde_json::from_str(&json_str).ok()
+        })
+    }
+
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+        Python::with_gil(|py| {
+            let state_json =
+                serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
+            let _ = self
+                .py_host
+                .call_method1(py, "record_payment", (channel_id, state_json));
+        });
+    }
+
+    // ========================================================================
+    // Channel Lifecycle
+    // ========================================================================
+
+    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "get_channel_state", (channel_id,))
+            {
+                Ok(result) => match result.extract::<String>(py) {
+                    Ok(state_str) => match state_str.as_str() {
+                        "closed" | "Closed" => ClientChannelState::Closed,
+                        _ => ClientChannelState::Open,
+                    },
+                    Err(_) => ClientChannelState::Open,
+                },
+                Err(_) => ClientChannelState::Open,
             }
         })
+    }
+
+    fn mark_channel_closed(&self, channel_id: &str) {
+        Python::with_gil(|py| {
+            let _ = self
+                .py_host
+                .call_method1(py, "mark_channel_closed", (channel_id,));
+        });
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -1155,6 +1229,23 @@ impl SpilmanClientHost for PySpilmanClientHost {
                 .call_method1(py, "delete_channel", (channel_id,));
         });
     }
+
+    // ========================================================================
+    // Time
+    // ========================================================================
+
+    fn now_seconds(&self) -> u64 {
+        Python::with_gil(|py| {
+            self.py_host
+                .call_method0(py, "now_seconds")
+                .and_then(|r| r.extract::<u64>(py))
+                .unwrap_or(0)
+        })
+    }
+
+    // ========================================================================
+    // Crypto (delegated to host)
+    // ========================================================================
 
     fn sign_with_tweaked_key(
         &self,
@@ -1192,6 +1283,20 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 }
 
+impl SpilmanClientNetworking for PySpilmanClientNetworking {
+    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
+            {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
+}
+
 /// Client-side Spilman channel bridge.
 ///
 /// This is the client-side counterpart of SpilmanBridge. It orchestrates
@@ -1202,7 +1307,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
 /// operations requiring the key are delegated to the host.
 #[pyclass]
 struct ClientBridge {
-    inner: RustSpilmanClientBridge<PySpilmanClientHost>,
+    inner: RustSpilmanClientBridge<PySpilmanClientHost, PySpilmanClientNetworking>,
 }
 
 #[pymethods]
@@ -1215,13 +1320,19 @@ impl ClientBridge {
     ///
     /// Args:
     ///     host: Python object implementing SpilmanClientHost methods
+    ///           (also must implement call_mint_swap for networking)
     #[new]
     #[pyo3(signature = (host))]
     fn new(host: PyObject) -> Self {
-        let py_host = PySpilmanClientHost { py_host: host };
-        let inner = RustSpilmanClientBridge::new(py_host);
+        Python::with_gil(|py| {
+            let py_host = PySpilmanClientHost {
+                py_host: host.clone_ref(py),
+            };
+            let py_networking = PySpilmanClientNetworking { py_host: host };
+            let inner = RustSpilmanClientBridge::new(py_host, py_networking);
 
-        ClientBridge { inner }
+            ClientBridge { inner }
+        })
     }
 
     /// Open a new channel from a Cashu token.
@@ -1232,7 +1343,7 @@ impl ClientBridge {
     /// 3. Create a funding swap request (deterministic 2-of-2 locked outputs)
     /// 4. Submit the swap to the mint via host.call_mint_swap()
     /// 5. Unblind signatures and verify DLEQ proofs
-    /// 6. Save the channel via host.save_channel()
+    /// 6. Save the channel via host.save_channel_funding()
     ///
     /// Args:
     ///     token_string: Cashu token (cashuA... or cashuB...)
@@ -1275,18 +1386,41 @@ impl ClientBridge {
         })
     }
 
-    /// Create a signed balance update for a channel.
+    /// Create a payment for a channel (without funding data).
+    ///
+    /// Returns a JSON string with channel_id, balance, signature.
+    /// Use this for subsequent payments after the channel is registered.
     ///
     /// Args:
     ///     channel_id: The channel ID
     ///     balance: New cumulative balance (must increase monotonically)
     ///
     /// Returns:
-    ///     JSON string with channel_id, amount, and signature
+    ///     JSON string with the Payment struct
     #[pyo3(signature = (channel_id, balance))]
-    fn sign_balance_update(&self, channel_id: &str, balance: u64) -> PyResult<String> {
+    fn create_payment(&self, channel_id: &str, balance: u64) -> PyResult<String> {
         self.inner
-            .sign_balance_update(channel_id, balance)
+            .create_payment(channel_id, balance)
+            .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
+            .map_err(PyRuntimeError::new_err)
+    }
+
+    /// Create a payment with funding data (for first payment).
+    ///
+    /// Returns a JSON string with channel_id, balance, signature, params, and funding_proofs.
+    /// Use this for the first payment when registering a channel with the server.
+    ///
+    /// Args:
+    ///     channel_id: The channel ID
+    ///     balance: New cumulative balance
+    ///
+    /// Returns:
+    ///     JSON string with the Payment struct including funding data
+    #[pyo3(signature = (channel_id, balance))]
+    fn create_payment_with_funding(&self, channel_id: &str, balance: u64) -> PyResult<String> {
+        self.inner
+            .create_payment_with_funding(channel_id, balance)
+            .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
             .map_err(PyRuntimeError::new_err)
     }
 
@@ -1320,7 +1454,7 @@ impl ClientBridge {
     ///     final_balance: Final cumulative balance
     ///
     /// Returns:
-    ///     JSON string with balance and signature
+    ///     JSON string with balance and signature (Payment struct)
     #[pyo3(signature = (channel_id, final_balance))]
     fn create_cooperative_close_request(
         &self,
@@ -1329,6 +1463,7 @@ impl ClientBridge {
     ) -> PyResult<String> {
         self.inner
             .create_cooperative_close_request(channel_id, final_balance)
+            .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
             .map_err(PyRuntimeError::new_err)
     }
 
@@ -1343,6 +1478,18 @@ impl ClientBridge {
             .map_err(PyRuntimeError::new_err)
     }
 
+    /// Close a channel locally.
+    ///
+    /// Marks the channel as closed so no more payments can be made.
+    /// Does not communicate with the server.
+    ///
+    /// Args:
+    ///     channel_id: The channel ID
+    #[pyo3(signature = (channel_id))]
+    fn close_channel(&self, channel_id: &str) {
+        self.inner.close_channel(channel_id);
+    }
+
     /// Get information about a stored channel.
     ///
     /// Args:
@@ -1352,15 +1499,21 @@ impl ClientBridge {
     ///     ClientChannelInfo or None if not found
     #[pyo3(signature = (channel_id))]
     fn get_channel_info(&self, channel_id: &str) -> Option<ClientChannelInfo> {
-        self.inner
-            .get_channel_info(channel_id)
-            .map(|info| ClientChannelInfo {
+        self.inner.get_channel_info(channel_id).map(|info| {
+            let state_str = match info.state {
+                ClientChannelState::Open => "open",
+                ClientChannelState::Closed => "closed",
+            };
+            ClientChannelInfo {
                 channel_id: info.channel_id,
                 capacity: info.capacity,
                 funding_token_amount: info.funding_token_amount,
                 mint_url: info.mint_url,
-                params_json: info.params_json,
-            })
+                current_balance: info.current_balance,
+                payment_count: info.payment_count,
+                state: state_str.to_string(),
+            }
+        })
     }
 
     /// List all stored channel IDs.
@@ -1368,10 +1521,12 @@ impl ClientBridge {
         self.inner.list_channels()
     }
 
-    /// Remove a channel from storage.
+    /// Delete a channel from storage.
+    ///
+    /// Removes all data associated with the channel.
     #[pyo3(signature = (channel_id))]
-    fn remove_channel(&self, channel_id: &str) {
-        self.inner.remove_channel(channel_id);
+    fn delete_channel(&self, channel_id: &str) {
+        self.inner.delete_channel(channel_id);
     }
 }
 

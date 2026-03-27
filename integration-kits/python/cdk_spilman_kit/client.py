@@ -1,14 +1,21 @@
 import json
 import base64
+import time
 import requests
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from cdk_spilman import ClientBridge as FfiClientBridge
 
 class BaseSpilmanClientHost:
     """Basic implementation of client host callbacks."""
     def __init__(self, alice_secret: str):
         self.alice_secret = alice_secret
-        self.channels = {} # channel_id -> {"json": str, "secret": str}
+        self.funding: Dict[str, str] = {}  # channel_id -> funding_json
+        self.payment_state: Dict[str, str] = {}  # channel_id -> payment_state_json
+        self.channel_state: Dict[str, str] = {}  # channel_id -> "open" or "closed"
+
+    # ========================================================================
+    # Networking
+    # ========================================================================
 
     def call_mint_swap(self, mint_url: str, swap_request_json: str) -> str:
         resp = requests.post(f"{mint_url}/v1/swap", json=json.loads(swap_request_json))
@@ -16,20 +23,55 @@ class BaseSpilmanClientHost:
             raise RuntimeError(resp.text or f"Mint rejected swap with status {resp.status_code}")
         return resp.text
 
-    def save_channel(self, channel_id: str, channel_json: str, channel_secret_hex: str):
-        self.channels[channel_id] = {"json": channel_json, "secret": channel_secret_hex}
+    # ========================================================================
+    # Funding Data (immutable after creation)
+    # ========================================================================
 
-    def get_channel(self, channel_id: str) -> Optional[Tuple[str, str]]:
-        data = self.channels.get(channel_id)
-        if not data: return None
-        return (data["json"], data["secret"])
+    def save_channel_funding(self, channel_id: str, funding_json: str):
+        self.funding[channel_id] = funding_json
+        self.channel_state[channel_id] = "open"
+
+    def get_channel_funding(self, channel_id: str) -> Optional[str]:
+        return self.funding.get(channel_id)
+
+    # ========================================================================
+    # Payment State (mutable)
+    # ========================================================================
+
+    def get_payment_state(self, channel_id: str) -> Optional[str]:
+        return self.payment_state.get(channel_id)
+
+    def record_payment(self, channel_id: str, state_json: str):
+        self.payment_state[channel_id] = state_json
+
+    # ========================================================================
+    # Channel Lifecycle
+    # ========================================================================
+
+    def get_channel_state(self, channel_id: str) -> str:
+        return self.channel_state.get(channel_id, "open")
+
+    def mark_channel_closed(self, channel_id: str):
+        self.channel_state[channel_id] = "closed"
 
     def list_channel_ids(self) -> List[str]:
-        return list(self.channels.keys())
+        return list(self.funding.keys())
 
     def delete_channel(self, channel_id: str):
-        if channel_id in self.channels:
-            del self.channels[channel_id]
+        self.funding.pop(channel_id, None)
+        self.payment_state.pop(channel_id, None)
+        self.channel_state.pop(channel_id, None)
+
+    # ========================================================================
+    # Time
+    # ========================================================================
+
+    def now_seconds(self) -> int:
+        return int(time.time())
+
+    # ========================================================================
+    # Crypto
+    # ========================================================================
 
     def sign_with_tweaked_key(self, signer_pubkey_hex: str, message_hex: str, tweak_scalar_hex: str) -> str:
         from cdk_spilman import sign_with_tweaked_key_util

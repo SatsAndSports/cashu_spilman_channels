@@ -5,13 +5,24 @@
 
 typedef struct {
     void* user_data;
-    int (*call_mint_swap)(void*, const char*, const char*, char**);
-    void (*save_channel)(void*, const char*, const char*, const char*);
-    char* (*get_channel)(void*, const char*);  /* Returns JSON: {"channel_json":"...","channel_secret_hex":"..."} or NULL */
+    // Funding Data (immutable)
+    void (*save_channel_funding)(void*, const char*, const char*);    // (channel_id, funding_json)
+    char* (*get_channel_funding)(void*, const char*);                 // Returns JSON or NULL
+    // Payment State (mutable)
+    char* (*get_payment_state)(void*, const char*);                   // Returns JSON or NULL
+    void (*record_payment)(void*, const char*, const char*);          // (channel_id, state_json)
+    // Lifecycle
+    char* (*get_channel_state)(void*, const char*);                   // Returns "open" or "closed"
+    void (*mark_channel_closed)(void*, const char*);
     char* (*list_channel_ids)(void*);
     void (*delete_channel)(void*, const char*);
+    // Time
+    uint64_t (*now_seconds)(void*);
+    // Crypto
     int (*sign_with_tweaked_key)(void*, const char*, const char*, const char*, char**);
     int (*compute_channel_secret)(void*, const char*, const char*, char**);
+    // Networking
+    int (*call_mint_swap)(void*, const char*, const char*, char**);
 } SpilmanClientHostCallbacks;
 
 #endif
