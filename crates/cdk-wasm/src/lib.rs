@@ -1018,3 +1018,17 @@ pub fn build_cashu_b_token(
 ) -> Result<String, JsValue> {
     cdk_spilman::build_cashu_b_token(mint_url, unit, proofs_json).map_err(|e| JsValue::from_str(&e))
 }
+
+/// Creates plain blinded messages for minting tokens (not channel-locked).
+///
+/// Returns JSON with:
+/// - `blinded_messages`: Array of blinded messages (ready for mint request)
+/// - `secrets_with_blinding`: Array of {secret, blinding_factor, amount} for unblinding later
+#[wasm_bindgen]
+pub fn create_plain_blinded_messages(
+    amount_sat: u64,
+    keyset_info_json: &str,
+) -> Result<String, JsValue> {
+    cdk_spilman::create_plain_blinded_messages(amount_sat, keyset_info_json)
+        .map_err(|e| JsValue::from_str(&e))
+}

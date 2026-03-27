@@ -886,6 +886,22 @@ pub unsafe extern "C" fn spilman_build_cashu_a_token(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn spilman_build_cashu_b_token(
+    mint_url: *const c_char,
+    unit: *const c_char,
+    proofs_json: *const c_char,
+) -> CResult {
+    let m = CStr::from_ptr(mint_url).to_str().unwrap();
+    let u = CStr::from_ptr(unit).to_str().unwrap();
+    let p = CStr::from_ptr(proofs_json).to_str().unwrap();
+
+    match cdk_spilman::build_cashu_b_token(m, u, p) {
+        Ok(token) => CResult::success(token),
+        Err(e) => CResult::error(e),
+    }
+}
+
 /// C callback type for HTTP requests: (user_data, method, url, body, response_out) -> error_out
 /// Returns null on success (response written to response_out), or error string on failure.
 type HttpCallbackFn = extern "C" fn(

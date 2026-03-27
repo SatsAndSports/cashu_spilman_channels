@@ -87,6 +87,35 @@ class SpilmanClient:
         self.host = host
         self.bridge = FfiClientBridge(host)
 
+    def open_channel_from_token(
+        self,
+        token: str,
+        receiver_pubkey_hex: str,
+        sender_pubkey_hex: str,
+        expiry_timestamp: int,
+        keyset_info_json: str,
+        max_amount: int,
+    ):
+        """Opens a new channel from a Cashu token.
+        
+        This is the recommended way to fund a channel. It handles:
+        1. Computing the channel secret via ECDH
+        2. Parsing the token and computing channel parameters
+        3. Creating and submitting the funding swap
+        4. Saving the channel to storage
+        
+        Returns:
+            OpenChannelResult with channel_id, capacity, etc.
+        """
+        return self.bridge.open_channel_from_token(
+            token,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            keyset_info_json,
+            max_amount,
+        )
+
     def build_payment_header(self, channel_id: str, balance: int, include_funding: bool = False) -> str:
         """Builds the base64-encoded payment header."""
         return self.bridge.build_payment_header(channel_id, balance, include_funding)

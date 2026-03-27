@@ -8,6 +8,36 @@ try:
 except ImportError:
     qrcode = None
 
+
+def _http_callback(method: str, url: str, body: str) -> str:
+    """HTTP callback for mint_proofs_from_mint."""
+    if method == "GET":
+        resp = requests.get(url)
+    else:
+        resp = requests.post(url, data=body, headers={"Content-Type": "application/json"})
+    resp.raise_for_status()
+    return resp.text
+
+
+def mint_plain_proofs(mint_url: str, amount: int, keyset_info_json: str, unit: str = "sat") -> str:
+    """Mint plain proofs (not channel-locked) from a mint.
+    
+    This handles the full flow: create blinded messages, get quote,
+    wait for payment, mint, and construct proofs.
+    
+    Args:
+        mint_url: The mint URL
+        amount: Amount to mint in the given unit
+        keyset_info_json: JSON string of keyset info
+        unit: Currency unit (default "sat")
+    
+    Returns:
+        JSON array of proofs ready for use in a token
+    """
+    from cdk_spilman import mint_proofs_from_mint
+    return mint_proofs_from_mint(mint_url, amount, keyset_info_json, _http_callback)
+
+
 def fetch_active_keyset_info(mint_url: str, unit: str = "sat") -> Dict[str, Any]:
     """Fetch active keyset info from mint for a given unit."""
     # Get keysets

@@ -27,6 +27,7 @@ CResult spilman_create_plain_blinded_messages(uint64_t amount_sat, const char* k
 CResult spilman_create_funding_outputs(const char* params, const char* alice_secret, const char* keyset);
 CResult spilman_construct_proofs(const char* blind_signatures, const char* secrets_with_blinding, const char* keyset);
 CResult spilman_build_cashu_a_token(const char* mint_url, const char* proofs_json);
+CResult spilman_build_cashu_b_token(const char* mint_url, const char* unit, const char* proofs_json);
 
 typedef char* (*http_callback_fn)(void*, const char*, const char*, const char*, char**);
 CResult spilman_mint_proofs_from_mint(const char* mint_url, uint64_t amount_sat, const char* keyset_info_json, http_callback_fn call_http, void* user_data);
@@ -228,6 +229,25 @@ func BuildCashuAToken(mintURL, proofsJSON string) (string, error) {
 	defer C.free(unsafe.Pointer(cProofs))
 
 	res := C.spilman_build_cashu_a_token(cMint, cProofs)
+	defer C.spilman_free_cresult(res)
+
+	if res.error != nil {
+		return "", errors.New(C.GoString(res.error))
+	}
+	return C.GoString(res.data), nil
+}
+
+// BuildCashuBToken builds a cashuB token string from proofs JSON, mint URL, and unit.
+// The token format is: "cashuB" + base64url(CBOR({ token: [{ mint, proofs }], unit }))
+func BuildCashuBToken(mintURL, unit, proofsJSON string) (string, error) {
+	cMint := C.CString(mintURL)
+	defer C.free(unsafe.Pointer(cMint))
+	cUnit := C.CString(unit)
+	defer C.free(unsafe.Pointer(cUnit))
+	cProofs := C.CString(proofsJSON)
+	defer C.free(unsafe.Pointer(cProofs))
+
+	res := C.spilman_build_cashu_b_token(cMint, cUnit, cProofs)
 	defer C.spilman_free_cresult(res)
 
 	if res.error != nil {

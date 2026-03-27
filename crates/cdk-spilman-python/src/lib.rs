@@ -987,6 +987,20 @@ fn build_cashu_a_token(mint_url: &str, proofs_json: &str) -> PyResult<String> {
     spilman_core::build_cashu_a_token(mint_url, proofs_json).map_err(PyValueError::new_err)
 }
 
+/// Build a cashuB format token from proofs.
+///
+/// Args:
+///     mint_url: The mint URL to embed in the token
+///     unit: The currency unit (e.g. "sat")
+///     proofs_json: JSON array of proofs (from construct_proofs or mint response)
+///
+/// Returns:
+///     A cashuB token string (e.g. "cashuBeyJ0b2...")
+#[pyfunction]
+fn build_cashu_b_token(mint_url: &str, unit: &str, proofs_json: &str) -> PyResult<String> {
+    spilman_core::build_cashu_b_token(mint_url, unit, proofs_json).map_err(PyValueError::new_err)
+}
+
 /// Mint plain proofs from a Cashu mint via HTTP.
 ///
 /// Performs the full minting flow: create blinded messages, request a mint
@@ -1561,6 +1575,7 @@ fn cdk_spilman(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(create_signed_balance_update, m)?)?;
     m.add_function(wrap_pyfunction!(create_plain_blinded_messages, m)?)?;
     m.add_function(wrap_pyfunction!(build_cashu_a_token, m)?)?;
+    m.add_function(wrap_pyfunction!(build_cashu_b_token, m)?)?;
     m.add_function(wrap_pyfunction!(mint_proofs_from_mint, m)?)?;
     m.add_function(wrap_pyfunction!(sign_with_tweaked_key_util, m)?)?;
 

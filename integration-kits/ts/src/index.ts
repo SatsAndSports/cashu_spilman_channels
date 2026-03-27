@@ -13,6 +13,7 @@ export {
   verify_proof_dleq,
   verify_channel,
   build_cashu_b_token,
+  create_plain_blinded_messages,
 } from "../wasm/cdk_wasm.js";
 
 export { createSpilmanManagementRouter } from "./router.js";
@@ -41,8 +42,9 @@ export {
   getBridgeErrorReason,
 } from "./express.js";
 export { ConfigurableSpilman, type SpilmanConfig } from "./config.js";
-export { demoFetchActiveKeysetInfo, demoMintFundingToken } from "./demo.js";
+export { demoFetchActiveKeysetInfo, demoMintFundingToken, demoMintPlainProofs } from "./demo.js";
 export { SpilmanClientBridge, type SpilmanClientHost } from "./client_bridge.js";
+export { InMemorySpilmanClientHost } from "./in_memory_client_host.js";
 
 /**
  * Initializes the WASM module for Node.js environment.
