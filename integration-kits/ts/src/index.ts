@@ -1,3 +1,8 @@
+import { initSync } from "../wasm/cdk_wasm.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
 export {
   WasmSpilmanBridge,
   compute_channel_secret,
@@ -46,13 +51,23 @@ export { demoFetchActiveKeysetInfo, demoMintFundingToken, demoMintPlainProofs } 
 export { SpilmanClientBridge, type SpilmanClientHost } from "./client_bridge.js";
 export { InMemorySpilmanClientHost } from "./in_memory_client_host.js";
 
+let _initialized = false;
+
 /**
- * Initializes the WASM module for Node.js environment.
+ * Initializes the WASM module.
  *
- * With `wasm-pack --target nodejs`, the WASM binary is loaded synchronously
- * when the module is first imported, so this function is a no-op.  It is
- * retained for backward compatibility with callers that `await init()`.
+ * Must be called before using any WASM functions (crypto, bridge, etc.).
+ * Safe to call multiple times - subsequent calls are no-ops.
  */
 export async function init() {
-  // WASM is loaded synchronously on import by the nodejs target; nothing to do.
+  if (_initialized) return;
+  
+  // Load WASM file synchronously (Node.js only)
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const wasmPath = join(__dirname, "..", "wasm", "cdk_wasm_bg.wasm");
+  const wasmBuffer = readFileSync(wasmPath);
+  
+  initSync({ module: wasmBuffer });
+  _initialized = true;
 }

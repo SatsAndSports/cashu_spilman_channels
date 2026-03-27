@@ -3,6 +3,7 @@ from .host import BaseSpilmanHost
 from .keysets import fetch_all_keysets_from_mint, refresh_keyset_cache
 from .configurable import ConfigurableSpilman
 from .client import SpilmanClient, BaseSpilmanClientHost
+from .in_memory_client_host import InMemoryClientHost
 
 __all__ = [
     "SpilmanStores",
@@ -15,4 +16,5 @@ __all__ = [
     "ConfigurableSpilman",
     "SpilmanClient",
     "BaseSpilmanClientHost",
+    "InMemoryClientHost",
 ]
