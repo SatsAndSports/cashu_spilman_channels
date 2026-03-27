@@ -659,22 +659,27 @@ fn parse_mint_error_value(raw: &str) -> serde_json::Value {
 
 /// Extract the NUT-00 error code from a raw error string.
 /// Returns None if the string is not valid JSON or lacks a "code" field.
-fn extract_nut00_error_code(raw: &str) -> Option<u16> {
+fn extract_nut00_error_code(raw: &str) -> Option<u32> {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|v| v.get("code")?.as_u64())
-        .map(|c| c as u16)
+        .map(|c| c as u32)
 }
 
 /// Returns true if the error code is in the keyset error range (12xxx).
 /// These errors may be recoverable by refreshing keysets and retrying.
-fn is_keyset_error_code(code: u16) -> bool {
-    (12000..13000).contains(&code)
+///
+/// Workaround: also treats code 99999 as retryable. Nutmix returns this
+/// catch-all code instead of the spec-standard 12001 ("Keyset is not known").
+/// This can be removed once nutmix is fixed:
+/// <https://github.com/lescuer97/nutmix/issues/237>
+fn is_keyset_error_code(code: u32) -> bool {
+    (12000..13000).contains(&code) || code == 99999
 }
 
 /// Determine if a swap error should trigger a retry (refresh keysets + re-attempt).
-/// Only keyset errors (12xxx) are retryable. All other errors fail immediately.
-/// If the error can't be parsed, fail immediately (strict mode).
+/// Keyset errors (12xxx) and code 99999 (nutmix workaround) are retryable.
+/// All other errors fail immediately. If the error can't be parsed, fail immediately.
 fn should_retry_swap_error(raw: &str) -> bool {
     match extract_nut00_error_code(raw) {
         Some(code) => {
