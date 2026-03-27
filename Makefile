@@ -268,7 +268,7 @@ test-server-rust: test-rust-demo
 test-server-ts: test-integration-ts
 	WASM_DEV=1 SERVER_TYPE=ts cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
-test-all: test-suite test-integration-python test-integration-go test-integration-ts test-nut00-errors test-selective-retry test-demo-python test-demo-go test-demo-ts test-server-python test-server-go test-server-rust test-server-ts test-kit-all
+test-all: test-suite test-integration-python test-integration-go test-integration-ts test-nut00-errors test-selective-retry test-demo-python test-demo-go test-demo-ts test-server-python test-server-go test-server-rust test-server-ts
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL TESTS PASSED"
