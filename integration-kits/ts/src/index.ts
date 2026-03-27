@@ -1,8 +1,3 @@
-import { initSync } from "../wasm/cdk_wasm.js";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
 export {
   WasmSpilmanBridge,
   compute_channel_secret,
@@ -58,16 +53,32 @@ let _initialized = false;
  *
  * Must be called before using any WASM functions (crypto, bridge, etc.).
  * Safe to call multiple times - subsequent calls are no-ops.
+ *
+ * Works with both `--target nodejs` (auto-init on import) and
+ * `--target web` (requires explicit init with wasm file).
  */
 export async function init() {
   if (_initialized) return;
-  
-  // Load WASM file synchronously (Node.js only)
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const wasmPath = join(__dirname, "..", "wasm", "cdk_wasm_bg.wasm");
-  const wasmBuffer = readFileSync(wasmPath);
-  
-  initSync({ module: wasmBuffer });
+
+  // Dynamic import to check which WASM target we have.
+  // The type of `initSync` varies between --target web and --target nodejs,
+  // so we use `any` to handle both cases at runtime.
+  const wasm: any = await import("../wasm/cdk_wasm.js");
+
+  if (typeof wasm.initSync === "function") {
+    // --target web: must load the wasm file and call initSync
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname, join } = await import("node:path");
+
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const wasmPath = join(__dirname, "..", "wasm", "cdk_wasm_bg.wasm");
+    const wasmBuffer = readFileSync(wasmPath);
+
+    wasm.initSync({ module: wasmBuffer });
+  }
+  // --target nodejs: WASM is already initialized on import; nothing to do.
+
   _initialized = true;
 }
