@@ -536,6 +536,7 @@ impl SpilmanClientNetworking for WasmDummyNetworking {
 // ============================================================================
 
 struct WasmSpilmanClientAsyncNetworkingProxy {
+    #[allow(dead_code)] // Used only on wasm32 target
     js_host: JsSpilmanClientHost,
 }
 unsafe impl Send for WasmSpilmanClientAsyncNetworkingProxy {}
