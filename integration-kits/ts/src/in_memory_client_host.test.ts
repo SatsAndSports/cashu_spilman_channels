@@ -32,17 +32,26 @@ describe("InMemorySpilmanClientHost", () => {
       expect(host.getChannelFunding("unknown")).toBeNull();
     });
 
-    it("saveChannelFunding stores data and getChannelFunding retrieves it", () => {
+    it("saveOpeningChannel stores data and getChannelFunding retrieves it", () => {
       const channelId = "test-channel-123";
       const fundingJson = '{"params_json":"{}","funding_proofs_json":"[]"}';
 
-      host.saveChannelFunding(channelId, fundingJson);
+      host.saveOpeningChannel(channelId, fundingJson);
       expect(host.getChannelFunding(channelId)).toBe(fundingJson);
     });
 
-    it("saveChannelFunding sets state to open", () => {
+    it("saveOpeningChannel sets state to opening", () => {
       const channelId = "test-channel-456";
-      host.saveChannelFunding(channelId, "{}");
+      host.saveOpeningChannel(channelId, "{}");
+      expect(host.getChannelState(channelId)).toBe("opening");
+    });
+
+    it("markChannelOpen transitions state to open", () => {
+      const channelId = "test-channel-789";
+      host.saveOpeningChannel(channelId, "{}");
+      expect(host.getChannelState(channelId)).toBe("opening");
+
+      host.markChannelOpen(channelId, "[]");
       expect(host.getChannelState(channelId)).toBe("open");
     });
   });
@@ -75,7 +84,8 @@ describe("InMemorySpilmanClientHost", () => {
 
     it("markChannelClosed changes state to 'closed'", () => {
       const channelId = "test-channel";
-      host.saveChannelFunding(channelId, "{}");
+      host.saveOpeningChannel(channelId, "{}");
+      host.markChannelOpen(channelId, "[]");
       expect(host.getChannelState(channelId)).toBe("open");
 
       host.markChannelClosed(channelId);
@@ -83,8 +93,8 @@ describe("InMemorySpilmanClientHost", () => {
     });
 
     it("listChannelIds returns all stored channels", () => {
-      host.saveChannelFunding("channel-1", "{}");
-      host.saveChannelFunding("channel-2", "{}");
+      host.saveOpeningChannel("channel-1", "{}");
+      host.saveOpeningChannel("channel-2", "{}");
 
       const ids = host.listChannelIds();
       expect(ids).toHaveLength(2);
@@ -94,7 +104,7 @@ describe("InMemorySpilmanClientHost", () => {
 
     it("deleteChannel removes channel and all its data", () => {
       const channelId = "test-channel";
-      host.saveChannelFunding(channelId, '{"funding":true}');
+      host.saveOpeningChannel(channelId, '{"funding":true}');
       host.recordPayment(channelId, '{"payment":true}');
       host.markChannelClosed(channelId);
 

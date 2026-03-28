@@ -1,8 +1,9 @@
 #include "client_bridge_types.h"
 
 // Go exports for client host callbacks
-// Funding Data
-extern void go_client_save_channel_funding(void*, const char*, const char*);
+// Channel Opening (two-phase)
+extern void go_client_save_opening_channel(void*, const char*, const char*);
+extern void go_client_mark_channel_open(void*, const char*, const char*);
 extern char* go_client_get_channel_funding(void*, const char*);
 // Payment State
 extern char* go_client_get_payment_state(void*, const char*);
@@ -23,8 +24,9 @@ extern int go_client_call_mint_swap(void*, const char*, const char*, char**);
 SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     SpilmanClientHostCallbacks cb;
     cb.user_data = user_data;
-    // Funding Data
-    cb.save_channel_funding = go_client_save_channel_funding;
+    // Channel Opening (two-phase)
+    cb.save_opening_channel = go_client_save_opening_channel;
+    cb.mark_channel_open = go_client_mark_channel_open;
     cb.get_channel_funding = go_client_get_channel_funding;
     // Payment State
     cb.get_payment_state = go_client_get_payment_state;

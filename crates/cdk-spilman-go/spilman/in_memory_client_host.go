@@ -36,13 +36,29 @@ func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 }
 
 // ============================================================================
-// Funding Data (immutable after creation)
+// Channel Opening (two-phase)
 // ============================================================================
 
-func (h *InMemoryClientHost) SaveChannelFunding(channelID, fundingJSON string) {
+func (h *InMemoryClientHost) SaveOpeningChannel(channelID, fundingJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.funding[channelID] = fundingJSON
+	h.channelState[channelID] = "opening"
+}
+
+func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Update the funding JSON with the proofs
+	if existing, ok := h.funding[channelID]; ok {
+		var funding map[string]interface{}
+		if json.Unmarshal([]byte(existing), &funding) == nil {
+			funding["funding_proofs_json"] = fundingProofsJSON
+			if updated, err := json.Marshal(funding); err == nil {
+				h.funding[channelID] = string(updated)
+			}
+		}
+	}
 	h.channelState[channelID] = "open"
 }
 

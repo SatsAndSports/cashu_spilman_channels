@@ -5,7 +5,7 @@
 //! mutable payment state, mirroring the server-side pattern.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // ============================================================================
 // Data Structures
@@ -54,6 +54,9 @@ pub struct ClientPaymentState {
 /// Channel lifecycle state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ClientChannelState {
+    /// Funding swap submitted but not yet confirmed.
+    /// The channel parameters are saved but funding proofs are not yet available.
+    Opening,
     /// Channel is open and can accept payments
     #[default]
     Open,
@@ -70,10 +73,18 @@ pub enum ClientChannelState {
 /// Implementations handle persistence of channel funding data and payment state.
 /// The trait separates immutable funding data from mutable payment state.
 pub trait ClientStorage {
-    // === Funding Data (immutable after creation) ===
+    // === Funding Data ===
 
-    /// Save funding data for a new channel
-    fn save_funding(&mut self, channel_id: &str, funding: ClientChannelFunding);
+    /// Save funding data for a channel entering Opening state.
+    ///
+    /// At this point, `funding.funding_proofs_json` will be empty
+    /// (proofs are not yet available). The channel state is set to Opening.
+    fn save_opening(&mut self, channel_id: &str, funding: ClientChannelFunding);
+
+    /// Mark a channel as Open by supplying the funding proofs.
+    ///
+    /// The channel must already exist in Opening state.
+    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str);
 
     /// Get funding data for a channel
     fn get_funding(&self, channel_id: &str) -> Option<&ClientChannelFunding>;
@@ -115,7 +126,7 @@ pub trait ClientStorage {
 pub struct MemoryClientStorage {
     funding: HashMap<String, ClientChannelFunding>,
     payments: HashMap<String, ClientPaymentState>,
-    closed: HashSet<String>,
+    states: HashMap<String, ClientChannelState>,
 }
 
 impl MemoryClientStorage {
@@ -131,8 +142,18 @@ impl MemoryClientStorage {
 }
 
 impl ClientStorage for MemoryClientStorage {
-    fn save_funding(&mut self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening(&mut self, channel_id: &str, funding: ClientChannelFunding) {
         self.funding.insert(channel_id.to_string(), funding);
+        self.states
+            .insert(channel_id.to_string(), ClientChannelState::Opening);
+    }
+
+    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) {
+        if let Some(funding) = self.funding.get_mut(channel_id) {
+            funding.funding_proofs_json = funding_proofs_json.to_string();
+        }
+        self.states
+            .insert(channel_id.to_string(), ClientChannelState::Open);
     }
 
     fn get_funding(&self, channel_id: &str) -> Option<&ClientChannelFunding> {
@@ -148,18 +169,15 @@ impl ClientStorage for MemoryClientStorage {
     }
 
     fn get_state(&self, channel_id: &str) -> ClientChannelState {
-        if self.closed.contains(channel_id) {
-            ClientChannelState::Closed
-        } else if self.funding.contains_key(channel_id) {
-            ClientChannelState::Open
-        } else {
-            // Channel doesn't exist, treat as closed
-            ClientChannelState::Closed
-        }
+        self.states
+            .get(channel_id)
+            .copied()
+            .unwrap_or(ClientChannelState::Closed)
     }
 
     fn set_closed(&mut self, channel_id: &str) {
-        self.closed.insert(channel_id.to_string());
+        self.states
+            .insert(channel_id.to_string(), ClientChannelState::Closed);
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -169,7 +187,7 @@ impl ClientStorage for MemoryClientStorage {
     fn delete(&mut self, channel_id: &str) {
         self.funding.remove(channel_id);
         self.payments.remove(channel_id);
-        self.closed.remove(channel_id);
+        self.states.remove(channel_id);
     }
 }
 
@@ -205,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_storage_funding() {
+    fn test_memory_storage_opening() {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
@@ -213,16 +231,27 @@ mod tests {
         assert!(storage.get_funding(channel_id).is_none());
         assert_eq!(storage.channel_count(), 0);
 
-        // Save funding
-        storage.save_funding(channel_id, make_test_funding());
+        // Save as opening (no funding proofs yet)
+        let mut funding = make_test_funding();
+        funding.funding_proofs_json = String::new();
+        storage.save_opening(channel_id, funding);
 
         // Now retrievable
-        let funding = storage.get_funding(channel_id).unwrap();
-        assert_eq!(funding.capacity, 1000);
+        let f = storage.get_funding(channel_id).unwrap();
+        assert_eq!(f.capacity, 1000);
+        assert!(f.funding_proofs_json.is_empty());
         assert_eq!(storage.channel_count(), 1);
 
-        // State should be Open
+        // State should be Opening
+        assert_eq!(storage.get_state(channel_id), ClientChannelState::Opening);
+
+        // Mark open with funding proofs
+        storage.set_open(channel_id, "[{\"proof\": true}]");
+
+        // State should be Open, proofs available
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Open);
+        let f = storage.get_funding(channel_id).unwrap();
+        assert_eq!(f.funding_proofs_json, "[{\"proof\": true}]");
     }
 
     #[test]
@@ -230,7 +259,8 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
-        storage.save_funding(channel_id, make_test_funding());
+        storage.save_opening(channel_id, make_test_funding());
+        storage.set_open(channel_id, "[]");
 
         // Initially no payment state
         assert!(storage.get_payment_state(channel_id).is_none());
@@ -257,8 +287,12 @@ mod tests {
         // Unknown channel is Closed
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Closed);
 
-        // After funding, it's Open
-        storage.save_funding(channel_id, make_test_funding());
+        // After save_opening, it's Opening
+        storage.save_opening(channel_id, make_test_funding());
+        assert_eq!(storage.get_state(channel_id), ClientChannelState::Opening);
+
+        // After set_open, it's Open
+        storage.set_open(channel_id, "[]");
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Open);
 
         // Mark closed
@@ -271,7 +305,8 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
-        storage.save_funding(channel_id, make_test_funding());
+        storage.save_opening(channel_id, make_test_funding());
+        storage.set_open(channel_id, "[]");
         storage.save_payment_state(channel_id, make_test_payment_state(100));
         storage.set_closed(channel_id);
 
@@ -290,9 +325,9 @@ mod tests {
     fn test_memory_storage_list() {
         let mut storage = MemoryClientStorage::new();
 
-        storage.save_funding("channel_1", make_test_funding());
-        storage.save_funding("channel_2", make_test_funding());
-        storage.save_funding("channel_3", make_test_funding());
+        storage.save_opening("channel_1", make_test_funding());
+        storage.save_opening("channel_2", make_test_funding());
+        storage.save_opening("channel_3", make_test_funding());
 
         let mut ids = storage.list_channel_ids();
         ids.sort();

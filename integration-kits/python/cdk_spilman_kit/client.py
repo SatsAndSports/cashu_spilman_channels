@@ -24,11 +24,21 @@ class BaseSpilmanClientHost:
         return resp.text
 
     # ========================================================================
-    # Funding Data (immutable after creation)
+    # Channel Opening (two-phase)
     # ========================================================================
 
-    def save_channel_funding(self, channel_id: str, funding_json: str):
+    def save_opening_channel(self, channel_id: str, funding_json: str):
         self.funding[channel_id] = funding_json
+        self.channel_state[channel_id] = "opening"
+
+    def mark_channel_open(self, channel_id: str, funding_proofs_json: str):
+        if channel_id in self.funding:
+            try:
+                funding = json.loads(self.funding[channel_id])
+                funding["funding_proofs_json"] = funding_proofs_json
+                self.funding[channel_id] = json.dumps(funding)
+            except (json.JSONDecodeError, TypeError):
+                pass
         self.channel_state[channel_id] = "open"
 
     def get_channel_funding(self, channel_id: str) -> Optional[str]:

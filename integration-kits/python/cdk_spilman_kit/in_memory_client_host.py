@@ -44,12 +44,26 @@ class InMemoryClientHost:
         return resp.text
 
     # ========================================================================
-    # Funding Data (immutable after creation)
+    # Channel Opening (two-phase)
     # ========================================================================
 
-    def save_channel_funding(self, channel_id: str, funding_json: str) -> None:
-        """Save channel funding data."""
+    def save_opening_channel(self, channel_id: str, funding_json: str) -> None:
+        """Save channel metadata before the funding swap.
+
+        The channel enters 'opening' state.
+        """
         self._funding[channel_id] = funding_json
+        self._channel_state[channel_id] = "opening"
+
+    def mark_channel_open(self, channel_id: str, funding_proofs_json: str) -> None:
+        """Transition channel from opening to open with funding proofs."""
+        if channel_id in self._funding:
+            try:
+                funding = json.loads(self._funding[channel_id])
+                funding["funding_proofs_json"] = funding_proofs_json
+                self._funding[channel_id] = json.dumps(funding)
+            except (json.JSONDecodeError, TypeError):
+                pass
         self._channel_state[channel_id] = "open"
 
     def get_channel_funding(self, channel_id: str) -> Optional[str]:

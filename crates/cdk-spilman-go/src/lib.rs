@@ -968,11 +968,16 @@ pub unsafe extern "C" fn spilman_mint_proofs_from_mint(
 #[repr(C)]
 pub struct SpilmanClientHostCallbacks {
     pub user_data: *mut libc::c_void,
-    // Funding Data (immutable after creation)
-    pub save_channel_funding: extern "C" fn(
+    // Channel Opening (two-phase)
+    pub save_opening_channel: extern "C" fn(
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
-        funding_json: *const c_char, // JSON-serialized ClientChannelFunding
+        funding_json: *const c_char, // JSON-serialized ClientChannelFunding (proofs empty)
+    ),
+    pub mark_channel_open: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        funding_proofs_json: *const c_char,
     ),
     pub get_channel_funding:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
@@ -1025,18 +1030,28 @@ unsafe impl Sync for CGoSpilmanClientHost {}
 
 impl SpilmanClientHost for CGoSpilmanClientHost {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
         let id_c = CString::new(channel_id).unwrap();
         let funding_json =
             serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
         let funding_c = CString::new(funding_json).unwrap();
-        (self.callbacks.save_channel_funding)(
+        (self.callbacks.save_opening_channel)(
             self.callbacks.user_data,
             id_c.as_ptr(),
             funding_c.as_ptr(),
+        );
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        let id_c = CString::new(channel_id).unwrap();
+        let proofs_c = CString::new(funding_proofs_json).unwrap();
+        (self.callbacks.mark_channel_open)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            proofs_c.as_ptr(),
         );
     }
 
@@ -1226,7 +1241,8 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
     // Since the callbacks struct contains the same user_data, both will work with the same Go object
     let host_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
-        save_channel_funding: callbacks.save_channel_funding,
+        save_opening_channel: callbacks.save_opening_channel,
+        mark_channel_open: callbacks.mark_channel_open,
         get_channel_funding: callbacks.get_channel_funding,
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,
@@ -1241,7 +1257,8 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
     };
     let networking_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
-        save_channel_funding: callbacks.save_channel_funding,
+        save_opening_channel: callbacks.save_opening_channel,
+        mark_channel_open: callbacks.mark_channel_open,
         get_channel_funding: callbacks.get_channel_funding,
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,

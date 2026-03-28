@@ -27,11 +27,26 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
   constructor(private secretKeyHex: string) {}
 
   // ========================================================================
-  // Funding Data (immutable after creation)
+  // Channel Opening (two-phase)
   // ========================================================================
 
-  saveChannelFunding(channelId: string, fundingJson: string): void {
+  saveOpeningChannel(channelId: string, fundingJson: string): void {
     this.funding.set(channelId, fundingJson);
+    this.channelState.set(channelId, "opening");
+  }
+
+  markChannelOpen(channelId: string, fundingProofsJson: string): void {
+    // Update the funding JSON with the proofs
+    const existingJson = this.funding.get(channelId);
+    if (existingJson) {
+      try {
+        const funding = JSON.parse(existingJson);
+        funding.funding_proofs_json = fundingProofsJson;
+        this.funding.set(channelId, JSON.stringify(funding));
+      } catch {
+        // If parse fails, just update state
+      }
+    }
     this.channelState.set(channelId, "open");
   }
 

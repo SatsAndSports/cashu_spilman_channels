@@ -183,10 +183,25 @@ func (h *testClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, 
 
 // Funding Data
 
-func (h *testClientHost) SaveChannelFunding(channelID, fundingJSON string) {
+func (h *testClientHost) SaveOpeningChannel(channelID, fundingJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.funding[channelID] = fundingJSON
+	h.channelState[channelID] = "opening"
+}
+
+func (h *testClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing, ok := h.funding[channelID]; ok {
+		var funding map[string]interface{}
+		if json.Unmarshal([]byte(existing), &funding) == nil {
+			funding["funding_proofs_json"] = fundingProofsJSON
+			if updated, err := json.Marshal(funding); err == nil {
+				h.funding[channelID] = string(updated)
+			}
+		}
+	}
 	h.channelState[channelID] = "open"
 }
 

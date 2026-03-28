@@ -1097,8 +1097,9 @@ pub struct ClientChannelInfo {
 ///
 /// The Python object must implement these methods:
 ///
-/// Storage (immutable funding data):
-/// - save_channel_funding(channel_id: str, funding_json: str)
+/// Channel opening (two-phase):
+/// - save_opening_channel(channel_id: str, funding_json: str)
+/// - mark_channel_open(channel_id: str, funding_proofs_json: str)
 /// - get_channel_funding(channel_id: str) -> Optional[str]  # Returns funding JSON or None
 ///
 /// Storage (mutable payment state):
@@ -1106,7 +1107,7 @@ pub struct ClientChannelInfo {
 /// - record_payment(channel_id: str, state_json: str)
 ///
 /// Lifecycle:
-/// - get_channel_state(channel_id: str) -> str  # Returns "open" or "closed"
+/// - get_channel_state(channel_id: str) -> str  # Returns "opening", "open", or "closed"
 /// - mark_channel_closed(channel_id: str)
 /// - list_channel_ids() -> List[str]
 /// - delete_channel(channel_id: str)
@@ -1138,16 +1139,26 @@ fn python_error_message(py: Python<'_>, err: PyErr) -> String {
 
 impl SpilmanClientHost for PySpilmanClientHost {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
         Python::with_gil(|py| {
             let funding_json =
                 serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
             let _ =
                 self.py_host
-                    .call_method1(py, "save_channel_funding", (channel_id, funding_json));
+                    .call_method1(py, "save_opening_channel", (channel_id, funding_json));
+        });
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        Python::with_gil(|py| {
+            let _ = self.py_host.call_method1(
+                py,
+                "mark_channel_open",
+                (channel_id, funding_proofs_json),
+            );
         });
     }
 
@@ -1515,6 +1526,7 @@ impl ClientBridge {
     fn get_channel_info(&self, channel_id: &str) -> Option<ClientChannelInfo> {
         self.inner.get_channel_info(channel_id).map(|info| {
             let state_str = match info.state {
+                ClientChannelState::Opening => "opening",
                 ClientChannelState::Open => "open",
                 ClientChannelState::Closed => "closed",
             };

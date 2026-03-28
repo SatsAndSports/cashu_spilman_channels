@@ -45,14 +45,24 @@ use super::client_storage::{ClientChannelFunding, ClientChannelState, ClientPaym
 /// `SpilmanClientNetworking` trait.
 pub trait SpilmanClientHost {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    /// Save funding data for a newly created channel.
+    /// Save channel metadata before the funding swap.
     ///
-    /// Called once after successful channel creation. The funding data
-    /// is immutable after this point.
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding);
+    /// Called before submitting the funding swap to the mint. The channel
+    /// enters `Opening` state. At this point `funding_proofs_json` is empty
+    /// because the swap has not yet completed.
+    ///
+    /// If the swap fails or the client crashes, the channel remains in
+    /// `Opening` state with enough data to attempt NUT-09 restore later.
+    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding);
+
+    /// Transition a channel from Opening to Open.
+    ///
+    /// Called after the funding swap succeeds and proofs are unblinded.
+    /// Supplies the `funding_proofs_json` that was missing during Opening.
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str);
 
     /// Get funding data for a channel.
     ///
@@ -348,13 +358,35 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'funding_secrets_json' in swap result")?;
 
-        // Step 4: Submit swap to mint
+        // Compute channel ID
+        let channel_id = super::bindings::channel_parameters_get_channel_id(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+
+        // Step 4: Save channel in Opening state (before the swap)
+        let funding = ClientChannelFunding {
+            params_json: params_json.to_string(),
+            funding_proofs_json: String::new(), // not yet available
+            channel_secret_hex: channel_secret_hex.clone(),
+            keyset_info_json: keyset_info_json.to_string(),
+            sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            capacity,
+            funding_token_amount,
+            mint_url: mint_url.clone(),
+            created_at: self.host.now_seconds(),
+        };
+
+        self.host.save_opening_channel(&channel_id, funding);
+
+        // Step 5: Submit swap to mint
         let swap_response_json = self
             .networking
             .call_mint_swap(&mint_url, swap_request_json)
             .map_err(normalize_mint_error_string)?;
 
-        // Step 5: Unblind signatures and verify DLEQ
+        // Step 6: Unblind signatures and verify DLEQ
         let complete_result =
             complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)?;
 
@@ -365,27 +397,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
 
-        // Compute channel ID
-        let channel_id = super::bindings::channel_parameters_get_channel_id(
-            params_json,
-            &channel_secret_hex,
-            keyset_info_json,
-        )?;
-
-        // Step 6: Save channel funding data
-        let funding = ClientChannelFunding {
-            params_json: params_json.to_string(),
-            funding_proofs_json: funding_proofs_json.to_string(),
-            channel_secret_hex: channel_secret_hex.clone(),
-            keyset_info_json: keyset_info_json.to_string(),
-            sender_pubkey_hex: sender_pubkey_hex.to_string(),
-            capacity,
-            funding_token_amount,
-            mint_url: mint_url.clone(),
-            created_at: self.host.now_seconds(),
-        };
-
-        self.host.save_channel_funding(&channel_id, funding);
+        // Step 7: Transition to Open
+        self.host
+            .mark_channel_open(&channel_id, funding_proofs_json);
 
         Ok(OpenChannelResult {
             channel_id,
@@ -468,13 +482,35 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'funding_secrets_json' in swap result")?;
 
-        // Step 4: Submit swap to mint (async)
+        // Compute channel ID
+        let channel_id = super::bindings::channel_parameters_get_channel_id(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+
+        // Step 4: Save channel in Opening state (before the swap)
+        let funding = ClientChannelFunding {
+            params_json: params_json.to_string(),
+            funding_proofs_json: String::new(), // not yet available
+            channel_secret_hex: channel_secret_hex.clone(),
+            keyset_info_json: keyset_info_json.to_string(),
+            sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            capacity,
+            funding_token_amount,
+            mint_url: mint_url.clone(),
+            created_at: self.host.now_seconds(),
+        };
+
+        self.host.save_opening_channel(&channel_id, funding);
+
+        // Step 5: Submit swap to mint (async)
         let swap_response_json = async_networking
             .call_mint_swap(&mint_url, swap_request_json)
             .await
             .map_err(normalize_mint_error_string)?;
 
-        // Step 5: Unblind signatures and verify DLEQ
+        // Step 6: Unblind signatures and verify DLEQ
         let complete_result =
             complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)?;
 
@@ -485,27 +521,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
 
-        // Compute channel ID
-        let channel_id = super::bindings::channel_parameters_get_channel_id(
-            params_json,
-            &channel_secret_hex,
-            keyset_info_json,
-        )?;
-
-        // Step 6: Save channel funding data
-        let funding = ClientChannelFunding {
-            params_json: params_json.to_string(),
-            funding_proofs_json: funding_proofs_json.to_string(),
-            channel_secret_hex: channel_secret_hex.clone(),
-            keyset_info_json: keyset_info_json.to_string(),
-            sender_pubkey_hex: sender_pubkey_hex.to_string(),
-            capacity,
-            funding_token_amount,
-            mint_url: mint_url.clone(),
-            created_at: self.host.now_seconds(),
-        };
-
-        self.host.save_channel_funding(&channel_id, funding);
+        // Step 7: Transition to Open
+        self.host
+            .mark_channel_open(&channel_id, funding_proofs_json);
 
         Ok(OpenChannelResult {
             channel_id,

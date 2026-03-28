@@ -118,12 +118,18 @@ extern "C" {
     ) -> Result<String, JsValue>;
 
     pub type JsSpilmanClientHost;
-    // Funding data (immutable)
-    #[wasm_bindgen(method, js_name = saveChannelFunding)]
-    fn save_channel_funding(
+    // Channel opening (two-phase)
+    #[wasm_bindgen(method, js_name = saveOpeningChannel)]
+    fn save_opening_channel(
         this: &JsSpilmanClientHost,
         channel_id: &str,
         funding_json: &str,
+    );
+    #[wasm_bindgen(method, js_name = markChannelOpen)]
+    fn mark_channel_open(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+        funding_proofs_json: &str,
     );
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
@@ -422,13 +428,19 @@ unsafe impl Sync for WasmSpilmanClientHostProxy {}
 
 impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
         let funding_json =
             serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
-        self.js_host.save_channel_funding(channel_id, &funding_json);
+        self.js_host
+            .save_opening_channel(channel_id, &funding_json);
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        self.js_host
+            .mark_channel_open(channel_id, funding_proofs_json);
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {

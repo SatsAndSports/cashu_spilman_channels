@@ -8,12 +8,17 @@ package spilman
 // serialized as JSON.
 type SpilmanClientHost interface {
 	// ========================================================================
-	// Funding Data (immutable after creation)
+	// Channel Opening (two-phase)
 	// ========================================================================
 
-	// SaveChannelFunding persists immutable channel funding data.
-	// fundingJSON is a JSON-serialized ClientChannelFunding struct.
-	SaveChannelFunding(channelID, fundingJSON string)
+	// SaveOpeningChannel persists channel metadata before the funding swap.
+	// The channel enters Opening state. fundingJSON is a JSON-serialized
+	// ClientChannelFunding struct (with empty funding_proofs_json).
+	SaveOpeningChannel(channelID, fundingJSON string)
+
+	// MarkChannelOpen transitions a channel from Opening to Open.
+	// Called after the funding swap succeeds with the unblinded funding proofs.
+	MarkChannelOpen(channelID, fundingProofsJSON string)
 
 	// GetChannelFunding retrieves channel funding data.
 	// Returns empty string if the channel doesn't exist.
@@ -37,7 +42,7 @@ type SpilmanClientHost interface {
 	// ========================================================================
 
 	// GetChannelState returns the lifecycle state of a channel.
-	// Returns "open" or "closed".
+	// Returns "opening", "open", or "closed".
 	GetChannelState(channelID string) string
 
 	// MarkChannelClosed marks a channel as closed.

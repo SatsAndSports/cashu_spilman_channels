@@ -151,11 +151,17 @@ impl ConfigurableClientHost<MemoryClientStorage> {
 
 impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     // ========================================================================
-    // Funding Data
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
-        self.storage.borrow_mut().save_funding(channel_id, funding);
+    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
+        self.storage.borrow_mut().save_opening(channel_id, funding);
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        self.storage
+            .borrow_mut()
+            .set_open(channel_id, funding_proofs_json);
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -292,10 +298,10 @@ mod tests {
             ClientChannelState::Closed
         );
 
-        // Save funding
+        // Save as opening
         let funding = ClientChannelFunding {
             params_json: "{}".to_string(),
-            funding_proofs_json: "[]".to_string(),
+            funding_proofs_json: String::new(),
             channel_secret_hex: "aa".repeat(32),
             keyset_info_json: "{}".to_string(),
             sender_pubkey_hex: "02".to_string() + &"bb".repeat(32),
@@ -305,9 +311,18 @@ mod tests {
             created_at: 12345,
         };
 
-        host.save_channel_funding(channel_id, funding.clone());
+        host.save_opening_channel(channel_id, funding.clone());
 
-        // Now retrievable
+        // Should be in Opening state
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            ClientChannelState::Opening
+        );
+
+        // Mark open with proofs
+        host.mark_channel_open(channel_id, "[]");
+
+        // Now retrievable and Open
         let retrieved = host.get_channel_funding(channel_id).unwrap();
         assert_eq!(retrieved.capacity, 1000);
         assert_eq!(host.get_channel_state(channel_id), ClientChannelState::Open);

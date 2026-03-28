@@ -1072,11 +1072,17 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     }
 
     impl SpilmanClientHost for TestClientHost {
-        fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+        fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
             self.funding
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), funding);
+        }
+
+        fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+            if let Some(funding) = self.funding.lock().unwrap().get_mut(channel_id) {
+                funding.funding_proofs_json = funding_proofs_json.to_string();
+            }
         }
 
         fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1584,7 +1590,9 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientHost for FailingClientHost {
-        fn save_channel_funding(&self, _: &str, _: ClientChannelFunding) {}
+        fn save_opening_channel(&self, _: &str, _: ClientChannelFunding) {}
+
+        fn mark_channel_open(&self, _: &str, _: &str) {}
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
             None

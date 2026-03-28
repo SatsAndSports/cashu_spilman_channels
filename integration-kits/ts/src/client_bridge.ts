@@ -6,11 +6,14 @@ import { WasmSpilmanClientBridge } from "../wasm/cdk_wasm.js";
  */
 export interface SpilmanClientHost {
   // ========================================================================
-  // Funding Data (immutable after creation)
+  // Channel Opening (two-phase)
   // ========================================================================
 
-  /** Persists immutable channel funding data. fundingJson is a JSON-serialized ClientChannelFunding struct. */
-  saveChannelFunding(channelId: string, fundingJson: string): void;
+  /** Save channel metadata before the funding swap. Channel enters Opening state. */
+  saveOpeningChannel(channelId: string, fundingJson: string): void;
+
+  /** Transition channel from Opening to Open with the funding proofs. */
+  markChannelOpen(channelId: string, fundingProofsJson: string): void;
 
   /** Retrieves channel funding data. Returns null if the channel doesn't exist. */
   getChannelFunding(channelId: string): string | null;
@@ -29,7 +32,7 @@ export interface SpilmanClientHost {
   // Channel Lifecycle
   // ========================================================================
 
-  /** Returns the lifecycle state of a channel. Returns "open" or "closed". */
+  /** Returns the lifecycle state of a channel. Returns "opening", "open", or "closed". */
   getChannelState(channelId: string): string;
 
   /** Marks a channel as closed. */

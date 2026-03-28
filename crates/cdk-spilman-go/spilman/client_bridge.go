@@ -144,13 +144,20 @@ func (b *ClientBridge) ProcessCooperativeCloseResponse(responseJSON string) erro
 // --- Client Host Callbacks Implementation ---
 // These are exported to C and called by the Rust client bridge via client_gateway.c
 
-// Funding Data
+// Channel Opening (two-phase)
 
-//export go_client_save_channel_funding
-func go_client_save_channel_funding(userData unsafe.Pointer, channelID *C.char, fundingJSON *C.char) {
+//export go_client_save_opening_channel
+func go_client_save_opening_channel(userData unsafe.Pointer, channelID *C.char, fundingJSON *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.SaveChannelFunding(C.GoString(channelID), C.GoString(fundingJSON))
+	host.SaveOpeningChannel(C.GoString(channelID), C.GoString(fundingJSON))
+}
+
+//export go_client_mark_channel_open
+func go_client_mark_channel_open(userData unsafe.Pointer, channelID *C.char, fundingProofsJSON *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.MarkChannelOpen(C.GoString(channelID), C.GoString(fundingProofsJSON))
 }
 
 //export go_client_get_channel_funding
