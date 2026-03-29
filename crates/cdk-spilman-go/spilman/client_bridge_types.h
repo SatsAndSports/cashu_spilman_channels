@@ -24,6 +24,7 @@ typedef struct {
     int (*compute_channel_secret)(void*, const char*, const char*, char**);
     // Networking
     int (*call_mint_swap)(void*, const char*, const char*, char**);
+    int (*call_mint_restore)(void*, const char*, const char*, char**);
 } SpilmanClientHostCallbacks;
 
 #endif

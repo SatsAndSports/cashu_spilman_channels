@@ -175,6 +175,12 @@ extern "C" {
         mint_url: &str,
         swap_request_json: &str,
     ) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintRestore)]
+    fn client_call_mint_restore(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> js_sys::Promise;
 }
 
 struct WasmSpilmanHostProxy {
@@ -541,6 +547,13 @@ impl SpilmanClientNetworking for WasmDummyNetworking {
     fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
         Err("Sync networking not supported in WASM; use openChannelFromTokenAsync".to_string())
     }
+    fn call_mint_restore(
+        &self,
+        _mint_url: &str,
+        _restore_request_json: &str,
+    ) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async restore".to_string())
+    }
 }
 
 // ============================================================================
@@ -568,6 +581,20 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
             .as_string()
             .ok_or_else(|| "Result not a string".to_string())
     }
+    async fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        JsFuture::from(
+            self.js_host
+                .client_call_mint_restore(mint_url, restore_request_json),
+        )
+        .await
+        .map_err(js_error_to_string)?
+        .as_string()
+        .ok_or_else(|| "Result not a string".to_string())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -577,6 +604,13 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         &self,
         _mint_url: &str,
         _swap_request_json: &str,
+    ) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_restore(
+        &self,
+        _mint_url: &str,
+        _restore_request_json: &str,
     ) -> Result<String, String> {
         Err("WASM proxy only works on wasm32".to_string())
     }

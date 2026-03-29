@@ -281,3 +281,16 @@ func go_client_call_mint_swap(userData unsafe.Pointer, mintURL *C.char, swapRequ
 	*responseOut = C.CString(resp)
 	return 1
 }
+
+//export go_client_call_mint_restore
+func go_client_call_mint_restore(userData unsafe.Pointer, mintURL *C.char, restoreRequestJSON *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	resp, err := host.CallMintRestore(C.GoString(mintURL), C.GoString(restoreRequestJSON))
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = C.CString(resp)
+	return 1
+}

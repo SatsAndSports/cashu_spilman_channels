@@ -132,4 +132,18 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
     }
     return text;
   }
+
+  async callMintRestore(mintUrl: string, restoreRequestJson: string): Promise<string> {
+    const response = await fetch(`${mintUrl}/v1/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: restoreRequestJson,
+    });
+
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(text || `Mint rejected restore with status ${response.status}`);
+    }
+    return text;
+  }
 }

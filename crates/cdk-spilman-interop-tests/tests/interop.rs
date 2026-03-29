@@ -1049,6 +1049,26 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize swap response: {}", e))
         }
+
+        fn call_mint_restore(
+            &self,
+            _mint_url: &str,
+            restore_request_json: &str,
+        ) -> Result<String, String> {
+            let restore_request: RestoreRequest = serde_json::from_str(restore_request_json)
+                .map_err(|e| format!("Failed to parse restore request: {}", e))?;
+            let mint = Arc::clone(&self.mint);
+            let response = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(async { mint.restore(restore_request).await })
+            })
+            .map_err(|e| {
+                serde_json::to_string(&cdk_common::error::ErrorResponse::from(e))
+                    .unwrap_or_else(|ser_err| format!("Mint restore failed: {ser_err}"))
+            })?;
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize restore response: {}", e))
+        }
     }
 
     // ====================================================================
@@ -1571,6 +1591,10 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
     impl SpilmanClientNetworking for FailingClientNetworking {
         fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
             Err(self.mint_error_json.clone())
         }
     }

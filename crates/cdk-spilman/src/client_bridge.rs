@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
-use super::bindings::{complete_funding_swap, compute_channel_from_token, create_funding_swap};
+use super::bindings::{
+    complete_funding_restore, complete_funding_swap, compute_channel_from_token,
+    create_funding_restore_request, create_funding_swap,
+};
 use super::bridge::Payment;
 use super::client_storage::{ClientChannelFunding, ClientChannelState, ClientPaymentState};
 
@@ -179,6 +182,16 @@ pub trait SpilmanClientNetworking {
     /// Posts `swap_request_json` to `{mint_url}/v1/swap` and returns the
     /// response body as a JSON string.
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
+
+    /// Execute a NUT-09 restore with the mint.
+    ///
+    /// Posts `restore_request_json` to `{mint_url}/v1/restore` and returns the
+    /// response body as a JSON string.
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String>;
 }
 
 // ============================================================================
@@ -200,6 +213,16 @@ pub trait SpilmanClientAsyncNetworking {
         &self,
         mint_url: &str,
         swap_request_json: &str,
+    ) -> Result<String, String>;
+
+    /// Execute a NUT-09 restore with the mint (async version).
+    ///
+    /// Posts `restore_request_json` to `{mint_url}/v1/restore` and returns the
+    /// response body as a JSON string.
+    async fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
     ) -> Result<String, String>;
 }
 
@@ -283,9 +306,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// 1. Compute ECDH channel secret via `host.compute_channel_secret()`
     /// 2. Parse the token and compute channel parameters
     /// 3. Create a funding swap request (deterministic 2-of-2 locked outputs)
-    /// 4. Submit the swap to the mint via `networking.call_mint_swap()`
-    /// 5. Unblind signatures and verify DLEQ proofs
-    /// 6. Save the channel via `host.save_channel_funding()`
+    /// 4. Save channel in Opening state via `host.save_opening_channel()`
+    /// 5. Submit the swap to the mint via `networking.call_mint_swap()`
+    /// 6. Unblind signatures and verify DLEQ proofs
+    /// 7. Verify restore path via `networking.call_mint_restore()` (temporary)
+    /// 8. Transition to Open via `host.mark_channel_open()`
     ///
     /// # Arguments
     /// * `token_string` - Cashu token (cashuA... or cashuB...)
@@ -396,6 +421,33 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let funding_proofs_json = complete_json["funding_proofs_json"]
             .as_str()
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
+
+        // Step 6b: Verify restore path produces identical proofs
+        let restore_request = create_funding_restore_request(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+        let restore_response = self
+            .networking
+            .call_mint_restore(&mint_url, &restore_request)?;
+        let restore_result = complete_funding_restore(
+            &restore_response,
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+        let restore_json: serde_json::Value = serde_json::from_str(&restore_result)
+            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
+        let restored_proofs_json = restore_json["funding_proofs_json"]
+            .as_str()
+            .ok_or("Missing 'funding_proofs_json' in restore result")?;
+
+        if funding_proofs_json != restored_proofs_json {
+            return Err(
+                "Restore verification failed: swap proofs differ from restored proofs".to_string(),
+            );
+        }
 
         // Step 7: Transition to Open
         self.host
@@ -521,6 +573,33 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
 
+        // Step 6b: Verify restore path produces identical proofs
+        let restore_request = create_funding_restore_request(
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+        let restore_response = async_networking
+            .call_mint_restore(&mint_url, &restore_request)
+            .await?;
+        let restore_result = complete_funding_restore(
+            &restore_response,
+            params_json,
+            &channel_secret_hex,
+            keyset_info_json,
+        )?;
+        let restore_json: serde_json::Value = serde_json::from_str(&restore_result)
+            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
+        let restored_proofs_json = restore_json["funding_proofs_json"]
+            .as_str()
+            .ok_or("Missing 'funding_proofs_json' in restore result")?;
+
+        if funding_proofs_json != restored_proofs_json {
+            return Err(
+                "Restore verification failed: swap proofs differ from restored proofs".to_string(),
+            );
+        }
+
         // Step 7: Transition to Open
         self.host
             .mark_channel_open(&channel_id, funding_proofs_json);
@@ -532,6 +611,86 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             mint_url,
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
         })
+    }
+
+    /// Restore funding proofs for a channel using NUT-09.
+    ///
+    /// Given a channel ID, reconstructs the deterministic blinded messages,
+    /// calls `/v1/restore`, unblinds the response, and returns the funding
+    /// proofs JSON string.
+    ///
+    /// This can be used to recover from a failed `open_channel_from_token`
+    /// where the swap succeeded on the mint's side but the client lost
+    /// the response.
+    #[cfg(feature = "wallet")]
+    pub fn restore_funding_proofs(&self, channel_id: &str) -> Result<String, String> {
+        let funding = self
+            .host
+            .get_channel_funding(channel_id)
+            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
+
+        let restore_request = create_funding_restore_request(
+            &funding.params_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+        )?;
+
+        let restore_response = self
+            .networking
+            .call_mint_restore(&funding.mint_url, &restore_request)?;
+
+        let result = complete_funding_restore(
+            &restore_response,
+            &funding.params_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+        )?;
+
+        let result_json: serde_json::Value = serde_json::from_str(&result)
+            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
+
+        result_json["funding_proofs_json"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'funding_proofs_json' in restore result".to_string())
+    }
+
+    /// Restore funding proofs for a channel using NUT-09 (async version).
+    #[cfg(feature = "wallet")]
+    pub async fn restore_funding_proofs_async<AN: SpilmanClientAsyncNetworking>(
+        &self,
+        channel_id: &str,
+        async_networking: &AN,
+    ) -> Result<String, String> {
+        let funding = self
+            .host
+            .get_channel_funding(channel_id)
+            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
+
+        let restore_request = create_funding_restore_request(
+            &funding.params_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+        )?;
+
+        let restore_response = async_networking
+            .call_mint_restore(&funding.mint_url, &restore_request)
+            .await?;
+
+        let result = complete_funding_restore(
+            &restore_response,
+            &funding.params_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+        )?;
+
+        let result_json: serde_json::Value = serde_json::from_str(&result)
+            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
+
+        result_json["funding_proofs_json"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'funding_proofs_json' in restore result".to_string())
     }
 
     /// Create a payment for a channel (without funding data).

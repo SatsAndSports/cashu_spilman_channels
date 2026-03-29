@@ -77,6 +77,12 @@ export interface SpilmanClientHost {
    * Posts swapRequestJson to {mintUrl}/v1/swap and returns the response body.
    */
   callMintSwap(mintUrl: string, swapRequestJson: string): Promise<string>;
+
+  /**
+   * Executes a NUT-09 restore with the mint (async for JS).
+   * Posts restoreRequestJson to {mintUrl}/v1/restore and returns the response body.
+   */
+  callMintRestore(mintUrl: string, restoreRequestJson: string): Promise<string>;
 }
 
 /**

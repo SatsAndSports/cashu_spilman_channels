@@ -60,6 +60,30 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
     fn call_mint_swap(&self, _mint_url: &str, swap_request_json: &str) -> Result<String, String> {
         self.do_swap(swap_request_json)
     }
+
+    fn call_mint_restore(
+        &self,
+        _mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        let restore_request: cdk::nuts::RestoreRequest =
+            serde_json::from_str(restore_request_json)
+                .map_err(|e| format!("Failed to parse restore request: {}", e))?;
+
+        let mint = Arc::clone(&self.mint);
+        let handle = self.runtime.clone();
+
+        let response = tokio::task::block_in_place(|| {
+            handle.block_on(async move {
+                mint.restore(restore_request)
+                    .await
+                    .map_err(|e| format!("Mint restore failed: {}", e))
+            })
+        })?;
+
+        serde_json::to_string(&response)
+            .map_err(|e| format!("Failed to serialize restore response: {}", e))
+    }
 }
 
 impl SpilmanNetworking for InMemoryMintNetworking {

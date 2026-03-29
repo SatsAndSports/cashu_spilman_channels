@@ -1320,6 +1320,23 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
             }
         })
     }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self.py_host.call_method1(
+                py,
+                "call_mint_restore",
+                (mint_url, restore_request_json),
+            ) {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
 }
 
 /// Client-side Spilman channel bridge.

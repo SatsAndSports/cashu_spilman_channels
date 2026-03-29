@@ -43,6 +43,19 @@ class InMemoryClientHost:
             )
         return resp.text
 
+    def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
+        """Call the mint's restore endpoint."""
+        resp = requests.post(
+            f"{mint_url}/v1/restore",
+            json=json.loads(restore_request_json),
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                resp.text or f"Mint rejected restore with status {resp.status_code}"
+            )
+        return resp.text
+
     # ========================================================================
     # Channel Opening (two-phase)
     # ========================================================================

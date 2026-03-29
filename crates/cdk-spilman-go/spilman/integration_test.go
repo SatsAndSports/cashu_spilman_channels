@@ -181,6 +181,27 @@ func (h *testClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, 
 	return string(body), nil
 }
 
+func (h *testClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (string, error) {
+	resp, err := http.Post(
+		mintURL+"/v1/restore",
+		"application/json",
+		bytes.NewBufferString(restoreRequestJSON),
+	)
+	if err != nil {
+		return "", fmt.Errorf("HTTP error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		if len(body) > 0 {
+			return "", errors.New(string(body))
+		}
+		return "", fmt.Errorf("restore failed with status %d", resp.StatusCode)
+	}
+	return string(body), nil
+}
+
 // Funding Data
 
 func (h *testClientHost) SaveOpeningChannel(channelID, fundingJSON string) {
@@ -293,6 +314,10 @@ type failingClientHost struct {
 }
 
 func (h *failingClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, error) {
+	return "", errors.New(h.mintErr)
+}
+
+func (h *failingClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (string, error) {
 	return "", errors.New(h.mintErr)
 }
 

@@ -233,6 +233,16 @@ class MockClientHost:
             raise RuntimeError(resp.text or f"swap failed with status {resp.status_code}")
         return resp.text
 
+    def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
+        resp = requests.post(
+            f"{mint_url}/v1/restore",
+            data=restore_request_json,
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(resp.text or f"restore failed with status {resp.status_code}")
+        return resp.text
+
     # ========================================================================
     # Funding Data (immutable after creation)
     # ========================================================================

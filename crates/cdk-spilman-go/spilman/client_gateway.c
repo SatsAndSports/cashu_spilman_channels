@@ -20,6 +20,7 @@ extern int go_client_sign_with_tweaked_key(void*, const char*, const char*, cons
 extern int go_client_compute_channel_secret(void*, const char*, const char*, char**);
 // Networking
 extern int go_client_call_mint_swap(void*, const char*, const char*, char**);
+extern int go_client_call_mint_restore(void*, const char*, const char*, char**);
 
 SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     SpilmanClientHostCallbacks cb;
@@ -43,5 +44,6 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     cb.compute_channel_secret = go_client_compute_channel_secret;
     // Networking
     cb.call_mint_swap = go_client_call_mint_swap;
+    cb.call_mint_restore = go_client_call_mint_restore;
     return cb;
 }

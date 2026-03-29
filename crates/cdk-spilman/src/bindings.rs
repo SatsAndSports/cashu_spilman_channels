@@ -696,6 +696,159 @@ pub fn create_funding_swap(
     Ok(result.to_string())
 }
 
+/// Create a NUT-09 restore request for funding outputs.
+///
+/// Reconstructs the deterministic blinded messages from channel parameters
+/// and serializes them as a restore request JSON for POST to `/v1/restore`.
+///
+/// # Arguments
+/// * `params_json` - Channel parameters JSON
+/// * `channel_secret_hex` - Channel secret (64-char hex)
+/// * `keyset_info_json` - Keyset info (JSON)
+///
+/// # Returns
+/// JSON string: `{"outputs": [...]}`
+#[cfg(feature = "wallet")]
+pub fn create_funding_restore_request(
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+) -> Result<String, String> {
+    // Parse keyset info
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+
+    // Parse channel secret
+    let channel_secret_bytes = hex::decode(channel_secret_hex)
+        .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
+    if channel_secret_bytes.len() != 32 {
+        return Err(format!(
+            "Channel secret must be 32 bytes, got {}",
+            channel_secret_bytes.len()
+        ));
+    }
+    let mut channel_secret = [0u8; 32];
+    channel_secret.copy_from_slice(&channel_secret_bytes);
+
+    // Create ChannelParameters
+    let params =
+        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
+            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
+
+    // Get the funding token nominal amount
+    let funding_token_nominal = params
+        .get_total_funding_token_amount()
+        .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
+
+    // Create deterministic funding outputs
+    let funding_outputs = DeterministicOutputsForOneContext::new(
+        "funding".to_string(),
+        funding_token_nominal,
+        params,
+    )
+    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
+
+    // Get blinded messages
+    let blinded_messages = funding_outputs
+        .get_blinded_messages(None)
+        .map_err(|e| format!("Failed to get blinded messages: {}", e))?;
+
+    // Serialize as restore request
+    let restore_request = serde_json::json!({
+        "outputs": blinded_messages
+    });
+
+    serde_json::to_string(&restore_request)
+        .map_err(|e| format!("Failed to serialize restore request: {}", e))
+}
+
+/// Complete a funding restore by unblinding the mint's NUT-09 response.
+///
+/// Reconstructs the deterministic secrets from channel parameters (no need
+/// for externally-provided secrets since they are fully deterministic),
+/// then delegates to `complete_funding_swap` to unblind and verify DLEQ.
+///
+/// # Arguments
+/// * `restore_response_json` - Mint's restore response: `{"outputs": [...], "signatures": [...]}`
+/// * `params_json` - Channel parameters JSON
+/// * `channel_secret_hex` - Channel secret (64-char hex)
+/// * `keyset_info_json` - Keyset info (JSON)
+///
+/// # Returns
+/// JSON with `funding_proofs_json` (same as `complete_funding_swap`)
+#[cfg(feature = "wallet")]
+pub fn complete_funding_restore(
+    restore_response_json: &str,
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+) -> Result<String, String> {
+    // Parse restore response to extract signatures
+    let restore_response: serde_json::Value = serde_json::from_str(restore_response_json)
+        .map_err(|e| format!("Failed to parse restore response: {}", e))?;
+
+    let signatures = restore_response
+        .get("signatures")
+        .ok_or("Missing 'signatures' in restore response")?;
+
+    // Wrap signatures in swap-response format for reuse by complete_funding_swap
+    let swap_response = serde_json::json!({
+        "signatures": signatures
+    });
+    let swap_response_json = serde_json::to_string(&swap_response)
+        .map_err(|e| format!("Failed to serialize swap response: {}", e))?;
+
+    // Reconstruct funding secrets deterministically
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+
+    let channel_secret_bytes = hex::decode(channel_secret_hex)
+        .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
+    if channel_secret_bytes.len() != 32 {
+        return Err(format!(
+            "Channel secret must be 32 bytes, got {}",
+            channel_secret_bytes.len()
+        ));
+    }
+    let mut channel_secret = [0u8; 32];
+    channel_secret.copy_from_slice(&channel_secret_bytes);
+
+    let params =
+        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
+            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
+
+    let funding_token_nominal = params
+        .get_total_funding_token_amount()
+        .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
+
+    let funding_outputs = DeterministicOutputsForOneContext::new(
+        "funding".to_string(),
+        funding_token_nominal,
+        params,
+    )
+    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
+
+    let funding_secrets = funding_outputs
+        .get_secrets_with_blinding()
+        .map_err(|e| format!("Failed to get funding secrets: {}", e))?;
+
+    // Serialize funding secrets (same format as create_funding_swap)
+    let funding_secrets_json: Vec<serde_json::Value> = funding_secrets
+        .iter()
+        .map(|swb| {
+            serde_json::json!({
+                "secret": swb.secret.to_string(),
+                "blinding_factor": swb.blinding_factor.to_secret_hex(),
+                "amount": swb.amount
+            })
+        })
+        .collect();
+
+    let funding_secrets_str = serde_json::to_string(&funding_secrets_json)
+        .map_err(|e| format!("Failed to serialize funding secrets: {}", e))?;
+
+    // Delegate to complete_funding_swap
+    complete_funding_swap(&swap_response_json, &funding_secrets_str, keyset_info_json)
+}
+
 /// Complete a funding swap by unblinding the mint's response
 ///
 /// Takes the mint's swap response and unblinding the funding proofs.

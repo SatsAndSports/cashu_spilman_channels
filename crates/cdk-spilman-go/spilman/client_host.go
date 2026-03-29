@@ -102,6 +102,11 @@ type SpilmanClientHost interface {
 	// Posts swapRequestJSON to {mintURL}/v1/swap and returns the response body.
 	// Returns the response JSON string on success, or an error.
 	CallMintSwap(mintURL, swapRequestJSON string) (string, error)
+
+	// CallMintRestore executes a NUT-09 restore with the mint.
+	// Posts restoreRequestJSON to {mintURL}/v1/restore and returns the response body.
+	// Returns the response JSON string on success, or an error.
+	CallMintRestore(mintURL, restoreRequestJSON string) (string, error)
 }
 
 // OpenChannelResult contains the result of opening a new channel.

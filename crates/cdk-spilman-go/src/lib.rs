@@ -1018,6 +1018,12 @@ pub struct SpilmanClientHostCallbacks {
         swap_request_json: *const c_char,
         response_out: *mut *mut c_char,
     ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_restore: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        restore_request_json: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
 }
 
 struct CGoSpilmanClientHost {
@@ -1227,6 +1233,32 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             }
         }
     }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let req_c = CString::new(restore_request_json).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_restore)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            req_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
 }
 
 pub struct ClientBridgeInstance {
@@ -1254,6 +1286,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
+        call_mint_restore: callbacks.call_mint_restore,
     };
     let networking_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
@@ -1270,6 +1303,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
+        call_mint_restore: callbacks.call_mint_restore,
     };
     let host = CGoSpilmanClientHost {
         callbacks: host_callbacks,
