@@ -608,16 +608,17 @@ pub fn compute_channel_from_token(
 /// - `swap_request_json`: The swap request to send to mint (JSON)
 /// - `funding_secrets_json`: Secrets for unblinding funding outputs (JSON array)
 /// - `funding_count`: Number of funding outputs
-pub fn create_funding_swap(
+/// Reconstruct the deterministic funding outputs from channel parameters.
+///
+/// This is the shared helper used by `create_funding_swap`,
+/// `create_funding_restore_request`, and `complete_funding_restore`.
+fn reconstruct_funding_outputs(
     params_json: &str,
     channel_secret_hex: &str,
     keyset_info_json: &str,
-    input_proofs_json: &str,
-) -> Result<String, String> {
-    // Parse keyset info
+) -> Result<DeterministicOutputsForOneContext, String> {
     let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
 
-    // Parse channel secret
     let channel_secret_bytes = hex::decode(channel_secret_hex)
         .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
     if channel_secret_bytes.len() != 32 {
@@ -629,30 +630,30 @@ pub fn create_funding_swap(
     let mut channel_secret = [0u8; 32];
     channel_secret.copy_from_slice(&channel_secret_bytes);
 
-    // Create ChannelParameters from JSON with pre-computed channel secret
-    let params = ChannelParameters::from_json_with_channel_secret(
-        params_json,
-        keyset_info.clone(),
-        channel_secret,
-    )
-    .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
+    let params =
+        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
+            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
 
-    // Parse input proofs
-    let input_proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
-        .map_err(|e| format!("Failed to parse input proofs: {}", e))?;
-
-    // Get the funding token nominal amount
     let funding_token_nominal = params
         .get_total_funding_token_amount()
         .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
 
-    // Create deterministic funding outputs
-    let funding_outputs = DeterministicOutputsForOneContext::new(
-        "funding".to_string(),
-        funding_token_nominal,
-        params,
-    )
-    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
+    DeterministicOutputsForOneContext::new("funding".to_string(), funding_token_nominal, params)
+        .map_err(|e| format!("Failed to create funding outputs: {}", e))
+}
+
+pub fn create_funding_swap(
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+    input_proofs_json: &str,
+) -> Result<String, String> {
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
+
+    // Parse input proofs
+    let input_proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
+        .map_err(|e| format!("Failed to parse input proofs: {}", e))?;
 
     // Get funding blinded messages
     let funding_blinded_messages = funding_outputs
@@ -714,40 +715,9 @@ pub fn create_funding_restore_request(
     channel_secret_hex: &str,
     keyset_info_json: &str,
 ) -> Result<String, String> {
-    // Parse keyset info
-    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
 
-    // Parse channel secret
-    let channel_secret_bytes = hex::decode(channel_secret_hex)
-        .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
-    if channel_secret_bytes.len() != 32 {
-        return Err(format!(
-            "Channel secret must be 32 bytes, got {}",
-            channel_secret_bytes.len()
-        ));
-    }
-    let mut channel_secret = [0u8; 32];
-    channel_secret.copy_from_slice(&channel_secret_bytes);
-
-    // Create ChannelParameters
-    let params =
-        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
-            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
-
-    // Get the funding token nominal amount
-    let funding_token_nominal = params
-        .get_total_funding_token_amount()
-        .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
-
-    // Create deterministic funding outputs
-    let funding_outputs = DeterministicOutputsForOneContext::new(
-        "funding".to_string(),
-        funding_token_nominal,
-        params,
-    )
-    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
-
-    // Get blinded messages
     let blinded_messages = funding_outputs
         .get_blinded_messages(None)
         .map_err(|e| format!("Failed to get blinded messages: {}", e))?;
@@ -798,33 +768,8 @@ pub fn complete_funding_restore(
         .map_err(|e| format!("Failed to serialize swap response: {}", e))?;
 
     // Reconstruct funding secrets deterministically
-    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
-
-    let channel_secret_bytes = hex::decode(channel_secret_hex)
-        .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
-    if channel_secret_bytes.len() != 32 {
-        return Err(format!(
-            "Channel secret must be 32 bytes, got {}",
-            channel_secret_bytes.len()
-        ));
-    }
-    let mut channel_secret = [0u8; 32];
-    channel_secret.copy_from_slice(&channel_secret_bytes);
-
-    let params =
-        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
-            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
-
-    let funding_token_nominal = params
-        .get_total_funding_token_amount()
-        .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
-
-    let funding_outputs = DeterministicOutputsForOneContext::new(
-        "funding".to_string(),
-        funding_token_nominal,
-        params,
-    )
-    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
 
     let funding_secrets = funding_outputs
         .get_secrets_with_blinding()
