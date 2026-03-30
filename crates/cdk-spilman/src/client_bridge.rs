@@ -32,7 +32,9 @@ use super::bindings::{
     create_funding_restore_request, create_funding_swap,
 };
 use super::bridge::Payment;
-use super::client_storage::{ClientChannelFunding, ClientChannelState, ClientPaymentState};
+use super::client_storage::{
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+};
 
 // ============================================================================
 // SpilmanClientHost trait
@@ -54,22 +56,36 @@ pub trait SpilmanClientHost {
     /// Save channel metadata before the funding swap.
     ///
     /// Called before submitting the funding swap to the mint. The channel
-    /// enters `Opening` state. At this point `funding_proofs_json` is empty
-    /// because the swap has not yet completed.
+    /// enters `OpeningFromSwap` state. The opening data includes the original
+    /// input token for recovery if the swap fails.
     ///
     /// If the swap fails or the client crashes, the channel remains in
-    /// `Opening` state with enough data to attempt NUT-09 restore later.
-    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding);
+    /// `OpeningFromSwap` state with enough data to attempt NUT-09 restore
+    /// or reclaim the input token.
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    );
 
-    /// Transition a channel from Opening to Open.
+    /// Transition a channel from OpeningFromSwap to Open.
     ///
     /// Called after the funding swap succeeds and proofs are unblinded.
-    /// Supplies the `funding_proofs_json` that was missing during Opening.
+    /// The host reads the opening data, constructs funding data with
+    /// the proofs, stores it, and removes the opening record.
     fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str);
 
-    /// Get funding data for a channel.
+    /// Get opening data for a channel in OpeningFromSwap state.
     ///
-    /// Returns `None` if the channel does not exist.
+    /// Returns `None` if the channel is not in OpeningFromSwap state.
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap>;
+
+    /// Get funding data for an open channel.
+    ///
+    /// Returns `None` if the channel is not in Open (or Closed) state.
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
 
     // ========================================================================
@@ -390,20 +406,21 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_info_json,
         )?;
 
-        // Step 4: Save channel in Opening state (before the swap)
-        let funding = ClientChannelFunding {
+        // Step 4: Save channel in OpeningFromSwap state (before the swap)
+        let opening = ClientChannelOpeningFromSwap {
             params_json: params_json.to_string(),
-            funding_proofs_json: String::new(), // not yet available
             channel_secret_hex: channel_secret_hex.clone(),
             keyset_info_json: keyset_info_json.to_string(),
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
+            input_token: token_string.to_string(),
             created_at: self.host.now_seconds(),
         };
 
-        self.host.save_opening_channel(&channel_id, funding);
+        self.host
+            .save_opening_from_swap_channel(&channel_id, opening);
 
         // Step 5: Submit swap to mint
         let swap_response_json = self
@@ -541,20 +558,21 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_info_json,
         )?;
 
-        // Step 4: Save channel in Opening state (before the swap)
-        let funding = ClientChannelFunding {
+        // Step 4: Save channel in OpeningFromSwap state (before the swap)
+        let opening = ClientChannelOpeningFromSwap {
             params_json: params_json.to_string(),
-            funding_proofs_json: String::new(), // not yet available
             channel_secret_hex: channel_secret_hex.clone(),
             keyset_info_json: keyset_info_json.to_string(),
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
+            input_token: token_string.to_string(),
             created_at: self.host.now_seconds(),
         };
 
-        self.host.save_opening_channel(&channel_id, funding);
+        self.host
+            .save_opening_from_swap_channel(&channel_id, opening);
 
         // Step 5: Submit swap to mint (async)
         let swap_response_json = async_networking
@@ -615,35 +633,40 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
     /// Restore funding proofs for a channel using NUT-09.
     ///
-    /// Given a channel ID, reconstructs the deterministic blinded messages,
-    /// calls `/v1/restore`, unblinds the response, and returns the funding
-    /// proofs JSON string.
+    /// Given a channel ID in OpeningFromSwap state, reconstructs the
+    /// deterministic blinded messages, calls `/v1/restore`, unblinds the
+    /// response, and returns the funding proofs JSON string.
     ///
     /// This can be used to recover from a failed `open_channel_from_token`
     /// where the swap succeeded on the mint's side but the client lost
     /// the response.
     #[cfg(feature = "wallet")]
     pub fn restore_funding_proofs(&self, channel_id: &str) -> Result<String, String> {
-        let funding = self
+        let opening = self
             .host
-            .get_channel_funding(channel_id)
-            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
+            .get_channel_opening_from_swap(channel_id)
+            .ok_or_else(|| {
+                format!(
+                    "Channel not found in OpeningFromSwap state: {}",
+                    channel_id
+                )
+            })?;
 
         let restore_request = create_funding_restore_request(
-            &funding.params_json,
-            &funding.channel_secret_hex,
-            &funding.keyset_info_json,
+            &opening.params_json,
+            &opening.channel_secret_hex,
+            &opening.keyset_info_json,
         )?;
 
         let restore_response = self
             .networking
-            .call_mint_restore(&funding.mint_url, &restore_request)?;
+            .call_mint_restore(&opening.mint_url, &restore_request)?;
 
         let result = complete_funding_restore(
             &restore_response,
-            &funding.params_json,
-            &funding.channel_secret_hex,
-            &funding.keyset_info_json,
+            &opening.params_json,
+            &opening.channel_secret_hex,
+            &opening.keyset_info_json,
         )?;
 
         let result_json: serde_json::Value = serde_json::from_str(&result)
@@ -662,26 +685,31 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         channel_id: &str,
         async_networking: &AN,
     ) -> Result<String, String> {
-        let funding = self
+        let opening = self
             .host
-            .get_channel_funding(channel_id)
-            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
+            .get_channel_opening_from_swap(channel_id)
+            .ok_or_else(|| {
+                format!(
+                    "Channel not found in OpeningFromSwap state: {}",
+                    channel_id
+                )
+            })?;
 
         let restore_request = create_funding_restore_request(
-            &funding.params_json,
-            &funding.channel_secret_hex,
-            &funding.keyset_info_json,
+            &opening.params_json,
+            &opening.channel_secret_hex,
+            &opening.keyset_info_json,
         )?;
 
         let restore_response = async_networking
-            .call_mint_restore(&funding.mint_url, &restore_request)
+            .call_mint_restore(&opening.mint_url, &restore_request)
             .await?;
 
         let result = complete_funding_restore(
             &restore_response,
-            &funding.params_json,
-            &funding.channel_secret_hex,
-            &funding.keyset_info_json,
+            &opening.params_json,
+            &opening.channel_secret_hex,
+            &opening.keyset_info_json,
         )?;
 
         let result_json: serde_json::Value = serde_json::from_str(&result)

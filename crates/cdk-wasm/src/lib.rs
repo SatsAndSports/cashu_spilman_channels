@@ -11,9 +11,10 @@ use cashu::util::hex;
 use cdk_spilman::{
     compute_funding_token_amount as rust_compute_funding_token_amount, BalanceUpdateMessage,
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
-    ChannelState, ClientChannelFunding, ClientChannelState, ClientPaymentState, ClosingData,
-    EstablishedChannel, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge,
-    SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
+    ChannelState, ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
+    ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof, SpilmanAsyncNetworking,
+    SpilmanBridge, SpilmanClientAsyncNetworking,
+    SpilmanClientBridge as RustSpilmanClientBridge,
     SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
@@ -119,11 +120,11 @@ extern "C" {
 
     pub type JsSpilmanClientHost;
     // Channel opening (two-phase)
-    #[wasm_bindgen(method, js_name = saveOpeningChannel)]
-    fn save_opening_channel(
+    #[wasm_bindgen(method, js_name = saveOpeningFromSwapChannel)]
+    fn save_opening_from_swap_channel(
         this: &JsSpilmanClientHost,
         channel_id: &str,
-        funding_json: &str,
+        opening_json: &str,
     );
     #[wasm_bindgen(method, js_name = markChannelOpen)]
     fn mark_channel_open(
@@ -133,6 +134,8 @@ extern "C" {
     );
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    #[wasm_bindgen(method, js_name = getChannelOpeningFromSwap)]
+    fn get_channel_opening_from_swap(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     // Payment state (mutable)
     #[wasm_bindgen(method, js_name = getPaymentState)]
     fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
@@ -437,11 +440,15 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
-        let funding_json =
-            serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) {
+        let opening_json = serde_json::to_string(&opening)
+            .expect("ClientChannelOpeningFromSwap serialization failed");
         self.js_host
-            .save_opening_channel(channel_id, &funding_json);
+            .save_opening_from_swap_channel(channel_id, &opening_json);
     }
 
     fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
@@ -451,6 +458,18 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
         let val = self.js_host.get_channel_funding(channel_id);
+        if val.is_null() || val.is_undefined() {
+            return None;
+        }
+        let json_str = val.as_string()?;
+        serde_json::from_str(&json_str).ok()
+    }
+
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap> {
+        let val = self.js_host.get_channel_opening_from_swap(channel_id);
         if val.is_null() || val.is_undefined() {
             return None;
         }
@@ -484,6 +503,7 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
         match self.js_host.client_get_channel_state(channel_id).as_str() {
             "closed" | "Closed" => ClientChannelState::Closed,
+            "opening_from_swap" => ClientChannelState::OpeningFromSwap,
             _ => ClientChannelState::Open,
         }
     }

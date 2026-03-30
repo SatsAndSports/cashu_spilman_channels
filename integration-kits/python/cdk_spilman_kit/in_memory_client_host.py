@@ -22,6 +22,7 @@ class InMemoryClientHost:
 
     def __init__(self, secret_key_hex: str):
         self.secret_key_hex = secret_key_hex
+        self._opening: Dict[str, str] = {}  # channel_id -> opening_json
         self._funding: Dict[str, str] = {}  # channel_id -> funding_json
         self._payment_state: Dict[str, str] = {}  # channel_id -> payment_state_json
         self._channel_state: Dict[str, str] = {}  # channel_id -> "open" or "closed"
@@ -60,28 +61,43 @@ class InMemoryClientHost:
     # Channel Opening (two-phase)
     # ========================================================================
 
-    def save_opening_channel(self, channel_id: str, funding_json: str) -> None:
+    def save_opening_from_swap_channel(self, channel_id: str, opening_json: str) -> None:
         """Save channel metadata before the funding swap.
 
-        The channel enters 'opening' state.
+        The channel enters 'opening_from_swap' state.
         """
-        self._funding[channel_id] = funding_json
-        self._channel_state[channel_id] = "opening"
+        self._opening[channel_id] = opening_json
+        self._channel_state[channel_id] = "opening_from_swap"
 
     def mark_channel_open(self, channel_id: str, funding_proofs_json: str) -> None:
-        """Transition channel from opening to open with funding proofs."""
-        if channel_id in self._funding:
+        """Transition channel from opening_from_swap to open with funding proofs."""
+        if channel_id in self._opening:
             try:
-                funding = json.loads(self._funding[channel_id])
-                funding["funding_proofs_json"] = funding_proofs_json
+                opening = json.loads(self._opening[channel_id])
+                funding = {
+                    "params_json": opening.get("params_json"),
+                    "funding_proofs_json": funding_proofs_json,
+                    "channel_secret_hex": opening.get("channel_secret_hex"),
+                    "keyset_info_json": opening.get("keyset_info_json"),
+                    "sender_pubkey_hex": opening.get("sender_pubkey_hex"),
+                    "capacity": opening.get("capacity"),
+                    "funding_token_amount": opening.get("funding_token_amount"),
+                    "mint_url": opening.get("mint_url"),
+                    "created_at": opening.get("created_at"),
+                }
                 self._funding[channel_id] = json.dumps(funding)
             except (json.JSONDecodeError, TypeError):
                 pass
+            del self._opening[channel_id]
         self._channel_state[channel_id] = "open"
 
     def get_channel_funding(self, channel_id: str) -> Optional[str]:
         """Get channel funding data, or None if not found."""
         return self._funding.get(channel_id)
+
+    def get_channel_opening_from_swap(self, channel_id: str) -> Optional[str]:
+        """Get channel opening data, or None if not in opening_from_swap state."""
+        return self._opening.get(channel_id)
 
     # ========================================================================
     # Payment State (mutable)
@@ -109,10 +125,11 @@ class InMemoryClientHost:
 
     def list_channel_ids(self) -> List[str]:
         """List all channel IDs."""
-        return list(self._funding.keys())
+        return list(self._funding.keys() | self._opening.keys())
 
     def delete_channel(self, channel_id: str) -> None:
         """Delete all data for a channel."""
+        self._opening.pop(channel_id, None)
         self._funding.pop(channel_id, None)
         self._payment_state.pop(channel_id, None)
         self._channel_state.pop(channel_id, None)

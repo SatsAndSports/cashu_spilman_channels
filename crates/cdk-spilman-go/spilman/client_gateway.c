@@ -2,9 +2,10 @@
 
 // Go exports for client host callbacks
 // Channel Opening (two-phase)
-extern void go_client_save_opening_channel(void*, const char*, const char*);
+extern void go_client_save_opening_from_swap_channel(void*, const char*, const char*);
 extern void go_client_mark_channel_open(void*, const char*, const char*);
 extern char* go_client_get_channel_funding(void*, const char*);
+extern char* go_client_get_channel_opening_from_swap(void*, const char*);
 // Payment State
 extern char* go_client_get_payment_state(void*, const char*);
 extern void go_client_record_payment(void*, const char*, const char*);
@@ -26,9 +27,10 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     SpilmanClientHostCallbacks cb;
     cb.user_data = user_data;
     // Channel Opening (two-phase)
-    cb.save_opening_channel = go_client_save_opening_channel;
+    cb.save_opening_from_swap_channel = go_client_save_opening_from_swap_channel;
     cb.mark_channel_open = go_client_mark_channel_open;
     cb.get_channel_funding = go_client_get_channel_funding;
+    cb.get_channel_opening_from_swap = go_client_get_channel_opening_from_swap;
     // Payment State
     cb.get_payment_state = go_client_get_payment_state;
     cb.record_payment = go_client_record_payment;

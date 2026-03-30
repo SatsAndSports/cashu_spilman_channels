@@ -22,17 +22,17 @@ func TestInMemoryClientHost_FundingStorage(t *testing.T) {
 		t.Errorf("GetChannelFunding(unknown) = %q, want empty string", got)
 	}
 
-	// SaveOpeningChannel stores data
-	host.SaveOpeningChannel(channelID, fundingJSON)
+	// SaveOpeningFromSwapChannel stores data
+	host.SaveOpeningFromSwapChannel(channelID, fundingJSON)
 
-	// GetChannelFunding retrieves it
-	if got := host.GetChannelFunding(channelID); got != fundingJSON {
-		t.Errorf("GetChannelFunding() = %q, want %q", got, fundingJSON)
+	// GetChannelOpeningFromSwap retrieves it
+	if got := host.GetChannelOpeningFromSwap(channelID); got != fundingJSON {
+		t.Errorf("GetChannelOpeningFromSwap() = %q, want %q", got, fundingJSON)
 	}
 
-	// SaveOpeningChannel sets state to "opening"
-	if got := host.GetChannelState(channelID); got != "opening" {
-		t.Errorf("GetChannelState() after save = %q, want %q", got, "opening")
+	// SaveOpeningFromSwapChannel sets state to "opening_from_swap"
+	if got := host.GetChannelState(channelID); got != "opening_from_swap" {
+		t.Errorf("GetChannelState() after save = %q, want %q", got, "opening_from_swap")
 	}
 
 	// MarkChannelOpen transitions state to "open"
@@ -90,9 +90,9 @@ func TestInMemoryClientHost_Lifecycle(t *testing.T) {
 	}
 
 	// Save two channels
-	host.SaveOpeningChannel(channelID1, `{"id":1}`)
+	host.SaveOpeningFromSwapChannel(channelID1, `{"id":1}`)
 	host.MarkChannelOpen(channelID1, "[]")
-	host.SaveOpeningChannel(channelID2, `{"id":2}`)
+	host.SaveOpeningFromSwapChannel(channelID2, `{"id":2}`)
 	host.MarkChannelOpen(channelID2, "[]")
 	host.RecordPayment(channelID1, `{"balance":10}`)
 

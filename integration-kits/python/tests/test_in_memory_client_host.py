@@ -18,31 +18,32 @@ class TestInMemoryClientHost:
     # ========================================================================
 
     def test_save_and_get_channel_funding(self, host):
-        """Test saving and retrieving channel funding."""
+        """Test saving opening and retrieving channel funding after open."""
         channel_id = "channel-123"
-        funding_json = '{"capacity": 1000}'
+        opening_json = '{"capacity": 1000, "params_json": "{}", "channel_secret_hex": "aa", "keyset_info_json": "{}", "sender_pubkey_hex": "bb", "funding_token_amount": 1000, "mint_url": "http://test", "input_token": "tok", "created_at": 0}'
 
-        host.save_opening_channel(channel_id, funding_json)
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+        host.mark_channel_open(channel_id, "[]")
         result = host.get_channel_funding(channel_id)
 
-        assert result == funding_json
+        assert result is not None
 
     def test_get_channel_funding_not_found(self, host):
         """Test getting non-existent channel returns None."""
         result = host.get_channel_funding("nonexistent")
         assert result is None
 
-    def test_save_opening_channel_sets_state_opening(self, host):
-        """Test that saving opening channel sets state to opening."""
+    def test_save_opening_from_swap_channel_sets_state(self, host):
+        """Test that saving opening channel sets state to opening_from_swap."""
         channel_id = "channel-123"
-        host.save_opening_channel(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
 
-        assert host.get_channel_state(channel_id) == "opening"
+        assert host.get_channel_state(channel_id) == "opening_from_swap"
 
     def test_mark_channel_open_sets_state_open(self, host):
         """Test that mark_channel_open transitions state to open."""
         channel_id = "channel-123"
-        host.save_opening_channel(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
         host.mark_channel_open(channel_id, "[]")
 
         assert host.get_channel_state(channel_id) == "open"
@@ -87,7 +88,7 @@ class TestInMemoryClientHost:
     def test_mark_channel_closed(self, host):
         """Test marking a channel as closed."""
         channel_id = "channel-123"
-        host.save_opening_channel(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
         host.mark_channel_open(channel_id, "[]")
 
         host.mark_channel_closed(channel_id)
@@ -101,8 +102,8 @@ class TestInMemoryClientHost:
 
     def test_list_channel_ids(self, host):
         """Test listing channel IDs."""
-        host.save_opening_channel("channel-1", '{"capacity": 100}')
-        host.save_opening_channel("channel-2", '{"capacity": 200}')
+        host.save_opening_from_swap_channel("channel-1", '{"capacity": 100}')
+        host.save_opening_from_swap_channel("channel-2", '{"capacity": 200}')
 
         result = host.list_channel_ids()
 
@@ -111,7 +112,7 @@ class TestInMemoryClientHost:
     def test_delete_channel(self, host):
         """Test deleting a channel removes all data."""
         channel_id = "channel-123"
-        host.save_opening_channel(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
         host.record_payment(channel_id, '{"balance": 500}')
         host.mark_channel_closed(channel_id)
 

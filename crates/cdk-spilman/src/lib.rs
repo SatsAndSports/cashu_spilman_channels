@@ -52,8 +52,8 @@ pub use client_bridge::{
     SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
 };
 pub use client_storage::{
-    ClientChannelFunding, ClientChannelState, ClientPaymentState, ClientStorage,
-    MemoryClientStorage,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+    ClientStorage, MemoryClientStorage,
 };
 pub use configurable_client_host::ConfigurableClientHost;
 pub use deterministic::{

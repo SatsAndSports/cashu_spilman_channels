@@ -1014,8 +1014,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk::nuts::PublicKey;
     use cdk_spilman::{
-        base64_decode, BridgeError, ClientChannelFunding, ClientChannelState, ClientPaymentState,
-        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+        base64_decode, BridgeError, ClientChannelFunding, ClientChannelOpeningFromSwap,
+        ClientChannelState, ClientPaymentState, SpilmanClientBridge, SpilmanClientHost,
+        SpilmanClientNetworking,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -1076,6 +1077,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // ====================================================================
 
     struct TestClientHost {
+        opening: Mutex<HashMap<String, ClientChannelOpeningFromSwap>>,
         funding: Mutex<HashMap<String, ClientChannelFunding>>,
         payments: Mutex<HashMap<String, ClientPaymentState>>,
         states: Mutex<HashMap<String, ClientChannelState>>,
@@ -1092,21 +1094,46 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     }
 
     impl SpilmanClientHost for TestClientHost {
-        fn save_opening_channel(&self, channel_id: &str, funding: ClientChannelFunding) {
-            self.funding
+        fn save_opening_from_swap_channel(
+            &self,
+            channel_id: &str,
+            opening: ClientChannelOpeningFromSwap,
+        ) {
+            self.opening
                 .lock()
                 .unwrap()
-                .insert(channel_id.to_string(), funding);
+                .insert(channel_id.to_string(), opening);
         }
 
         fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
-            if let Some(funding) = self.funding.lock().unwrap().get_mut(channel_id) {
-                funding.funding_proofs_json = funding_proofs_json.to_string();
+            if let Some(opening) = self.opening.lock().unwrap().remove(channel_id) {
+                let funding = ClientChannelFunding {
+                    params_json: opening.params_json,
+                    funding_proofs_json: funding_proofs_json.to_string(),
+                    channel_secret_hex: opening.channel_secret_hex,
+                    keyset_info_json: opening.keyset_info_json,
+                    sender_pubkey_hex: opening.sender_pubkey_hex,
+                    capacity: opening.capacity,
+                    funding_token_amount: opening.funding_token_amount,
+                    mint_url: opening.mint_url,
+                    created_at: opening.created_at,
+                };
+                self.funding
+                    .lock()
+                    .unwrap()
+                    .insert(channel_id.to_string(), funding);
             }
         }
 
         fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
             self.funding.lock().unwrap().get(channel_id).cloned()
+        }
+
+        fn get_channel_opening_from_swap(
+            &self,
+            channel_id: &str,
+        ) -> Option<ClientChannelOpeningFromSwap> {
+            self.opening.lock().unwrap().get(channel_id).cloned()
         }
 
         fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
@@ -1384,6 +1411,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     let sender_pubkey_hex = alice_secret.public_key().to_hex();
 
     let client_host = TestClientHost {
+        opening: Mutex::new(HashMap::new()),
         funding: Mutex::new(HashMap::new()),
         payments: Mutex::new(HashMap::new()),
         states: Mutex::new(HashMap::new()),
@@ -1578,8 +1606,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
 async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk_spilman::{
-        ClientChannelFunding, ClientChannelState, ClientPaymentState, SpilmanClientBridge,
-        SpilmanClientHost, SpilmanClientNetworking,
+        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
+        ClientPaymentState, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
     };
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1614,11 +1642,15 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientHost for FailingClientHost {
-        fn save_opening_channel(&self, _: &str, _: ClientChannelFunding) {}
+        fn save_opening_from_swap_channel(&self, _: &str, _: ClientChannelOpeningFromSwap) {}
 
         fn mark_channel_open(&self, _: &str, _: &str) {}
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
+            None
+        }
+
+        fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {
             None
         }
 

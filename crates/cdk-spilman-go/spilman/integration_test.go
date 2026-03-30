@@ -137,6 +137,7 @@ func TestFundingOutputsAndChannelId(t *testing.T) {
 type testClientHost struct {
 	mintURL      string
 	mu           sync.Mutex
+	opening      map[string]string // channelID -> openingJSON
 	funding      map[string]string // channelID -> fundingJSON
 	paymentState map[string]string // channelID -> paymentStateJSON
 	channelState map[string]string // channelID -> "open" or "closed"
@@ -146,6 +147,7 @@ type testClientHost struct {
 func newTestClientHost(mintURL string) *testClientHost {
 	return &testClientHost{
 		mintURL:      mintURL,
+		opening:      make(map[string]string),
 		funding:      make(map[string]string),
 		paymentState: make(map[string]string),
 		channelState: make(map[string]string),
@@ -204,24 +206,35 @@ func (h *testClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (st
 
 // Funding Data
 
-func (h *testClientHost) SaveOpeningChannel(channelID, fundingJSON string) {
+func (h *testClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.funding[channelID] = fundingJSON
-	h.channelState[channelID] = "opening"
+	h.opening[channelID] = openingJSON
+	h.channelState[channelID] = "opening_from_swap"
 }
 
 func (h *testClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if existing, ok := h.funding[channelID]; ok {
-		var funding map[string]interface{}
-		if json.Unmarshal([]byte(existing), &funding) == nil {
-			funding["funding_proofs_json"] = fundingProofsJSON
+	if openingJSON, ok := h.opening[channelID]; ok {
+		var opening map[string]interface{}
+		if json.Unmarshal([]byte(openingJSON), &opening) == nil {
+			funding := map[string]interface{}{
+				"params_json":          opening["params_json"],
+				"funding_proofs_json":  fundingProofsJSON,
+				"channel_secret_hex":   opening["channel_secret_hex"],
+				"keyset_info_json":     opening["keyset_info_json"],
+				"sender_pubkey_hex":    opening["sender_pubkey_hex"],
+				"capacity":             opening["capacity"],
+				"funding_token_amount": opening["funding_token_amount"],
+				"mint_url":             opening["mint_url"],
+				"created_at":           opening["created_at"],
+			}
 			if updated, err := json.Marshal(funding); err == nil {
 				h.funding[channelID] = string(updated)
 			}
 		}
+		delete(h.opening, channelID)
 	}
 	h.channelState[channelID] = "open"
 }
@@ -230,6 +243,12 @@ func (h *testClientHost) GetChannelFunding(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.funding[channelID]
+}
+
+func (h *testClientHost) GetChannelOpeningFromSwap(channelID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.opening[channelID]
 }
 
 // Payment State
@@ -267,8 +286,15 @@ func (h *testClientHost) MarkChannelClosed(channelID string) {
 func (h *testClientHost) ListChannelIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ids := make([]string, 0, len(h.funding))
+	seen := make(map[string]bool)
 	for id := range h.funding {
+		seen[id] = true
+	}
+	for id := range h.opening {
+		seen[id] = true
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
 		ids = append(ids, id)
 	}
 	return ids
@@ -277,6 +303,7 @@ func (h *testClientHost) ListChannelIDs() []string {
 func (h *testClientHost) DeleteChannel(channelID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.opening, channelID)
 	delete(h.funding, channelID)
 	delete(h.paymentState, channelID)
 	delete(h.channelState, channelID)

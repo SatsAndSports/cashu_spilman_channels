@@ -32,24 +32,25 @@ describe("InMemorySpilmanClientHost", () => {
       expect(host.getChannelFunding("unknown")).toBeNull();
     });
 
-    it("saveOpeningChannel stores data and getChannelFunding retrieves it", () => {
+    it("saveOpeningFromSwapChannel stores data and getChannelFunding retrieves it after open", () => {
       const channelId = "test-channel-123";
-      const fundingJson = '{"params_json":"{}","funding_proofs_json":"[]"}';
+      const openingJson = '{"params_json":"{}","channel_secret_hex":"aa","keyset_info_json":"{}","sender_pubkey_hex":"bb","capacity":100,"funding_token_amount":100,"mint_url":"http://test","input_token":"tok","created_at":0}';
 
-      host.saveOpeningChannel(channelId, fundingJson);
-      expect(host.getChannelFunding(channelId)).toBe(fundingJson);
+      host.saveOpeningFromSwapChannel(channelId, openingJson);
+      host.markChannelOpen(channelId, "[]");
+      expect(host.getChannelFunding(channelId)).not.toBeNull();
     });
 
-    it("saveOpeningChannel sets state to opening", () => {
+    it("saveOpeningFromSwapChannel sets state to opening_from_swap", () => {
       const channelId = "test-channel-456";
-      host.saveOpeningChannel(channelId, "{}");
-      expect(host.getChannelState(channelId)).toBe("opening");
+      host.saveOpeningFromSwapChannel(channelId, "{}");
+      expect(host.getChannelState(channelId)).toBe("opening_from_swap");
     });
 
     it("markChannelOpen transitions state to open", () => {
       const channelId = "test-channel-789";
-      host.saveOpeningChannel(channelId, "{}");
-      expect(host.getChannelState(channelId)).toBe("opening");
+      host.saveOpeningFromSwapChannel(channelId, "{}");
+      expect(host.getChannelState(channelId)).toBe("opening_from_swap");
 
       host.markChannelOpen(channelId, "[]");
       expect(host.getChannelState(channelId)).toBe("open");
@@ -84,7 +85,7 @@ describe("InMemorySpilmanClientHost", () => {
 
     it("markChannelClosed changes state to 'closed'", () => {
       const channelId = "test-channel";
-      host.saveOpeningChannel(channelId, "{}");
+      host.saveOpeningFromSwapChannel(channelId, "{}");
       host.markChannelOpen(channelId, "[]");
       expect(host.getChannelState(channelId)).toBe("open");
 
@@ -93,8 +94,8 @@ describe("InMemorySpilmanClientHost", () => {
     });
 
     it("listChannelIds returns all stored channels", () => {
-      host.saveOpeningChannel("channel-1", "{}");
-      host.saveOpeningChannel("channel-2", "{}");
+      host.saveOpeningFromSwapChannel("channel-1", "{}");
+      host.saveOpeningFromSwapChannel("channel-2", "{}");
 
       const ids = host.listChannelIds();
       expect(ids).toHaveLength(2);
@@ -104,7 +105,8 @@ describe("InMemorySpilmanClientHost", () => {
 
     it("deleteChannel removes channel and all its data", () => {
       const channelId = "test-channel";
-      host.saveOpeningChannel(channelId, '{"funding":true}');
+      host.saveOpeningFromSwapChannel(channelId, '{"capacity":100}');
+      host.markChannelOpen(channelId, '[]');
       host.recordPayment(channelId, '{"payment":true}');
       host.markChannelClosed(channelId);
 

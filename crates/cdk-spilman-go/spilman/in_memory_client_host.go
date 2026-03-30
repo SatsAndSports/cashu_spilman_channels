@@ -18,7 +18,8 @@ import (
 type InMemoryClientHost struct {
 	secretKeyHex string
 	mu           sync.Mutex
-	funding      map[string]string // channelID -> fundingJSON
+	opening      map[string]string // channelID -> openingJSON (ClientChannelOpeningFromSwap)
+	funding      map[string]string // channelID -> fundingJSON (ClientChannelFunding)
 	paymentState map[string]string // channelID -> paymentStateJSON
 	channelState map[string]string // channelID -> "open" or "closed"
 }
@@ -29,6 +30,7 @@ type InMemoryClientHost struct {
 func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 	return &InMemoryClientHost{
 		secretKeyHex: secretKeyHex,
+		opening:      make(map[string]string),
 		funding:      make(map[string]string),
 		paymentState: make(map[string]string),
 		channelState: make(map[string]string),
@@ -39,25 +41,36 @@ func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 // Channel Opening (two-phase)
 // ============================================================================
 
-func (h *InMemoryClientHost) SaveOpeningChannel(channelID, fundingJSON string) {
+func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.funding[channelID] = fundingJSON
-	h.channelState[channelID] = "opening"
+	h.opening[channelID] = openingJSON
+	h.channelState[channelID] = "opening_from_swap"
 }
 
 func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Update the funding JSON with the proofs
-	if existing, ok := h.funding[channelID]; ok {
-		var funding map[string]interface{}
-		if json.Unmarshal([]byte(existing), &funding) == nil {
-			funding["funding_proofs_json"] = fundingProofsJSON
+	// Read opening data, construct funding, store in funding map, remove from opening map
+	if openingJSON, ok := h.opening[channelID]; ok {
+		var opening map[string]interface{}
+		if json.Unmarshal([]byte(openingJSON), &opening) == nil {
+			funding := map[string]interface{}{
+				"params_json":          opening["params_json"],
+				"funding_proofs_json":  fundingProofsJSON,
+				"channel_secret_hex":   opening["channel_secret_hex"],
+				"keyset_info_json":     opening["keyset_info_json"],
+				"sender_pubkey_hex":    opening["sender_pubkey_hex"],
+				"capacity":             opening["capacity"],
+				"funding_token_amount": opening["funding_token_amount"],
+				"mint_url":             opening["mint_url"],
+				"created_at":           opening["created_at"],
+			}
 			if updated, err := json.Marshal(funding); err == nil {
 				h.funding[channelID] = string(updated)
 			}
 		}
+		delete(h.opening, channelID)
 	}
 	h.channelState[channelID] = "open"
 }
@@ -66,6 +79,12 @@ func (h *InMemoryClientHost) GetChannelFunding(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.funding[channelID]
+}
+
+func (h *InMemoryClientHost) GetChannelOpeningFromSwap(channelID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.opening[channelID]
 }
 
 // ============================================================================
@@ -107,8 +126,15 @@ func (h *InMemoryClientHost) MarkChannelClosed(channelID string) {
 func (h *InMemoryClientHost) ListChannelIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ids := make([]string, 0, len(h.funding))
+	seen := make(map[string]bool)
 	for id := range h.funding {
+		seen[id] = true
+	}
+	for id := range h.opening {
+		seen[id] = true
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
 		ids = append(ids, id)
 	}
 	return ids
@@ -117,6 +143,7 @@ func (h *InMemoryClientHost) ListChannelIDs() []string {
 func (h *InMemoryClientHost) DeleteChannel(channelID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.opening, channelID)
 	delete(h.funding, channelID)
 	delete(h.paymentState, channelID)
 	delete(h.channelState, channelID)

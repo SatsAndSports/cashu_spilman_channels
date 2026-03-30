@@ -9,14 +9,17 @@ export interface SpilmanClientHost {
   // Channel Opening (two-phase)
   // ========================================================================
 
-  /** Save channel metadata before the funding swap. Channel enters Opening state. */
-  saveOpeningChannel(channelId: string, fundingJson: string): void;
+  /** Save channel metadata before the funding swap. Channel enters OpeningFromSwap state. */
+  saveOpeningFromSwapChannel(channelId: string, openingJson: string): void;
 
-  /** Transition channel from Opening to Open with the funding proofs. */
+  /** Transition channel from OpeningFromSwap to Open with the funding proofs. */
   markChannelOpen(channelId: string, fundingProofsJson: string): void;
 
   /** Retrieves channel funding data. Returns null if the channel doesn't exist. */
   getChannelFunding(channelId: string): string | null;
+
+  /** Retrieves channel opening data. Returns null if not in opening_from_swap state. */
+  getChannelOpeningFromSwap(channelId: string): string | null;
 
   // ========================================================================
   // Payment State (mutable)
@@ -32,7 +35,7 @@ export interface SpilmanClientHost {
   // Channel Lifecycle
   // ========================================================================
 
-  /** Returns the lifecycle state of a channel. Returns "opening", "open", or "closed". */
+  /** Returns the lifecycle state of a channel. Returns "opening_from_swap", "open", or "closed". */
   getChannelState(channelId: string): string;
 
   /** Marks a channel as closed. */

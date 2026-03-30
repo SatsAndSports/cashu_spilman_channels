@@ -146,11 +146,11 @@ func (b *ClientBridge) ProcessCooperativeCloseResponse(responseJSON string) erro
 
 // Channel Opening (two-phase)
 
-//export go_client_save_opening_channel
-func go_client_save_opening_channel(userData unsafe.Pointer, channelID *C.char, fundingJSON *C.char) {
+//export go_client_save_opening_from_swap_channel
+func go_client_save_opening_from_swap_channel(userData unsafe.Pointer, channelID *C.char, openingJSON *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.SaveOpeningChannel(C.GoString(channelID), C.GoString(fundingJSON))
+	host.SaveOpeningFromSwapChannel(C.GoString(channelID), C.GoString(openingJSON))
 }
 
 //export go_client_mark_channel_open
@@ -165,6 +165,17 @@ func go_client_get_channel_funding(userData unsafe.Pointer, channelID *C.char) *
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	result := host.GetChannelFunding(C.GoString(channelID))
+	if result == "" {
+		return nil
+	}
+	return C.CString(result)
+}
+
+//export go_client_get_channel_opening_from_swap
+func go_client_get_channel_opening_from_swap(userData unsafe.Pointer, channelID *C.char) *C.char {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	result := host.GetChannelOpeningFromSwap(C.GoString(channelID))
 	if result == "" {
 		return nil
 	}

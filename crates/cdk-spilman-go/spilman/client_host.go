@@ -11,18 +11,24 @@ type SpilmanClientHost interface {
 	// Channel Opening (two-phase)
 	// ========================================================================
 
-	// SaveOpeningChannel persists channel metadata before the funding swap.
-	// The channel enters Opening state. fundingJSON is a JSON-serialized
-	// ClientChannelFunding struct (with empty funding_proofs_json).
-	SaveOpeningChannel(channelID, fundingJSON string)
+	// SaveOpeningFromSwapChannel persists channel metadata before the funding swap.
+	// The channel enters OpeningFromSwap state. openingJSON is a JSON-serialized
+	// ClientChannelOpeningFromSwap struct.
+	SaveOpeningFromSwapChannel(channelID, openingJSON string)
 
-	// MarkChannelOpen transitions a channel from Opening to Open.
+	// MarkChannelOpen transitions a channel from OpeningFromSwap to Open.
 	// Called after the funding swap succeeds with the unblinded funding proofs.
+	// The host reads the opening data, constructs a ClientChannelFunding
+	// (copying fields + adding proofs), stores funding, and removes the opening record.
 	MarkChannelOpen(channelID, fundingProofsJSON string)
 
 	// GetChannelFunding retrieves channel funding data.
 	// Returns empty string if the channel doesn't exist.
 	GetChannelFunding(channelID string) string
+
+	// GetChannelOpeningFromSwap retrieves channel opening data.
+	// Returns empty string if the channel is not in opening_from_swap state.
+	GetChannelOpeningFromSwap(channelID string) string
 
 	// ========================================================================
 	// Payment State (mutable)
@@ -42,7 +48,7 @@ type SpilmanClientHost interface {
 	// ========================================================================
 
 	// GetChannelState returns the lifecycle state of a channel.
-	// Returns "opening", "open", or "closed".
+	// Returns "opening_from_swap", "open", or "closed".
 	GetChannelState(channelID string) string
 
 	// MarkChannelClosed marks a channel as closed.

@@ -15,6 +15,7 @@ import type { SpilmanClientHost } from "./client_bridge.js";
  * Uses fetch for networking and the WASM crypto functions.
  */
 export class InMemorySpilmanClientHost implements SpilmanClientHost {
+  private opening: Map<string, string> = new Map();
   private funding: Map<string, string> = new Map();
   private paymentState: Map<string, string> = new Map();
   private channelState: Map<string, string> = new Map();
@@ -30,28 +31,43 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
   // Channel Opening (two-phase)
   // ========================================================================
 
-  saveOpeningChannel(channelId: string, fundingJson: string): void {
-    this.funding.set(channelId, fundingJson);
-    this.channelState.set(channelId, "opening");
+  saveOpeningFromSwapChannel(channelId: string, openingJson: string): void {
+    this.opening.set(channelId, openingJson);
+    this.channelState.set(channelId, "opening_from_swap");
   }
 
   markChannelOpen(channelId: string, fundingProofsJson: string): void {
-    // Update the funding JSON with the proofs
-    const existingJson = this.funding.get(channelId);
-    if (existingJson) {
+    // Read opening data, construct funding, store in funding map, remove from opening map
+    const openingJson = this.opening.get(channelId);
+    if (openingJson) {
       try {
-        const funding = JSON.parse(existingJson);
-        funding.funding_proofs_json = fundingProofsJson;
+        const opening = JSON.parse(openingJson);
+        const funding = {
+          params_json: opening.params_json,
+          funding_proofs_json: fundingProofsJson,
+          channel_secret_hex: opening.channel_secret_hex,
+          keyset_info_json: opening.keyset_info_json,
+          sender_pubkey_hex: opening.sender_pubkey_hex,
+          capacity: opening.capacity,
+          funding_token_amount: opening.funding_token_amount,
+          mint_url: opening.mint_url,
+          created_at: opening.created_at,
+        };
         this.funding.set(channelId, JSON.stringify(funding));
       } catch {
         // If parse fails, just update state
       }
+      this.opening.delete(channelId);
     }
     this.channelState.set(channelId, "open");
   }
 
   getChannelFunding(channelId: string): string | null {
     return this.funding.get(channelId) ?? null;
+  }
+
+  getChannelOpeningFromSwap(channelId: string): string | null {
+    return this.opening.get(channelId) ?? null;
   }
 
   // ========================================================================
@@ -79,10 +95,14 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
   }
 
   listChannelIds(): string[] {
-    return Array.from(this.funding.keys());
+    const ids = new Set<string>();
+    for (const id of this.funding.keys()) ids.add(id);
+    for (const id of this.opening.keys()) ids.add(id);
+    return Array.from(ids);
   }
 
   deleteChannel(channelId: string): void {
+    this.opening.delete(channelId);
     this.funding.delete(channelId);
     this.paymentState.delete(channelId);
     this.channelState.delete(channelId);
