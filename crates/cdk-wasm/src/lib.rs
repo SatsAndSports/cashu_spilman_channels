@@ -184,6 +184,17 @@ extern "C" {
         mint_url: &str,
         restore_request_json: &str,
     ) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintKeysets)]
+    fn client_call_mint_keysets(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+    ) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintKeys)]
+    fn client_call_mint_keys(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> js_sys::Promise;
 }
 
 struct WasmSpilmanHostProxy {
@@ -574,6 +585,12 @@ impl SpilmanClientNetworking for WasmDummyNetworking {
     ) -> Result<String, String> {
         Err("Sync networking not supported in WASM; use async restore".to_string())
     }
+    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    }
+    fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    }
 }
 
 // ============================================================================
@@ -615,6 +632,20 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         .as_string()
         .ok_or_else(|| "Result not a string".to_string())
     }
+    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        JsFuture::from(self.js_host.client_call_mint_keysets(mint_url))
+            .await
+            .map_err(js_error_to_string)?
+            .as_string()
+            .ok_or_else(|| "Result not a string".to_string())
+    }
+    async fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        JsFuture::from(self.js_host.client_call_mint_keys(mint_url, keyset_id))
+            .await
+            .map_err(js_error_to_string)?
+            .as_string()
+            .ok_or_else(|| "Result not a string".to_string())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -632,6 +663,12 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         _mint_url: &str,
         _restore_request_json: &str,
     ) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
         Err("WASM proxy only works on wasm32".to_string())
     }
 }

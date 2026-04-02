@@ -1026,6 +1026,17 @@ pub struct SpilmanClientHostCallbacks {
         restore_request_json: *const c_char,
         response_out: *mut *mut c_char,
     ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_keysets: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_keys: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        keyset_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
 }
 
 struct CGoSpilmanClientHost {
@@ -1282,6 +1293,48 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             }
         }
     }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_keysets)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let id_c = CString::new(keyset_id).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_keys)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
 }
 
 pub struct ClientBridgeInstance {
@@ -1311,6 +1364,8 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
         call_mint_restore: callbacks.call_mint_restore,
+        call_mint_keysets: callbacks.call_mint_keysets,
+        call_mint_keys: callbacks.call_mint_keys,
     };
     let networking_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
@@ -1329,6 +1384,8 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
         call_mint_restore: callbacks.call_mint_restore,
+        call_mint_keysets: callbacks.call_mint_keysets,
+        call_mint_keys: callbacks.call_mint_keys,
     };
     let host = CGoSpilmanClientHost {
         callbacks: host_callbacks,

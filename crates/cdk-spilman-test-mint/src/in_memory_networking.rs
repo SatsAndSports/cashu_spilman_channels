@@ -85,6 +85,24 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
         serde_json::to_string(&response)
             .map_err(|e| format!("Failed to serialize restore response: {}", e))
     }
+
+    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        let response = self.mint.keysets();
+        serde_json::to_string(&response)
+            .map_err(|e| format!("Failed to serialize keysets response: {}", e))
+    }
+
+    fn call_mint_keys(&self, _mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        let id: cashu::nuts::Id = keyset_id
+            .parse()
+            .map_err(|e| format!("Invalid keyset ID '{}': {}", keyset_id, e))?;
+        let response = self
+            .mint
+            .keyset_pubkeys(&id)
+            .map_err(|e| format!("Failed to get keyset pubkeys: {}", e))?;
+        serde_json::to_string(&response)
+            .map_err(|e| format!("Failed to serialize keys response: {}", e))
+    }
 }
 
 impl SpilmanNetworking for InMemoryMintNetworking {

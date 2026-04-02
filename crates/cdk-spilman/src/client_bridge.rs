@@ -208,6 +208,18 @@ pub trait SpilmanClientNetworking {
         mint_url: &str,
         restore_request_json: &str,
     ) -> Result<String, String>;
+
+    /// Fetch the list of keysets from a mint.
+    ///
+    /// Calls `GET {mint_url}/v1/keysets` and returns the response body as a
+    /// JSON string.
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String>;
+
+    /// Fetch the keys for a specific keyset from a mint.
+    ///
+    /// Calls `GET {mint_url}/v1/keys/{keyset_id}` and returns the response
+    /// body as a JSON string.
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String>;
 }
 
 // ============================================================================
@@ -240,6 +252,18 @@ pub trait SpilmanClientAsyncNetworking {
         mint_url: &str,
         restore_request_json: &str,
     ) -> Result<String, String>;
+
+    /// Fetch the list of keysets from a mint (async version).
+    ///
+    /// Calls `GET {mint_url}/v1/keysets` and returns the response body as a
+    /// JSON string.
+    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String>;
+
+    /// Fetch the keys for a specific keyset from a mint (async version).
+    ///
+    /// Calls `GET {mint_url}/v1/keys/{keyset_id}` and returns the response
+    /// body as a JSON string.
+    async fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String>;
 }
 
 // ============================================================================
@@ -306,6 +330,84 @@ fn normalize_mint_error_string(raw: String) -> String {
         .unwrap_or(raw)
 }
 
+/// Build keyset info JSON from the responses of `/v1/keysets` and `/v1/keys/{id}`.
+///
+/// Extracts the matching keyset metadata (unit, input_fee_ppk) from the keysets
+/// response and the public keys from the keys response, then assembles them into
+/// the format expected by [`parse_keyset_info_from_json`](crate::parse_keyset_info_from_json).
+fn build_keyset_info_from_responses(
+    keysets_json: &str,
+    keys_json: &str,
+    keyset_id: &str,
+) -> Result<String, String> {
+    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
+        .map_err(|e| format!("Failed to parse /v1/keysets response: {}", e))?;
+    let keys_resp: serde_json::Value = serde_json::from_str(keys_json)
+        .map_err(|e| format!("Failed to parse /v1/keys response: {}", e))?;
+
+    // Find the matching keyset in /v1/keysets response
+    let keysets = keysets_resp
+        .get("keysets")
+        .and_then(|k| k.as_array())
+        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
+
+    let keyset_entry = keysets
+        .iter()
+        .find(|k| k.get("id").and_then(|v| v.as_str()) == Some(keyset_id))
+        .ok_or_else(|| format!("Keyset '{}' not found in /v1/keysets response", keyset_id))?;
+
+    let unit = keyset_entry
+        .get("unit")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'unit' in keyset entry")?;
+
+    let input_fee_ppk = keyset_entry
+        .get("input_fee_ppk")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Extract the keys from /v1/keys/{id} response
+    let keys = keys_resp
+        .get("keysets")
+        .and_then(|k| k.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|k| k.get("keys"))
+        .cloned()
+        .ok_or("Invalid /v1/keys response: missing keys")?;
+
+    let json_string = serde_json::json!({
+        "keysetId": keyset_id,
+        "unit": unit,
+        "keys": keys,
+        "inputFeePpk": input_fee_ppk,
+    })
+    .to_string();
+
+    // Verify the keyset ID is consistent with the keys and metadata.
+    // This prevents a malicious mint (or MITM) from serving keys that don't
+    // match the claimed keyset ID.
+    let keyset_info = crate::parse_keyset_info_from_json(&json_string)?;
+    let computed_id = match keyset_info.keyset_id.get_version() {
+        cashu::nuts::nut02::KeySetVersion::Version00 => {
+            cashu::nuts::nut02::Id::v1_from_keys(&keyset_info.active_keys)
+        }
+        cashu::nuts::nut02::KeySetVersion::Version01 => cashu::nuts::nut02::Id::v2_from_data(
+            &keyset_info.active_keys,
+            &keyset_info.unit,
+            keyset_info.input_fee_ppk,
+            keyset_info.final_expiry,
+        ),
+    };
+    if keyset_info.keyset_id != computed_id {
+        return Err(format!(
+            "Keyset ID mismatch: claimed {} but keys derive {}",
+            keyset_info.keyset_id, computed_id
+        ));
+    }
+
+    Ok(json_string)
+}
+
 impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N> {
     /// Create a new client bridge.
     ///
@@ -314,6 +416,54 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// opening channels.
     pub fn new(host: H, networking: N) -> Self {
         Self { host, networking }
+    }
+
+    /// Fetch keyset info from a mint for a specific keyset.
+    ///
+    /// Calls `GET /v1/keysets` and `GET /v1/keys/{keyset_id}` via the
+    /// networking layer, then assembles the result into the keyset info JSON
+    /// format expected by [`open_channel_from_token`](Self::open_channel_from_token).
+    pub fn fetch_keyset_info(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        let keysets_json = self.networking.call_mint_keysets(mint_url)?;
+        let keys_json = self.networking.call_mint_keys(mint_url, keyset_id)?;
+        build_keyset_info_from_responses(&keysets_json, &keys_json, keyset_id)
+    }
+
+    /// Open a new channel from a Cashu token, fetching keyset info automatically.
+    ///
+    /// This is a convenience wrapper around [`fetch_keyset_info`](Self::fetch_keyset_info)
+    /// and [`open_channel_from_token`](Self::open_channel_from_token). The keyset info
+    /// is fetched from the mint via the networking layer instead of being provided
+    /// by the caller.
+    ///
+    /// # Arguments
+    /// * `token_string` - Cashu token (cashuA... or cashuB...)
+    /// * `receiver_pubkey_hex` - Receiver's public key
+    /// * `sender_pubkey_hex` - Sender's public key
+    /// * `expiry_timestamp` - Unix timestamp for channel expiry
+    /// * `mint_url` - URL of the mint to fetch keyset info from
+    /// * `keyset_id` - Keyset ID to use (from server's advertised keysets)
+    /// * `max_amount` - Maximum amount per output (0 = no limit)
+    #[cfg(feature = "wallet")]
+    pub fn open_channel_from_token_auto(
+        &self,
+        token_string: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        mint_url: &str,
+        keyset_id: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, String> {
+        let keyset_info = self.fetch_keyset_info(mint_url, keyset_id)?;
+        self.open_channel_from_token(
+            token_string,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            &keyset_info,
+            max_amount,
+        )
     }
 
     /// Open a new channel from a Cashu token.

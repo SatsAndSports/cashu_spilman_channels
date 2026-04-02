@@ -1364,6 +1364,30 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
             }
         })
     }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "call_mint_keysets", (mint_url,))
+            {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "call_mint_keys", (mint_url, keyset_id))
+            {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
 }
 
 /// Client-side Spilman channel bridge.

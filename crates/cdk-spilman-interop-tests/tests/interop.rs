@@ -1070,6 +1070,24 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize restore response: {}", e))
         }
+
+        fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+            let response = self.mint.keysets();
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize keysets response: {}", e))
+        }
+
+        fn call_mint_keys(&self, _mint_url: &str, keyset_id: &str) -> Result<String, String> {
+            let id: cdk::nuts::Id = keyset_id
+                .parse()
+                .map_err(|e| format!("Invalid keyset ID: {}", e))?;
+            let response = self
+                .mint
+                .keyset_pubkeys(&id)
+                .map_err(|e| format!("Failed to get keyset pubkeys: {}", e))?;
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize keys response: {}", e))
+        }
     }
 
     // ====================================================================
@@ -1623,6 +1641,14 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
         }
 
         fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
             Err(self.mint_error_json.clone())
         }
     }
