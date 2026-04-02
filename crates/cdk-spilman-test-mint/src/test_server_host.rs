@@ -34,6 +34,16 @@ pub struct TestServerHost {
     amount_due: Cell<u64>,
 }
 
+impl std::fmt::Debug for TestServerHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestServerHost")
+            .field("channels", &self.channels.borrow().len())
+            .field("payments", &self.payments.borrow().len())
+            .field("amount_due", &self.amount_due)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TestServerHost {
     /// Create a new test server host.
     pub fn new(receiver_secret: SecretKey) -> Self {

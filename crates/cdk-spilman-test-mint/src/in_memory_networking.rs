@@ -14,6 +14,7 @@ use cdk_spilman::{SpilmanClientNetworking, SpilmanNetworking};
 /// `SpilmanNetworking` (for server close operations).
 ///
 /// This uses `block_in_place` to safely execute async code from sync trait methods.
+#[derive(Debug)]
 pub struct InMemoryMintNetworking {
     mint: Arc<Mint>,
     runtime: tokio::runtime::Handle,

@@ -642,6 +642,7 @@ fn reconstruct_funding_outputs(
         .map_err(|e| format!("Failed to create funding outputs: {}", e))
 }
 
+/// Create a funding swap request from channel parameters and input proofs.
 pub fn create_funding_swap(
     params_json: &str,
     channel_secret_hex: &str,

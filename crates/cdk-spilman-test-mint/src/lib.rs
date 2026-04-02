@@ -15,18 +15,15 @@ pub use test_server_host::TestServerHost;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use axum::Router;
 use bip39::Mnemonic;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::FeeReserve;
-use cdk_axum::create_mint_router;
 use cdk_common::common::QuoteTTL;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::memory;
@@ -216,8 +213,9 @@ pub async fn build_test_mint(config: &TestMintConfig) -> Result<Mint> {
 }
 
 /// Build the axum router for the standalone test mint.
-pub async fn build_router(mint: Arc<Mint>) -> Result<Router> {
-    create_mint_router(
+#[cfg(feature = "http")]
+pub async fn build_router(mint: Arc<Mint>) -> Result<axum::Router> {
+    cdk_axum::create_mint_router(
         mint,
         vec![PaymentMethod::Known(KnownMethod::Bolt11).to_string()],
     )
@@ -225,6 +223,7 @@ pub async fn build_router(mint: Arc<Mint>) -> Result<Router> {
 }
 
 /// Serve the standalone test mint until a shutdown signal is received.
+#[cfg(feature = "http")]
 pub async fn serve_mint_with_shutdown(
     config: TestMintConfig,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
@@ -232,7 +231,7 @@ pub async fn serve_mint_with_shutdown(
     let mint = Arc::new(build_test_mint(&config).await?);
     let router = build_router(Arc::clone(&mint)).await?;
 
-    let socket_addr = SocketAddr::new(
+    let socket_addr = std::net::SocketAddr::new(
         config
             .listen_host
             .parse()
@@ -255,6 +254,7 @@ pub async fn serve_mint_with_shutdown(
 }
 
 /// Serve the standalone test mint until interrupted.
+#[cfg(feature = "http")]
 pub async fn serve_mint(config: TestMintConfig) -> Result<()> {
     serve_mint_with_shutdown(config, async {
         #[cfg(unix)]
