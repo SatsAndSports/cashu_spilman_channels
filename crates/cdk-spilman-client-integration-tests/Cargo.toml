@@ -15,6 +15,7 @@ cdk-common.workspace = true
 cdk-fake-wallet.workspace = true
 cdk-sqlite = { workspace = true, features = ["mint", "wallet"] }
 cdk-spilman = { path = "../cdk-spilman", features = ["wallet"] }
+cdk-spilman-test-mint = { path = "../cdk-spilman-test-mint" }
 cashu.workspace = true
 hex = "0.4"
 serde.workspace = true

@@ -1,4 +1,17 @@
 //! Minimal standalone test mint used by Spilman demos and integration tests.
+//!
+//! Also provides reusable test helpers for external consumers:
+//! [`TestMintHelper`] for creating in-memory mints and minting proofs,
+//! [`InMemoryMintNetworking`] for calling the mint without HTTP,
+//! and [`TestServerHost`] as a minimal [`SpilmanHost`](cdk_spilman::SpilmanHost) implementation.
+
+pub mod in_memory_networking;
+pub mod test_helpers;
+pub mod test_server_host;
+
+pub use in_memory_networking::InMemoryMintNetworking;
+pub use test_helpers::{create_test_mint, mint_test_proofs, TestMintHelper};
+pub use test_server_host::TestServerHost;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
