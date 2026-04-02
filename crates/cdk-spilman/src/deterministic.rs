@@ -10,7 +10,8 @@
 use async_trait::async_trait;
 
 use cashu::dhke::blind_message;
-use cashu::nuts::nut11::{Conditions, SigFlag};
+use cashu::nuts::nut10::Conditions;
+use cashu::nuts::nut11::SigFlag;
 use cashu::nuts::{BlindSignature, BlindedMessage, Id, RestoreRequest, SecretKey};
 use cashu::secret::Secret;
 use cashu::Amount;

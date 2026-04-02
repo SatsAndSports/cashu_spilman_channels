@@ -10,7 +10,7 @@ name = "rust-ascii-art"
 path = "src/main.rs"
 
 [dependencies]
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cashu.workspace = true
 cdk-spilman = { path = "../../crates/cdk-spilman", version = "=0.15.1", features = ["spilman-axum", "configurable-host-reqwest"] }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

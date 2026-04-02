@@ -10,7 +10,7 @@ description = "WASM bindings for Cashu payment channels"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cashu.workspace = true
 cdk-spilman = { path = "../cdk-spilman", version = "=0.15.1", features = ["wallet"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

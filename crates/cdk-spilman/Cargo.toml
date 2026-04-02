@@ -19,7 +19,7 @@ async-trait.workspace = true
 axum = { workspace = true, optional = true, features = ["macros"] }
 base64 = "0.22"
 bitcoin.workspace = true
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cashu.workspace = true
 reqwest = { workspace = true, optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 serde.workspace = true

@@ -10,12 +10,12 @@ description = "Integration tests for SpilmanClientBridge against SpilmanBridge"
 anyhow.workspace = true
 async-trait.workspace = true
 bip39 = "2.0"
-cdk = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk", default-features = false, features = ["mint", "wallet"] }
-cdk-common = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-common" }
-cdk-fake-wallet = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-fake-wallet" }
-cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-sqlite", default-features = false, features = ["mint", "wallet"] }
+cdk = { workspace = true, features = ["mint", "wallet"] }
+cdk-common.workspace = true
+cdk-fake-wallet.workspace = true
+cdk-sqlite = { workspace = true, features = ["mint", "wallet"] }
 cdk-spilman = { path = "../cdk-spilman", features = ["wallet"] }
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu" }
+cashu.workspace = true
 hex = "0.4"
 serde.workspace = true
 serde_json.workspace = true

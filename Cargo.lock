@@ -403,31 +403,6 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cashu"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "bitcoin",
- "cbor-diag",
- "ciborium",
- "lightning",
- "lightning-invoice",
- "once_cell",
- "serde",
- "serde_json",
- "serde_with",
- "strum",
- "strum_macros",
- "thiserror",
- "tracing",
- "unicode-normalization",
- "url",
- "uuid",
- "web-time",
- "zeroize",
-]
-
-[[package]]
-name = "cashu"
 version = "0.16.0-rc.1"
 source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
@@ -490,8 +465,8 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
+version = "0.16.0-rc.1"
+source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -499,8 +474,8 @@ dependencies = [
  "bitcoin",
  "bitcoin-payment-instructions",
  "cbor-diag",
- "cdk-common 0.15.1",
- "cdk-signatory 0.15.1",
+ "cdk-common",
+ "cdk-signatory",
  "ciborium",
  "futures",
  "getrandom 0.2.17",
@@ -511,41 +486,6 @@ dependencies = [
  "regex",
  "ring",
  "rustls",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "uuid",
- "web-time",
- "zeroize",
-]
-
-[[package]]
-name = "cdk"
-version = "0.16.0-rc.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
-dependencies = [
- "anyhow",
- "arc-swap",
- "async-trait",
- "bitcoin",
- "bitcoin-payment-instructions",
- "cbor-diag",
- "cdk-common 0.16.0-rc.1",
- "cdk-signatory 0.16.0-rc.1",
- "ciborium",
- "futures",
- "getrandom 0.2.17",
- "gloo-timers",
- "jsonwebtoken",
- "lightning",
- "lightning-invoice",
- "regex",
- "ring",
  "serde",
  "serde_json",
  "serde_with",
@@ -567,7 +507,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "cdk 0.16.0-rc.1",
+ "cdk",
  "futures",
  "moka",
  "paste",
@@ -581,47 +521,15 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bitcoin",
- "cashu 0.15.1",
- "cbor-diag",
- "cdk-http-client 0.15.1",
- "ciborium",
- "futures",
- "getrandom 0.2.17",
- "lightning",
- "lightning-invoice",
- "parking_lot",
- "paste",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror",
- "tokio",
- "tonic",
- "tracing",
- "url",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-time",
-]
-
-[[package]]
-name = "cdk-common"
 version = "0.16.0-rc.1"
 source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
  "anyhow",
  "async-trait",
  "bitcoin",
- "cashu 0.16.0-rc.1",
+ "cashu",
  "cbor-diag",
- "cdk-http-client 0.16.0-rc.1",
+ "cdk-http-client",
  "ciborium",
  "futures",
  "getrandom 0.2.17",
@@ -645,34 +553,12 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "async-trait",
- "bitcoin",
- "cdk-common 0.15.1",
- "futures",
- "lightning",
- "lightning-invoice",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "uuid",
- "web-time",
-]
-
-[[package]]
-name = "cdk-fake-wallet"
 version = "0.16.0-rc.1"
 source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
  "async-trait",
  "bitcoin",
- "cdk-common 0.16.0-rc.1",
+ "cdk-common",
  "futures",
  "lightning",
  "lightning-invoice",
@@ -685,27 +571,6 @@ dependencies = [
  "tracing",
  "uuid",
  "web-time",
-]
-
-[[package]]
-name = "cdk-http-client"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "futures",
- "futures-channel",
- "js-sys",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
@@ -731,31 +596,6 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bip39",
- "bitcoin",
- "cdk-common 0.15.1",
- "clap",
- "getrandom 0.2.17",
- "home",
- "prost",
- "rustls",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cdk-signatory"
 version = "0.16.0-rc.1"
 source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
@@ -763,7 +603,7 @@ dependencies = [
  "async-trait",
  "bip39",
  "bitcoin",
- "cdk-common 0.16.0-rc.1",
+ "cdk-common",
  "clap",
  "getrandom 0.2.17",
  "home",
@@ -788,7 +628,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bitcoin",
- "cashu 0.15.1",
+ "cashu",
  "reqwest",
  "rusqlite",
  "serde",
@@ -806,12 +646,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bip39",
- "cashu 0.15.1",
- "cdk 0.15.1",
- "cdk-common 0.15.1",
- "cdk-fake-wallet 0.15.1",
+ "cashu",
+ "cdk",
+ "cdk-common",
+ "cdk-fake-wallet",
  "cdk-spilman",
- "cdk-sqlite 0.15.1",
+ "cdk-sqlite",
  "hex",
  "serde",
  "serde_json",
@@ -824,7 +664,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitcoin",
- "cashu 0.15.1",
+ "cashu",
  "cdk-spilman",
  "libc",
  "serde",
@@ -838,11 +678,11 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bip39",
- "cdk 0.15.1",
- "cdk-common 0.15.1",
- "cdk-fake-wallet 0.15.1",
+ "cdk",
+ "cdk-common",
+ "cdk-fake-wallet",
  "cdk-spilman",
- "cdk-sqlite 0.15.1",
+ "cdk-sqlite",
  "hex",
  "rand 0.9.2",
  "reqwest",
@@ -854,7 +694,7 @@ dependencies = [
 name = "cdk-spilman-python"
 version = "0.1.0"
 dependencies = [
- "cashu 0.15.1",
+ "cashu",
  "cdk-spilman",
  "hex",
  "pyo3",
@@ -868,7 +708,7 @@ version = "0.15.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "cashu 0.15.1",
+ "cashu",
  "cdk-spilman",
  "command-group",
  "futures",
@@ -890,11 +730,11 @@ dependencies = [
  "anyhow",
  "axum",
  "bip39",
- "cdk 0.16.0-rc.1",
+ "cdk",
  "cdk-axum",
- "cdk-common 0.16.0-rc.1",
- "cdk-fake-wallet 0.16.0-rc.1",
- "cdk-sqlite 0.16.0-rc.1",
+ "cdk-common",
+ "cdk-fake-wallet",
+ "cdk-sqlite",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -902,52 +742,14 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "async-trait",
- "bitcoin",
- "cdk-common 0.15.1",
- "lightning-invoice",
- "once_cell",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cdk-sql-common"
 version = "0.16.0-rc.1"
 source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc5033ab32d9578744ab14b52b7315ca"
 dependencies = [
  "async-trait",
  "bitcoin",
- "cdk-common 0.16.0-rc.1",
+ "cdk-common",
  "lightning-invoice",
  "once_cell",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cdk-sqlite"
-version = "0.15.1"
-source = "git+https://github.com/cashubtc/cdk.git?rev=63866dc6d7da9796c75365cde97157d464331da1#63866dc6d7da9796c75365cde97157d464331da1"
-dependencies = [
- "async-trait",
- "bitcoin",
- "cdk-common 0.15.1",
- "cdk-sql-common 0.15.1",
- "lightning-invoice",
- "paste",
- "rusqlite",
  "serde",
  "serde_json",
  "thiserror",
@@ -963,8 +765,8 @@ source = "git+https://github.com/cashubtc/cdk.git?tag=v0.16.0-rc.1#19ccf153dc503
 dependencies = [
  "async-trait",
  "bitcoin",
- "cdk-common 0.16.0-rc.1",
- "cdk-sql-common 0.16.0-rc.1",
+ "cdk-common",
+ "cdk-sql-common",
  "lightning-invoice",
  "paste",
  "rusqlite",
@@ -982,7 +784,7 @@ version = "0.15.1"
 dependencies = [
  "async-trait",
  "bitcoin",
- "cashu 0.15.1",
+ "cashu",
  "cdk-spilman",
  "console_error_panic_hook",
  "getrandom 0.2.17",
@@ -3061,7 +2863,7 @@ version = "0.15.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
- "cashu 0.15.1",
+ "cashu",
  "cdk-spilman",
  "figlet-rs",
  "hex",
