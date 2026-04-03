@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cashu::nuts::SecretKey;
 use cdk_spilman::{
     build_cashu_b_token, parse_keyset_info_from_json, ConfigurableClientHost, Payment,
-    SpilmanBridge, SpilmanClientBridge, SpilmanClientNetworking,
+    ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge, SpilmanClientNetworking,
 };
 use cdk_spilman_client_integration_tests::{
     InMemoryMintNetworking, TestMintHelper, TestServerHost,
@@ -474,4 +474,113 @@ async fn test_fetch_keyset_info_rejects_mismatched_id() {
         );
         eprintln!("Correctly accepted legitimate non-sat keyset: {}", other_id);
     }
+}
+
+/// Test the full HTTP round-trip: start a real HTTP mint, use ReqwestClientNetworking
+/// to fetch keyset info and open a channel, then verify the server can process payments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_reqwest_client_networking_http_round_trip() {
+    use cdk_spilman_test_mint::build_router;
+
+    // 1. Create an in-memory mint and serve it over HTTP
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let router = build_router(mint_helper.mint()).await.unwrap();
+
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mint_url = format!("http://{}", http_listener.local_addr().unwrap());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        axum::serve(http_listener, router)
+            .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
+            .await
+            .unwrap();
+    });
+
+    // Wait for the mint to be ready
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        match client.get(format!("{mint_url}/v1/keysets")).send().await {
+            Ok(resp) if resp.status().is_success() => break,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+
+    // 2. Setup server-side Spilman bridge
+    let receiver_secret = SecretKey::generate();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        &mint_url,
+        mint_helper.keyset_id(),
+        keyset_info_json,
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    // 3. Setup client-side Spilman bridge with HTTP networking
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let networking = ReqwestClientNetworking::new();
+    let client_bridge = SpilmanClientBridge::new(client_host, networking);
+
+    // 4. Verify fetch_keyset_info works over HTTP
+    let keyset_id_str = mint_helper.keyset_id().to_string();
+    let fetched_info = client_bridge
+        .fetch_keyset_info(&mint_url, &keyset_id_str)
+        .expect("fetch_keyset_info over HTTP should succeed");
+    let parsed = parse_keyset_info_from_json(&fetched_info).unwrap();
+    assert_eq!(parsed.keyset_id, mint_helper.keyset_id());
+    eprintln!("Fetched keyset info over HTTP: id={}", keyset_id_str);
+
+    // 5. Mint proofs (in-memory, same Mint instance backing the HTTP server)
+    let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    let token = build_cashu_b_token(
+        &mint_url,
+        "sat",
+        &serde_json::to_string(&proofs).unwrap(),
+    )
+    .unwrap();
+
+    // 6. Open channel via HTTP (swap happens over HTTP)
+    let open_result = client_bridge
+        .open_channel_from_token_auto(
+            &token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &mint_url,
+            &keyset_id_str,
+            64,
+        )
+        .expect("open_channel_from_token_auto over HTTP should succeed");
+
+    assert!(open_result.capacity > 0);
+    eprintln!(
+        "Channel opened over HTTP: id={}, capacity={}",
+        open_result.channel_id, open_result.capacity
+    );
+
+    // 7. Client creates payment with funding
+    let payment: Payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
+        .expect("create payment");
+    assert_eq!(payment.balance, 10);
+    assert!(payment.has_funding());
+
+    // 8. Server processes the payment
+    let result = server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server should accept payment from HTTP-opened channel");
+    assert_eq!(result.balance, 10);
+    assert_eq!(result.capacity, open_result.capacity);
+    eprintln!("Server verified payment from HTTP-opened channel");
+
+    let _ = shutdown_tx.send(());
 }

@@ -645,6 +645,7 @@ version = "0.15.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bip39",
  "cashu",
  "cdk",
@@ -654,6 +655,7 @@ dependencies = [
  "cdk-spilman-test-mint",
  "cdk-sqlite",
  "hex",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

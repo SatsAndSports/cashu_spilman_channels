@@ -22,6 +22,8 @@ mod configurable_client_host;
 pub mod configurable_host;
 #[cfg(feature = "configurable-host-reqwest")]
 pub mod configurable_networking;
+#[cfg(feature = "configurable-host-reqwest")]
+pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
 mod established_channel;
 mod keysets_and_amounts;
