@@ -150,6 +150,24 @@ By delegating these concerns to a "Host" while keeping the protocol logic in the
 - **Closing**: A cooperative close has been initiated. The swap request is prepared but not yet submitted to the mint. No further payments are accepted.
 - **Closed**: The mint has processed the swap. Receiver and sender proofs have been unblinded and stored. The channel is settled.
 
+### Channel Lifecycle (Client Perspective)
+
+```
+      open_channel_from_token
+                 │
+                 ▼
+        OpeningFromSwap ──► Open ──► Closed
+                 │           ▲
+                 └───────────┘
+                    restore
+```
+
+- **OpeningFromSwap**: Initial state when `open_channel_from_token` starts. The channel parameters and input token are persisted *before* the funding swap is submitted. This ensures that if the process crashes or the mint times out, the user doesn't lose their input ecash.
+- **Open**: The funding swap has succeeded and the 2-of-2 multisig funding proofs are stored. The channel is ready for payments.
+- **Closed**: The channel has been closed (cooperatively or unilaterally).
+
+A channel stuck in `OpeningFromSwap` can be recovered using the `restore_funding_proofs` method, which uses NUT-09 to fetch the signatures if the swap actually succeeded on the mint's side. If the swap never reached the mint, the original `input_token` remains unspent and can be reclaimed.
+
 Transitions:
 - `→ Open`: Client funds a channel and registers it via the funding endpoint.
 - `Open → Open`: Normal payment — balance increases, usage is recorded.
@@ -216,17 +234,30 @@ trait SpilmanHost<C = String> {
 
 ### Client-Side: SpilmanClientBridge
 
-The `SpilmanClientBridge` mirrors this pattern, enabling external signers and custom storage for client applications.
+The `SpilmanClientBridge` mirrors this pattern, enabling external signers and custom storage for client applications. It uses a two-phase opening process to ensure funds are never lost even if the process crashes or the network fails during funding.
 
 ```rust
 trait SpilmanClientHost {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
-    fn save_channel(&self, channel_id: &str, channel_json: &str, channel_secret_hex: &str);
-    fn get_channel(&self, channel_id: &str) -> Option<ChannelData>;
+    // Channel Opening (two-phase)
+    fn save_opening_from_swap_channel(&self, channel_id: &str, opening: ClientChannelOpeningFromSwap);
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str);
+    fn get_channel_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap>;
+    fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
+
+    // Payment State (mutable)
+    fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState>;
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState);
+
+    // Lifecycle
+    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState;
+    fn mark_channel_closed(&self, channel_id: &str);
     fn list_channel_ids(&self) -> Vec<String>;
     fn delete_channel(&self, channel_id: &str);
-    fn sign_with_tweaked_key(&self, signer_pubkey_hex: &str, message_hex: &str, tweak_scalar_hex: &str) -> Result<String, String>;
+
+    // Time & Crypto
+    fn now_seconds(&self) -> u64;
     fn compute_channel_secret(&self, sender_pubkey_hex: &str, receiver_pubkey_hex: &str) -> Result<String, String>;
+    fn sign_with_tweaked_key(&self, signer_pubkey_hex: &str, message_hex: &str, tweak_scalar_hex: &str) -> Result<String, String>;
 }
 ```
 
@@ -234,9 +265,9 @@ trait SpilmanClientHost {
 
 ### Integration Kits
 
-The Bridge and Host traits are deliberately flexible, but most services follow the same pattern: load pricing from config, track usage in a database, and expose management endpoints. To avoid reimplementing this boilerplate, the library provides **integration kits** — ready-made `SpilmanHost` implementations driven by a simple YAML config file.
+The Bridge and Host traits are deliberately flexible, but most services follow the same pattern: load pricing from config, track usage in a database, and expose management endpoints. To avoid reimplementing this boilerplate, the library provides **integration kits** — ready-made `SpilmanHost` and `SpilmanClientHost` implementations.
 
-Integration kits are available for Rust (`ConfigurableHost`), TypeScript (`cdk-spilman-kit`), Python, and Go. See [INTEGRATION.md](INTEGRATION.md) for setup guides.
+Integration kits are available for Rust (`ConfigurableHost`, `ConfigurableClientHost`), TypeScript (`cdk-spilman-kit`), Python, and Go. See [INTEGRATION.md](INTEGRATION.md) for setup guides.
 
 ## Data Model: YAML Configuration
 
@@ -295,6 +326,7 @@ The bridge implements intelligent error handling based on [NUT-00](https://githu
 | 10xxx | Proof/Token verification | Fail immediately |
 | 11xxx | Input/Output errors (e.g., spent proofs) | Fail immediately |
 | 12xxx | Keyset errors (not found, inactive) | Retry after refresh |
+| 99999 | Unknown keyset (NutMix workaround) | Retry after refresh |
 | 20xxx+ | Quote/Payment/Auth errors | Fail immediately |
 
 #### Selective Retry Logic

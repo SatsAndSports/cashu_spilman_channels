@@ -42,30 +42,28 @@ except RuntimeError as e:
 ### Client-Side: Setup
 
 ```python
-from cdk_spilman import (
-    generate_keypair,
-    compute_channel_secret,
-    create_funding_outputs,
-    create_signed_balance_update,
+from cdk_spilman import ClientBridge
+from cdk_spilman_kit import InMemoryClientHost
+
+host = InMemoryClientHost(alice_secret_hex)
+bridge = ClientBridge(host)
+
+# Simplified channel opening
+result = bridge.open_channel_from_token(
+    token, receiver_pubkey, sender_pubkey, expiry, keyset_info, max_amount
 )
 
-# Derive `_channel secret_` with receiver
-channel_secret = compute_channel_secret(sender_secret, receiver_pubkey)
-
-# Create funding outputs for minting
-funding = create_funding_outputs(params_json, sender_secret, keyset_json)
-
 # Sign a payment
-payment = create_signed_balance_update(params_json, keyset_json, sender_secret, proofs_json, balance)
+payment = bridge.create_payment(result.channel_id, balance)
 ```
 
 ## API Reference
 
 ### Classes
-- `SpilmanBridge` - Main bridge for server-side payment validation
+- `SpilmanBridge` - Server-side bridge
+- `ClientBridge` - Client-side bridge
 
 ### Core Functions
-- `generate_keypair()` - Generate a new secp256k1 keypair
-- `compute_channel_secret(secret, pubkey)` - Derive `_channel secret_`
-- `create_funding_outputs(params, secret, keyset)` - Create blinded outputs for funding
-- `create_signed_balance_update(...)` - Sign a payment
+- `generate_keypair()` - secp256k1 keypair generation
+- `compute_channel_secret(secret, pubkey)` - ECDH derivation
+- `build_cashu_b_token(mint, proofs)` - Token builder

@@ -5,7 +5,7 @@ This example demonstrates a Go server and client using the Go integration kit.
 ## Overview
 
 - **Server**: Standard library HTTP server + `RegisterManagementRoutes`
-- **Client**: Uses `ClientBridge` to build payment headers and close the channel
+- **Client**: Uses `ClientBridge` to open channels from tokens, build payment headers, and close.
 
 ## Prerequisites
 

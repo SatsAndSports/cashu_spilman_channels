@@ -72,12 +72,17 @@ async def ascii_art(payment=Depends(spilman.payment_required)):
 ## Client usage
 
 ```python
-from cdk_spilman_kit import SpilmanClient, BaseSpilmanClientHost
+from cdk_spilman_kit import SpilmanClient, InMemoryClientHost
 
-host = BaseSpilmanClientHost(alice_secret_hex)
+host = InMemoryClientHost(alice_secret_hex)
 client = SpilmanClient(host)
 
-header = client.build_payment_header(channel_id, balance, include_funding=True)
-close_req = client.create_cooperative_close_request(channel_id, final_balance)
+# Simplified channel opening
+result = client.open_channel_from_token(
+    token, receiver_pubkey, sender_pubkey, expiry, keyset_info, max_amount
+)
+
+header = client.build_payment_header(result.channel_id, balance, include_funding=True)
+close_req = client.create_cooperative_close_request(result.channel_id, final_balance)
 client.process_cooperative_close_response(close_response_json)
 ```

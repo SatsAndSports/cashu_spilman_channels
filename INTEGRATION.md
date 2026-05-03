@@ -152,11 +152,24 @@ will be rejected until topped up.
 
 | Store | Purpose |
 |-------|---------|
+| **OpeningFromSwap** | (Client-only) Temporary storage for params and input token before funding completes. |
 | **Funding** | Store params, proofs, and `_channel secret_` for validation and closing. |
 | **Balance** | Track the highest payment signature seen (monotonic). |
 | **Usage** | Store monotonic counters (e.g., requests, bytes) to compute `amount_due`. |
 | **Closing** | Temporary storage for swap data during the closing transition. |
 | **Closed** | Final audit trail of closed channels and their proofs. |
+
+---
+
+## Client-Side Recovery (NUT-09)
+
+The client-side implementation uses a two-phase opening process to prevent fund loss. If a network failure occurs after the funding swap is submitted, the channel may be stuck in the `OpeningFromSwap` state.
+
+Use the `restore_funding_proofs` method to recover:
+
+1. **Attempt Restore**: Re-fetches the signatures from the mint via NUT-09.
+2. **Success**: If the swap had succeeded on the mint, you get the funding proofs and the channel transitions to `Open`.
+3. **Failure**: If the mint has no record of the swap, the original `input_token` remains unspent. You can retrieve it from the opening store and retry or reclaim.
 
 ---
 

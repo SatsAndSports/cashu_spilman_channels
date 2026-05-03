@@ -5,7 +5,7 @@ This example demonstrates Spilman unidirectional payment channels using TypeScri
 ## Overview
 
 - **Server**: Express server that generates ASCII art (pay per character)
-- **Client**: Opens a channel, pays per request, and optionally closes the channel
+- **Client**: Opens a channel from a token, pays per request, and optionally closes.
 
 ## Prerequisites
 

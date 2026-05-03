@@ -42,18 +42,21 @@ app.post("/ascii", (req, res) => {
 ## Client usage (Node.js)
 
 ```ts
-import { SpilmanClientBridge, init } from "cdk-spilman-kit";
+import { SpilmanClientBridge, InMemorySpilmanClientHost, init } from "cdk-spilman-kit";
 
 await init();
+const host = new InMemorySpilmanClientHost(senderSecretKeyHex);
 const bridge = new SpilmanClientBridge(host);
 
-const header = bridge.buildPaymentHeader(channelId, BigInt(balance), true);
-const closeReq = bridge.createCooperativeCloseRequest(channelId, BigInt(finalBalance));
+// Simplified channel opening
+const result = await bridge.openChannelFromToken(
+  token, receiverPubkey, senderPubkey, expiry, keysetInfo, maxAmount
+);
+
+const header = bridge.buildPaymentHeader(result.channelId, BigInt(balance), true);
+const closeReq = bridge.createCooperativeCloseRequest(result.channelId, BigInt(finalBalance));
 bridge.processCooperativeCloseResponse(closeResponseJson);
 ```
-
-Note: `openChannelFromToken` is not exposed in the JS wrapper yet because the
-WASM client host does not support async mint swaps.
 
 ## WASM artifacts
 
