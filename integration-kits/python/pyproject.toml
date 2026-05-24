@@ -9,14 +9,14 @@ description = "Integration kit for CDK Spilman payment channels (Flask/FastAPI)"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "requests>=2.25.0",
-    "PyYAML>=6.0",
+    "requests>=2.32.3",
+    "PyYAML>=6.0.2",
 ]
 
 [project.optional-dependencies]
-flask = ["flask>=2.0.0"]
-fastapi = ["fastapi>=0.68.0"]
-dev = ["pytest>=7.0.0"]
+flask = ["flask>=3.0.3"]
+fastapi = ["fastapi>=0.115.8"]
+dev = ["pytest>=8.3.4"]
 
 [tool.setuptools]
 packages = ["cdk_spilman_kit", "cdk_spilman_kit.ext"]

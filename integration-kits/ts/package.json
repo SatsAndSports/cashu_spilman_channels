@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@noble/secp256k1": "^2.1.0",
-    "better-sqlite3": "^11.0.0",
-    "express": "^4.21.0",
+    "better-sqlite3": "^11.8.1",
+    "express": "^5.2.1",
     "figlet": "^1.8.0",
     "yaml": "^2.7.0"
   },
@@ -25,8 +25,8 @@
     "@types/express": "^5.0.0",
     "@types/figlet": "^1.7.0",
     "@types/node": "^22.10.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4"
   }
 }

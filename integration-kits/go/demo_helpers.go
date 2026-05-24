@@ -64,13 +64,13 @@ func DemoMintFundingToken(mintUrl string, amount uint64, blinded []interface{}, 
 	resp.Body.Close()
 
 	if q.Request != "" {
-		fmt.Printf("\n  " + strings.Repeat("=", 56))
-		fmt.Printf("\n  PAY THIS INVOICE TO FUND THE CHANNEL\n")
-		fmt.Printf("  " + strings.Repeat("=", 56) + "\n\n")
+		fmt.Print("\n  ", strings.Repeat("=", 56))
+		fmt.Print("\n  PAY THIS INVOICE TO FUND THE CHANNEL\n")
+		fmt.Print("  ", strings.Repeat("=", 56), "\n\n")
 		fmt.Printf("  %s\n\n", q.Request)
 		qr, _ := qrcode.New(q.Request, qrcode.Medium)
 		fmt.Println(qr.ToSmallString(false))
-		fmt.Printf("\n  " + strings.Repeat("=", 56) + "\n\n")
+		fmt.Print("\n  ", strings.Repeat("=", 56), "\n\n")
 	}
 
 	fmt.Println("  Waiting for payment...")
