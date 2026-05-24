@@ -10,7 +10,7 @@ import time
 import requests
 import os
 from cdk_spilman import generate_keypair, build_cashu_b_token
-from cdk_spilman_kit import SpilmanClient, BaseSpilmanClientHost
+from cdk_spilman_kit import SpilmanClient, InMemorySpilmanClientHost
 from cdk_spilman_kit.demo import fetch_active_keyset_info, mint_plain_proofs
 
 MINT_URL = os.environ.get("MINT_URL", "http://localhost:3338")
@@ -27,7 +27,7 @@ def main():
 
     # 2. Setup Client
     alice_secret, sender_pubkey = generate_keypair()
-    host = BaseSpilmanClientHost(alice_secret)
+    host = InMemorySpilmanClientHost(alice_secret)
     client = SpilmanClient(host)
 
     # 3. Get Server Params & Keyset

@@ -10,22 +10,22 @@ import requests
 from typing import Optional, List, Dict
 
 
-class InMemoryClientHost:
+class InMemorySpilmanClientHost:
     """In-memory implementation of SpilmanClientHost.
 
     Stores channel data in memory (lost on restart).
     Uses requests for networking and the cdk_spilman crypto functions.
 
     Args:
-        secret_key_hex: The sender's secret key in hex format (64 chars)
+        secret_key: The sender's secret key in hex format (64 chars)
     """
 
-    def __init__(self, secret_key_hex: str):
-        self.secret_key_hex = secret_key_hex
+    def __init__(self, secret_key: str):
+        self.secret_key = secret_key
         self._opening: Dict[str, str] = {}  # channel_id -> opening_json
         self._funding: Dict[str, str] = {}  # channel_id -> funding_json
         self._payment_state: Dict[str, str] = {}  # channel_id -> payment_state_json
-        self._channel_state: Dict[str, str] = {}  # channel_id -> "open" or "closed"
+        self._channel_state: Dict[str, str] = {}  # channel_id -> state string
 
     # ========================================================================
     # Networking
@@ -116,7 +116,7 @@ class InMemoryClientHost:
     # ========================================================================
 
     def get_channel_state(self, channel_id: str) -> str:
-        """Get the channel state ('open' or 'closed'). Returns 'open' if unknown."""
+        """Get the channel state ('opening_from_swap', 'open' or 'closed'). Returns 'open' if unknown."""
         return self._channel_state.get(channel_id, "open")
 
     def mark_channel_closed(self, channel_id: str) -> None:
@@ -153,7 +153,7 @@ class InMemoryClientHost:
         from cdk_spilman import sign_with_tweaked_key_util
 
         return sign_with_tweaked_key_util(
-            self.secret_key_hex, message_hex, tweak_scalar_hex
+            self.secret_key, message_hex, tweak_scalar_hex
         )
 
     def compute_channel_secret(
@@ -162,4 +162,4 @@ class InMemoryClientHost:
         """Compute the channel secret via ECDH."""
         from cdk_spilman import compute_channel_secret
 
-        return compute_channel_secret(self.secret_key_hex, receiver_pubkey_hex)
+        return compute_channel_secret(self.secret_key, receiver_pubkey_hex)
