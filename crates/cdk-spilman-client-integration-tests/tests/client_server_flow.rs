@@ -149,10 +149,7 @@ async fn test_client_creates_payment_server_processes() {
         .get_last_payment(&open_result.channel_id)
         .expect("server should have payment");
     assert_eq!(server_payment.balance, 25);
-    eprintln!(
-        "Server last payment: balance={}",
-        server_payment.balance
-    );
+    eprintln!("Server last payment: balance={}", server_payment.balance);
 }
 
 /// Test that payments can decrease (for cooperative close scenarios).
@@ -304,8 +301,8 @@ async fn test_fetch_keyset_info() {
         .expect("fetch_keyset_info should succeed");
 
     // Verify it parses correctly
-    let parsed = parse_keyset_info_from_json(&fetched_json)
-        .expect("fetched keyset info should parse");
+    let parsed =
+        parse_keyset_info_from_json(&fetched_json).expect("fetched keyset info should parse");
 
     assert_eq!(parsed.keyset_id, mint_helper.keyset_id());
     let key_count = parsed.active_keys.keys().len();
@@ -454,10 +451,7 @@ async fn test_fetch_keyset_info_rejects_mismatched_id() {
     let keysets_arr = keysets_resp["keysets"].as_array().unwrap();
     let other_keyset = keysets_arr
         .iter()
-        .find(|k| {
-            k["id"].as_str() != Some(&real_id)
-                && k["unit"].as_str() != Some("sat")
-        })
+        .find(|k| k["id"].as_str() != Some(&real_id) && k["unit"].as_str() != Some("sat"))
         .map(|k| k["id"].as_str().unwrap().to_string());
 
     if let Some(other_id) = other_keyset {
@@ -491,7 +485,9 @@ async fn test_reqwest_client_networking_http_round_trip() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         axum::serve(http_listener, router)
-            .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .unwrap();
     });
@@ -509,11 +505,7 @@ async fn test_reqwest_client_networking_http_round_trip() {
     let receiver_secret = SecretKey::generate();
     let keyset_info_json = mint_helper.keyset_info_json().unwrap();
     let server_host = TestServerHost::new(receiver_secret.clone());
-    server_host.add_keyset(
-        &mint_url,
-        mint_helper.keyset_id(),
-        keyset_info_json,
-    );
+    server_host.add_keyset(&mint_url, mint_helper.keyset_id(), keyset_info_json);
     let server_bridge = SpilmanBridge::new(server_host);
 
     // 3. Setup client-side Spilman bridge with HTTP networking
@@ -534,12 +526,8 @@ async fn test_reqwest_client_networking_http_round_trip() {
 
     // 5. Mint proofs (in-memory, same Mint instance backing the HTTP server)
     let proofs = mint_helper.mint_proofs(1000).await.unwrap();
-    let token = build_cashu_b_token(
-        &mint_url,
-        "sat",
-        &serde_json::to_string(&proofs).unwrap(),
-    )
-    .unwrap();
+    let token =
+        build_cashu_b_token(&mint_url, "sat", &serde_json::to_string(&proofs).unwrap()).unwrap();
 
     // 6. Open channel via HTTP (swap happens over HTTP)
     let open_result = client_bridge

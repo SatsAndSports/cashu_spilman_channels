@@ -905,7 +905,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         // Check channel state
         let state = self.host.get_channel_state(channel_id);
         if !state.is_payable() {
-            return Err(format!("Channel is not usable for payments: {} ({:?})", channel_id, state));
+            return Err(format!(
+                "Channel is not usable for payments: {} ({:?})",
+                channel_id, state
+            ));
         }
 
         // Validate balance doesn't exceed capacity

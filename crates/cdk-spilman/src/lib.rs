@@ -30,7 +30,9 @@ mod keysets_and_amounts;
 mod params;
 mod sender_and_receiver;
 
-pub use balance_update::{get_signatures_from_swap_request, BalanceUpdateMessage, UnsignedBalanceUpdate};
+pub use balance_update::{
+    get_signatures_from_swap_request, BalanceUpdateMessage, UnsignedBalanceUpdate,
+};
 pub use bindings::{
     attach_signature_to_balance_update, build_cashu_a_token, build_cashu_b_token,
     channel_parameters_get_channel_id, compute_channel_from_token, compute_channel_secret_from_hex,
@@ -45,9 +47,9 @@ pub use bindings::{
 pub use bridge::{
     unblind_and_verify_stage1_response, BridgeError, BridgeErrorResponse, ChannelFunding,
     ChannelPolicy, ChannelState, CloseData, CloseError, ClosePreparationError, CloseSuccess,
-    ClosingData, FundChannelResult, Payment, PaymentProof, PaymentSuccess,
-    PaymentValidationResult, PreparedClose, SpilmanAsyncNetworking, SpilmanBridge, SpilmanHost,
-    SpilmanNetworking, UnblindResult,
+    ClosingData, FundChannelResult, Payment, PaymentProof, PaymentSuccess, PaymentValidationResult,
+    PreparedClose, SpilmanAsyncNetworking, SpilmanBridge, SpilmanHost, SpilmanNetworking,
+    UnblindResult,
 };
 pub use client_bridge::{
     base64_decode, ClientChannelInfo, OpenChannelResult, SpilmanClientAsyncNetworking,

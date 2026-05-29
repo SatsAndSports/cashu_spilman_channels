@@ -67,9 +67,8 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
         _mint_url: &str,
         restore_request_json: &str,
     ) -> Result<String, String> {
-        let restore_request: cdk::nuts::RestoreRequest =
-            serde_json::from_str(restore_request_json)
-                .map_err(|e| format!("Failed to parse restore request: {}", e))?;
+        let restore_request: cdk::nuts::RestoreRequest = serde_json::from_str(restore_request_json)
+            .map_err(|e| format!("Failed to parse restore request: {}", e))?;
 
         let mint = Arc::clone(&self.mint);
         let handle = self.runtime.clone();

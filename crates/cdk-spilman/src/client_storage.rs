@@ -445,9 +445,6 @@ mod tests {
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Closing);
         assert!(storage.get_funding(channel_id).is_some());
         assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 42);
-        assert!(storage
-            .list_channel_ids()
-            .iter()
-            .any(|id| id == channel_id));
+        assert!(storage.list_channel_ids().iter().any(|id| id == channel_id));
     }
 }
