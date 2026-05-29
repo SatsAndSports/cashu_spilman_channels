@@ -1225,7 +1225,7 @@ mod tests {
         let msg = Message::from_digest_slice(msg_hash.as_ref()).unwrap();
 
         // Get the secp256k1 keypair for signing
-        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &*blinded_secret);
+        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &blinded_secret);
         let signature = SECP256K1.sign_schnorr(&msg, &keypair);
 
         println!("Message: {}", hex::encode(msg_hash.to_byte_array()));
@@ -1441,7 +1441,7 @@ mod tests {
 
         // Sign with refund blinded key
         let keypair =
-            bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &*blinded_refund_secret);
+            bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &blinded_refund_secret);
         let signature = SECP256K1.sign_schnorr(&msg, &keypair);
 
         println!("Message: {}", hex::encode(msg_hash.to_byte_array()));

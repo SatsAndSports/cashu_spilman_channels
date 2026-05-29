@@ -415,14 +415,14 @@ async fn test_fetch_keyset_info_rejects_mismatched_id() {
     let keysets_json = networking
         .call_mint_keysets("https://test-mint")
         .expect("call_mint_keysets");
-    let keys_json = networking
+    let _keys_json = networking
         .call_mint_keys("https://test-mint", &real_id)
         .expect("call_mint_keys");
 
     // Tamper: inject a fake keyset ID into the /v1/keysets response while keeping
     // the real keys. The consistency check should catch this.
     let fake_id = "00deadbeef123456";
-    let tampered_keysets = keysets_json.replace(&real_id, fake_id);
+    let _tampered_keysets = keysets_json.replace(&real_id, fake_id);
 
     let sender_secret = SecretKey::generate();
     let mut client_host = ConfigurableClientHost::new_in_memory();

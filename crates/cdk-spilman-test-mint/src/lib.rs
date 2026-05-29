@@ -199,7 +199,7 @@ pub async fn build_test_mint(config: &TestMintConfig) -> Result<Mint> {
 
     let seed = fixed_seed()?;
     let mint = builder.build_with_seed(db.clone(), &seed).await?;
-    mint.set_quote_ttl(config.quote_ttl.clone()).await?;
+    mint.set_quote_ttl(config.quote_ttl).await?;
 
     let active_keysets = mint.get_active_keysets();
     for unit in supported_units() {
@@ -255,6 +255,9 @@ pub async fn serve_mint_with_shutdown(
 
 /// Serve the standalone test mint until interrupted.
 #[cfg(feature = "http")]
+/// # Panics
+///
+/// Panics if installing the Unix SIGTERM handler fails.
 pub async fn serve_mint(config: TestMintConfig) -> Result<()> {
     serve_mint_with_shutdown(config, async {
         #[cfg(unix)]

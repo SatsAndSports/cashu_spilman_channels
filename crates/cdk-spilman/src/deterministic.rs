@@ -901,7 +901,13 @@ mod tests {
                 amounts
             );
         }
-        println!("✓ funding outputs are ascending: {:?}", amounts);
+        #[allow(clippy::use_debug)]
+        let amounts_str = amounts
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("✓ funding outputs are ascending: [{amounts_str}]");
     }
 
     #[test]
@@ -959,7 +965,13 @@ mod tests {
                 output_amounts
             );
         }
-        println!("✓ commitment outputs are ascending: {:?}", output_amounts);
+        #[allow(clippy::use_debug)]
+        let output_amounts_str = output_amounts
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("✓ commitment outputs are ascending: [{output_amounts_str}]");
 
         // 2. Verify receiver comes before sender for same amounts.
         // We can check this by getting each party's blinded messages separately
@@ -998,8 +1010,8 @@ mod tests {
 
             // Within this group, check that all receiver outputs come before sender outputs
             let mut seen_sender = false;
-            for j in group_start..i {
-                let b_key = format!("{:?}", outputs[j].blinded_secret);
+            for (j, output) in outputs.iter().enumerate().take(i).skip(group_start) {
+                let b_key = format!("{:?}", output.blinded_secret);
                 let is_receiver = receiver_b_set.contains(&b_key);
                 let is_sender = sender_b_set.contains(&b_key);
 

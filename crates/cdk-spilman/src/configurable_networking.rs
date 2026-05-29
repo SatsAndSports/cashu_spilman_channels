@@ -224,6 +224,12 @@ impl ReqwestClientNetworking {
     }
 }
 
+impl Default for ReqwestClientNetworking {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpilmanClientNetworking for ReqwestClientNetworking {
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
         self.blocking_post(&format!("{mint_url}/v1/swap"), swap_request_json)

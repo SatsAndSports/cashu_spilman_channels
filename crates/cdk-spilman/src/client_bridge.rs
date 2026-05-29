@@ -453,6 +453,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// * `keyset_id` - Keyset ID to use (from server's advertised keysets)
     /// * `max_amount` - Maximum amount per output (0 = no limit)
     #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_token_auto(
         &self,
         token_string: &str,
@@ -642,6 +643,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// Takes an async networking implementation instead of using the bridge's
     /// sync networking.
     #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_channel_from_token_async<AN: SpilmanClientAsyncNetworking>(
         &self,
         token_string: &str,

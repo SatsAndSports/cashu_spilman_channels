@@ -608,6 +608,7 @@ pub fn compute_channel_from_token(
 /// - `swap_request_json`: The swap request to send to mint (JSON)
 /// - `funding_secrets_json`: Secrets for unblinding funding outputs (JSON array)
 /// - `funding_count`: Number of funding outputs
+///
 /// Reconstruct the deterministic funding outputs from channel parameters.
 ///
 /// This is the shared helper used by `create_funding_swap`,
