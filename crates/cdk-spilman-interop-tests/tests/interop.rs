@@ -1181,6 +1181,13 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .insert(channel_id.to_string(), ClientChannelState::Closed);
         }
 
+        fn mark_channel_closing(&self, channel_id: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::Closing);
+        }
+
         fn list_channel_ids(&self) -> Vec<String> {
             self.funding.lock().unwrap().keys().cloned().collect()
         }
@@ -1607,6 +1614,17 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         other => panic!("Unexpected error: {:?}", other),
     }
 
+    // Marking a channel unusable keeps it in storage but blocks new payments.
+    client_bridge.mark_channel_unusable(&open_result.channel_id);
+    let info = client_bridge
+        .get_channel_info(&open_result.channel_id)
+        .ok_or_else(|| anyhow::anyhow!("missing channel info after mark_channel_unusable"))?;
+    assert_eq!(info.state, ClientChannelState::Closing);
+    let err = client_bridge
+        .create_payment(&open_result.channel_id, 21)
+        .expect_err("closing channel should reject new payments");
+    assert!(err.contains("not usable for payments"));
+
     // ====================================================================
     // Delete channel
     // ====================================================================
@@ -1624,8 +1642,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
 async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk_spilman::{
-        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
-        ClientPaymentState, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
     };
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1691,6 +1709,8 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
         }
 
         fn mark_channel_closed(&self, _: &str) {}
+
+        fn mark_channel_closing(&self, _: &str) {}
 
         fn list_channel_ids(&self) -> Vec<String> {
             Vec::new()
@@ -3070,7 +3090,10 @@ async fn test_close_no_retry_on_token_spent_error() -> anyhow::Result<()> {
         CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
             assert_eq!(mint_error["code"], serde_json::json!(11001));
-            assert_eq!(mint_error["detail"], serde_json::json!("Token already spent"));
+            assert_eq!(
+                mint_error["detail"],
+                serde_json::json!("Token already spent")
+            );
         }
         other => panic!("expected MintRejected, got {other:?}"),
     }
@@ -3187,10 +3210,7 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
         CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
             // The unparseable error should be wrapped as a JSON string
-            assert_eq!(
-                mint_error,
-                serde_json::json!("Internal server error")
-            );
+            assert_eq!(mint_error, serde_json::json!("Internal server error"));
         }
         other => panic!("expected MintRejected, got {other:?}"),
     }
@@ -3318,8 +3338,7 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
         "First close should use 2 swap calls (initial + retry)"
     );
     assert_eq!(
-        after_first_close_refresh_count,
-        1,
+        after_first_close_refresh_count, 1,
         "First close should use 1 refresh call"
     );
 
@@ -3377,10 +3396,7 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
                 "[selective-retry] Got MintRejected: status={}, error={}",
                 status, mint_error
             );
-            let code = mint_error
-                .get("code")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let code = mint_error.get("code").and_then(|v| v.as_u64()).unwrap_or(0);
             eprintln!("[selective-retry] NUT-00 error code: {code}");
 
             // 11001 = TokenAlreadySpent

@@ -115,6 +115,12 @@ pub trait SpilmanClientHost {
     /// After this, the channel cannot accept new payments.
     fn mark_channel_closed(&self, channel_id: &str);
 
+    /// Mark a channel as closing / unusable.
+    ///
+    /// After this, the channel remains in storage but must not be used for new
+    /// payments.
+    fn mark_channel_closing(&self, channel_id: &str);
+
     /// List all stored channel IDs.
     fn list_channel_ids(&self) -> Vec<String>;
 
@@ -590,11 +596,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
 
         // Step 6b: Verify restore path produces identical proofs
-        let restore_request = create_funding_restore_request(
-            params_json,
-            &channel_secret_hex,
-            keyset_info_json,
-        )?;
+        let restore_request =
+            create_funding_restore_request(params_json, &channel_secret_hex, keyset_info_json)?;
         let restore_response = self
             .networking
             .call_mint_restore(&mint_url, &restore_request)?;
@@ -742,11 +745,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or("Missing 'funding_proofs_json' in complete result")?;
 
         // Step 6b: Verify restore path produces identical proofs
-        let restore_request = create_funding_restore_request(
-            params_json,
-            &channel_secret_hex,
-            keyset_info_json,
-        )?;
+        let restore_request =
+            create_funding_restore_request(params_json, &channel_secret_hex, keyset_info_json)?;
         let restore_response = async_networking
             .call_mint_restore(&mint_url, &restore_request)
             .await?;
@@ -795,12 +795,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let opening = self
             .host
             .get_channel_opening_from_swap(channel_id)
-            .ok_or_else(|| {
-                format!(
-                    "Channel not found in OpeningFromSwap state: {}",
-                    channel_id
-                )
-            })?;
+            .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         let restore_request = create_funding_restore_request(
             &opening.params_json,
@@ -838,12 +833,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let opening = self
             .host
             .get_channel_opening_from_swap(channel_id)
-            .ok_or_else(|| {
-                format!(
-                    "Channel not found in OpeningFromSwap state: {}",
-                    channel_id
-                )
-            })?;
+            .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         let restore_request = create_funding_restore_request(
             &opening.params_json,
@@ -913,8 +903,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
 
         // Check channel state
-        if self.host.get_channel_state(channel_id) == ClientChannelState::Closed {
-            return Err(format!("Channel is closed: {}", channel_id));
+        let state = self.host.get_channel_state(channel_id);
+        if !state.is_payable() {
+            return Err(format!("Channel is not usable for payments: {} ({:?})", channel_id, state));
         }
 
         // Validate balance doesn't exceed capacity
@@ -1011,6 +1002,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// Does not communicate with the server.
     pub fn close_channel(&self, channel_id: &str) {
         self.host.mark_channel_closed(channel_id);
+    }
+
+    /// Mark a channel as unusable while retaining it in storage.
+    ///
+    /// This moves the channel into the `Closing` state so it will no longer be
+    /// selected for new payments.
+    pub fn mark_channel_unusable(&self, channel_id: &str) {
+        self.host.mark_channel_closing(channel_id);
     }
 
     /// Delete a channel from storage.

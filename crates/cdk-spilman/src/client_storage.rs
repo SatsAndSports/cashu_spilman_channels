@@ -89,8 +89,17 @@ pub enum ClientChannelState {
     /// Channel is open and can accept payments
     #[default]
     Open,
+    /// Channel is retained in storage but is unusable for new payments.
+    Closing,
     /// Channel is closed, no more payments allowed
     Closed,
+}
+
+impl ClientChannelState {
+    /// Returns true if the channel may be used to create new payments.
+    pub fn is_payable(self) -> bool {
+        matches!(self, Self::Open)
+    }
 }
 
 // ============================================================================
@@ -116,9 +125,10 @@ pub trait ClientStorage {
     /// Get opening data for a channel in OpeningFromSwap state.
     fn get_opening_from_swap(&self, channel_id: &str) -> Option<&ClientChannelOpeningFromSwap>;
 
-    /// Get funding data for an open channel.
+    /// Get funding data for a channel with stored funding.
     ///
-    /// Returns `None` if the channel is not in Open (or Closed) state.
+    /// Returns `None` if the channel is not in `Open`, `Closing`, or `Closed`
+    /// state.
     fn get_funding(&self, channel_id: &str) -> Option<&ClientChannelFunding>;
 
     // === Payment State (mutable) ===
@@ -136,6 +146,12 @@ pub trait ClientStorage {
 
     /// Mark a channel as closed
     fn set_closed(&mut self, channel_id: &str);
+
+    /// Mark a channel as closing / unusable.
+    ///
+    /// By convention this is used for channels that were previously `Open` and
+    /// should no longer be selected for new payments.
+    fn set_closing(&mut self, channel_id: &str);
 
     // === Management ===
 
@@ -230,6 +246,11 @@ impl ClientStorage for MemoryClientStorage {
     fn set_closed(&mut self, channel_id: &str) {
         self.states
             .insert(channel_id.to_string(), ClientChannelState::Closed);
+    }
+
+    fn set_closing(&mut self, channel_id: &str) {
+        self.states
+            .insert(channel_id.to_string(), ClientChannelState::Closing);
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -365,6 +386,10 @@ mod tests {
         storage.set_open(channel_id, "[]");
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Open);
 
+        // After set_closing, it's Closing
+        storage.set_closing(channel_id);
+        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closing);
+
         // Mark closed
         storage.set_closed(channel_id);
         assert_eq!(storage.get_state(channel_id), ClientChannelState::Closed);
@@ -405,5 +430,24 @@ mod tests {
         ids.sort();
 
         assert_eq!(ids, vec!["channel_1", "channel_2", "channel_3"]);
+    }
+
+    #[test]
+    fn test_closing_preserves_funding_and_payment_state() {
+        let mut storage = MemoryClientStorage::new();
+        let channel_id = "test_channel_closing";
+
+        storage.save_opening_from_swap(channel_id, make_test_opening());
+        storage.set_open(channel_id, r#"[{"proof": true}]"#);
+        storage.save_payment_state(channel_id, make_test_payment_state(42));
+        storage.set_closing(channel_id);
+
+        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closing);
+        assert!(storage.get_funding(channel_id).is_some());
+        assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 42);
+        assert!(storage
+            .list_channel_ids()
+            .iter()
+            .any(|id| id == channel_id));
     }
 }

@@ -993,7 +993,9 @@ pub struct SpilmanClientHostCallbacks {
     ),
     // Lifecycle
     pub get_channel_state:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "open" or "closed"
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "opening_from_swap", "open", "closing", or "closed"
+    pub mark_channel_closing:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
     pub mark_channel_closed: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
     pub list_channel_ids: extern "C" fn(user_data: *mut libc::c_void) -> *mut c_char, // JSON array string
     pub delete_channel: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
@@ -1143,9 +1145,15 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         let state_str = unsafe { CString::from_raw(ptr).into_string().unwrap_or_default() };
         match state_str.as_str() {
             "closed" | "Closed" => ClientChannelState::Closed,
+            "closing" | "Closing" => ClientChannelState::Closing,
             "opening_from_swap" => ClientChannelState::OpeningFromSwap,
             _ => ClientChannelState::Open,
         }
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        let id_c = CString::new(channel_id).unwrap();
+        (self.callbacks.mark_channel_closing)(self.callbacks.user_data, id_c.as_ptr());
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -1356,6 +1364,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,
         get_channel_state: callbacks.get_channel_state,
+        mark_channel_closing: callbacks.mark_channel_closing,
         mark_channel_closed: callbacks.mark_channel_closed,
         list_channel_ids: callbacks.list_channel_ids,
         delete_channel: callbacks.delete_channel,
@@ -1376,6 +1385,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,
         get_channel_state: callbacks.get_channel_state,
+        mark_channel_closing: callbacks.mark_channel_closing,
         mark_channel_closed: callbacks.mark_channel_closed,
         list_channel_ids: callbacks.list_channel_ids,
         delete_channel: callbacks.delete_channel,
@@ -1529,6 +1539,17 @@ pub unsafe extern "C" fn spilman_client_bridge_close_channel(
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
     instance.bridge.close_channel(id);
+}
+
+/// Mark a channel as unusable while retaining it in storage.
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_mark_channel_unusable(
+    ptr: *mut ClientBridgeInstance,
+    channel_id: *const c_char,
+) {
+    let instance = &*ptr;
+    let id = CStr::from_ptr(channel_id).to_str().unwrap();
+    instance.bridge.mark_channel_unusable(id);
 }
 
 #[no_mangle]

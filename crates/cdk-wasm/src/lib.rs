@@ -13,8 +13,7 @@ use cdk_spilman::{
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
     ChannelState, ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
     ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof, SpilmanAsyncNetworking,
-    SpilmanBridge, SpilmanClientAsyncNetworking,
-    SpilmanClientBridge as RustSpilmanClientBridge,
+    SpilmanBridge, SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
     SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
@@ -127,11 +126,7 @@ extern "C" {
         opening_json: &str,
     );
     #[wasm_bindgen(method, js_name = markChannelOpen)]
-    fn mark_channel_open(
-        this: &JsSpilmanClientHost,
-        channel_id: &str,
-        funding_proofs_json: &str,
-    );
+    fn mark_channel_open(this: &JsSpilmanClientHost, channel_id: &str, funding_proofs_json: &str);
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     #[wasm_bindgen(method, js_name = getChannelOpeningFromSwap)]
@@ -140,14 +135,12 @@ extern "C" {
     #[wasm_bindgen(method, js_name = getPaymentState)]
     fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     #[wasm_bindgen(method, js_name = recordPayment)]
-    fn client_record_payment(
-        this: &JsSpilmanClientHost,
-        channel_id: &str,
-        state_json: &str,
-    );
+    fn client_record_payment(this: &JsSpilmanClientHost, channel_id: &str, state_json: &str);
     // Lifecycle
     #[wasm_bindgen(method, js_name = getChannelState)]
     fn client_get_channel_state(this: &JsSpilmanClientHost, channel_id: &str) -> String;
+    #[wasm_bindgen(method, js_name = markChannelClosing)]
+    fn client_mark_channel_closing(this: &JsSpilmanClientHost, channel_id: &str);
     #[wasm_bindgen(method, js_name = markChannelClosed)]
     fn client_mark_channel_closed(this: &JsSpilmanClientHost, channel_id: &str);
     #[wasm_bindgen(method, js_name = listChannelIds)]
@@ -185,10 +178,7 @@ extern "C" {
         restore_request_json: &str,
     ) -> js_sys::Promise;
     #[wasm_bindgen(method, js_name = callMintKeysets)]
-    fn client_call_mint_keysets(
-        this: &JsSpilmanClientHost,
-        mint_url: &str,
-    ) -> js_sys::Promise;
+    fn client_call_mint_keysets(this: &JsSpilmanClientHost, mint_url: &str) -> js_sys::Promise;
     #[wasm_bindgen(method, js_name = callMintKeys)]
     fn client_call_mint_keys(
         this: &JsSpilmanClientHost,
@@ -514,9 +504,14 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
         match self.js_host.client_get_channel_state(channel_id).as_str() {
             "closed" | "Closed" => ClientChannelState::Closed,
+            "closing" | "Closing" => ClientChannelState::Closing,
             "opening_from_swap" => ClientChannelState::OpeningFromSwap,
             _ => ClientChannelState::Open,
         }
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        self.js_host.client_mark_channel_closing(channel_id);
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -612,11 +607,14 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         mint_url: &str,
         swap_request_json: &str,
     ) -> Result<String, String> {
-        JsFuture::from(self.js_host.client_call_mint_swap(mint_url, swap_request_json))
-            .await
-            .map_err(js_error_to_string)?
-            .as_string()
-            .ok_or_else(|| "Result not a string".to_string())
+        JsFuture::from(
+            self.js_host
+                .client_call_mint_swap(mint_url, swap_request_json),
+        )
+        .await
+        .map_err(js_error_to_string)?
+        .as_string()
+        .ok_or_else(|| "Result not a string".to_string())
     }
     async fn call_mint_restore(
         &self,
@@ -901,6 +899,12 @@ impl WasmSpilmanClientBridge {
     #[wasm_bindgen(js_name = closeChannel)]
     pub fn close_channel(&self, channel_id: &str) {
         self.bridge.close_channel(channel_id);
+    }
+
+    /// Mark a channel as unusable while retaining it in storage.
+    #[wasm_bindgen(js_name = markChannelUnusable)]
+    pub fn mark_channel_unusable(&self, channel_id: &str) {
+        self.bridge.mark_channel_unusable(channel_id);
     }
 
     #[wasm_bindgen(js_name = deleteChannel)]

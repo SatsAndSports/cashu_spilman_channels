@@ -1108,7 +1108,8 @@ pub struct ClientChannelInfo {
 /// - record_payment(channel_id: str, state_json: str)
 ///
 /// Lifecycle:
-/// - get_channel_state(channel_id: str) -> str  # Returns "opening_from_swap", "open", or "closed"
+/// - get_channel_state(channel_id: str) -> str  # Returns "opening_from_swap", "open", "closing", or "closed"
+/// - mark_channel_closing(channel_id: str)
 /// - mark_channel_closed(channel_id: str)
 /// - list_channel_ids() -> List[str]
 /// - delete_channel(channel_id: str)
@@ -1247,6 +1248,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
                 Ok(result) => match result.extract::<String>(py) {
                     Ok(state_str) => match state_str.as_str() {
                         "closed" | "Closed" => ClientChannelState::Closed,
+                        "closing" | "Closing" => ClientChannelState::Closing,
                         "opening_from_swap" => ClientChannelState::OpeningFromSwap,
                         _ => ClientChannelState::Open,
                     },
@@ -1255,6 +1257,14 @@ impl SpilmanClientHost for PySpilmanClientHost {
                 Err(_) => ClientChannelState::Open,
             }
         })
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        Python::with_gil(|py| {
+            let _ = self
+                .py_host
+                .call_method1(py, "mark_channel_closing", (channel_id,));
+        });
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -1583,6 +1593,12 @@ impl ClientBridge {
         self.inner.close_channel(channel_id);
     }
 
+    /// Mark a channel as unusable while retaining it in storage.
+    #[pyo3(signature = (channel_id))]
+    fn mark_channel_unusable(&self, channel_id: &str) {
+        self.inner.mark_channel_unusable(channel_id);
+    }
+
     /// Get information about a stored channel.
     ///
     /// Args:
@@ -1596,6 +1612,7 @@ impl ClientBridge {
             let state_str = match info.state {
                 ClientChannelState::OpeningFromSwap => "opening_from_swap",
                 ClientChannelState::Open => "open",
+                ClientChannelState::Closing => "closing",
                 ClientChannelState::Closed => "closed",
             };
             ClientChannelInfo {

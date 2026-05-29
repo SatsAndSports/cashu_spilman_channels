@@ -210,6 +210,10 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         self.storage.borrow_mut().set_closed(channel_id);
     }
 
+    fn mark_channel_closing(&self, channel_id: &str) {
+        self.storage.borrow_mut().set_closing(channel_id);
+    }
+
     fn list_channel_ids(&self) -> Vec<String> {
         self.storage.borrow().list_channel_ids()
     }
@@ -365,6 +369,13 @@ mod tests {
 
         let state = host.get_payment_state(channel_id).unwrap();
         assert_eq!(state.balance, 100);
+
+        // Mark unusable / closing
+        host.mark_channel_closing(channel_id);
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            ClientChannelState::Closing
+        );
 
         // Close channel
         host.mark_channel_closed(channel_id);
