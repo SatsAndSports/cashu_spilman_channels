@@ -202,7 +202,7 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     // Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         self.storage.borrow().get_state(channel_id)
     }
 
@@ -313,10 +313,7 @@ mod tests {
 
         // Initially no channel
         assert!(host.get_channel_funding(channel_id).is_none());
-        assert_eq!(
-            host.get_channel_state(channel_id),
-            ClientChannelState::Closed
-        );
+        assert_eq!(host.get_channel_state(channel_id), None);
 
         // Save as opening from swap
         let opening = ClientChannelOpeningFromSwap {
@@ -336,7 +333,7 @@ mod tests {
         // Should be in OpeningFromSwap state
         assert_eq!(
             host.get_channel_state(channel_id),
-            ClientChannelState::OpeningFromSwap
+            Some(ClientChannelState::OpeningFromSwap)
         );
 
         // Opening data should be retrievable
@@ -353,7 +350,10 @@ mod tests {
         assert!(host.get_channel_opening_from_swap(channel_id).is_none());
         let retrieved = host.get_channel_funding(channel_id).unwrap();
         assert_eq!(retrieved.capacity, 1000);
-        assert_eq!(host.get_channel_state(channel_id), ClientChannelState::Open);
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            Some(ClientChannelState::Open)
+        );
 
         // Record payment
         assert!(host.get_payment_state(channel_id).is_none());
@@ -374,14 +374,14 @@ mod tests {
         host.mark_channel_closing(channel_id);
         assert_eq!(
             host.get_channel_state(channel_id),
-            ClientChannelState::Closing
+            Some(ClientChannelState::Closing)
         );
 
         // Close channel
         host.mark_channel_closed(channel_id);
         assert_eq!(
             host.get_channel_state(channel_id),
-            ClientChannelState::Closed
+            Some(ClientChannelState::Closed)
         );
 
         // List channels

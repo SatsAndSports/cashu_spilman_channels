@@ -1239,7 +1239,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         Python::with_gil(|py| {
             match self
                 .py_host
@@ -1247,14 +1247,15 @@ impl SpilmanClientHost for PySpilmanClientHost {
             {
                 Ok(result) => match result.extract::<String>(py) {
                     Ok(state_str) => match state_str.as_str() {
-                        "closed" | "Closed" => ClientChannelState::Closed,
-                        "closing" | "Closing" => ClientChannelState::Closing,
-                        "opening_from_swap" => ClientChannelState::OpeningFromSwap,
-                        _ => ClientChannelState::Open,
+                        "closed" | "Closed" => Some(ClientChannelState::Closed),
+                        "closing" | "Closing" => Some(ClientChannelState::Closing),
+                        "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+                        "open" | "Open" => Some(ClientChannelState::Open),
+                        _ => None,
                     },
-                    Err(_) => ClientChannelState::Open,
+                    Err(_) => None,
                 },
-                Err(_) => ClientChannelState::Open,
+                Err(_) => None,
             }
         })
     }

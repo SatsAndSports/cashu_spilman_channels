@@ -141,8 +141,10 @@ pub trait ClientStorage {
 
     // === Lifecycle ===
 
-    /// Get the lifecycle state of a channel
-    fn get_state(&self, channel_id: &str) -> ClientChannelState;
+    /// Get the lifecycle state of a channel.
+    ///
+    /// Returns `None` if the channel is not present in storage.
+    fn get_state(&self, channel_id: &str) -> Option<ClientChannelState>;
 
     /// Mark a channel as closed
     fn set_closed(&mut self, channel_id: &str);
@@ -236,11 +238,8 @@ impl ClientStorage for MemoryClientStorage {
         self.payments.insert(channel_id.to_string(), state);
     }
 
-    fn get_state(&self, channel_id: &str) -> ClientChannelState {
-        self.states
-            .get(channel_id)
-            .copied()
-            .unwrap_or(ClientChannelState::Closed)
+    fn get_state(&self, channel_id: &str) -> Option<ClientChannelState> {
+        self.states.get(channel_id).copied()
     }
 
     fn set_closed(&mut self, channel_id: &str) {
@@ -320,7 +319,7 @@ mod tests {
         // State should be OpeningFromSwap
         assert_eq!(
             storage.get_state(channel_id),
-            ClientChannelState::OpeningFromSwap
+            Some(ClientChannelState::OpeningFromSwap)
         );
 
         // Funding not yet available
@@ -330,7 +329,10 @@ mod tests {
         storage.set_open(channel_id, r#"[{"proof": true}]"#);
 
         // State should be Open
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Open);
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Open)
+        );
 
         // Opening data removed
         assert!(storage.get_opening_from_swap(channel_id).is_none());
@@ -372,27 +374,36 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
-        // Unknown channel is Closed
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closed);
+        // Unknown channel is absent
+        assert_eq!(storage.get_state(channel_id), None);
 
         // After save_opening_from_swap, it's OpeningFromSwap
         storage.save_opening_from_swap(channel_id, make_test_opening());
         assert_eq!(
             storage.get_state(channel_id),
-            ClientChannelState::OpeningFromSwap
+            Some(ClientChannelState::OpeningFromSwap)
         );
 
         // After set_open, it's Open
         storage.set_open(channel_id, "[]");
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Open);
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Open)
+        );
 
         // After set_closing, it's Closing
         storage.set_closing(channel_id);
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closing);
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Closing)
+        );
 
         // Mark closed
         storage.set_closed(channel_id);
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closed);
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Closed)
+        );
     }
 
     #[test]
@@ -413,7 +424,7 @@ mod tests {
         assert_eq!(storage.channel_count(), 0);
         assert!(storage.get_funding(channel_id).is_none());
         assert!(storage.get_payment_state(channel_id).is_none());
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closed);
+        assert_eq!(storage.get_state(channel_id), None);
     }
 
     #[test]
@@ -442,7 +453,10 @@ mod tests {
         storage.save_payment_state(channel_id, make_test_payment_state(42));
         storage.set_closing(channel_id);
 
-        assert_eq!(storage.get_state(channel_id), ClientChannelState::Closing);
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Closing)
+        );
         assert!(storage.get_funding(channel_id).is_some());
         assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 42);
         assert!(storage.list_channel_ids().iter().any(|id| id == channel_id));

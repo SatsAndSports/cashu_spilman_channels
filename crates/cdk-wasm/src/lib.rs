@@ -501,12 +501,13 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         match self.js_host.client_get_channel_state(channel_id).as_str() {
-            "closed" | "Closed" => ClientChannelState::Closed,
-            "closing" | "Closing" => ClientChannelState::Closing,
-            "opening_from_swap" => ClientChannelState::OpeningFromSwap,
-            _ => ClientChannelState::Open,
+            "closed" | "Closed" => Some(ClientChannelState::Closed),
+            "closing" | "Closing" => Some(ClientChannelState::Closing),
+            "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+            "open" | "Open" => Some(ClientChannelState::Open),
+            _ => None,
         }
     }
 

@@ -108,7 +108,9 @@ pub trait SpilmanClientHost {
     // ========================================================================
 
     /// Get the lifecycle state of a channel.
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState;
+    ///
+    /// Returns `None` if the channel is not present in storage.
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState>;
 
     /// Mark a channel as closed.
     ///
@@ -903,7 +905,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
 
         // Check channel state
-        let state = self.host.get_channel_state(channel_id);
+        let state = self
+            .host
+            .get_channel_state(channel_id)
+            .ok_or_else(|| format!("Channel not found: {}", channel_id))?;
         if !state.is_payable() {
             return Err(format!(
                 "Channel is not usable for payments: {} ({:?})",
@@ -983,6 +988,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let current_balance = payment_state.as_ref().map(|s| s.balance).unwrap_or(0);
         let payment_count = payment_state.as_ref().map(|s| s.payment_count).unwrap_or(0);
 
+        let state = self.host.get_channel_state(channel_id)?;
+
         Some(ClientChannelInfo {
             channel_id: channel_id.to_string(),
             capacity: funding.capacity,
@@ -990,7 +997,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             mint_url: funding.mint_url,
             current_balance,
             payment_count,
-            state: self.host.get_channel_state(channel_id),
+            state,
         })
     }
 

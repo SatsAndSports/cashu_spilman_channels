@@ -84,9 +84,9 @@ func TestInMemoryClientHost_Lifecycle(t *testing.T) {
 	channelID1 := "channel-1"
 	channelID2 := "channel-2"
 
-	// GetChannelState returns "open" for unknown channel
-	if got := host.GetChannelState("unknown"); got != "open" {
-		t.Errorf("GetChannelState(unknown) = %q, want %q", got, "open")
+	// GetChannelState returns empty string for unknown channel
+	if got := host.GetChannelState("unknown"); got != "" {
+		t.Errorf("GetChannelState(unknown) = %q, want empty string", got)
 	}
 
 	// Save two channels

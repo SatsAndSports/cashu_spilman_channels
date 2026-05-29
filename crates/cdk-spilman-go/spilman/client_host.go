@@ -48,7 +48,8 @@ type SpilmanClientHost interface {
 	// ========================================================================
 
 	// GetChannelState returns the lifecycle state of a channel.
-	// Returns "opening_from_swap", "open", "closing", or "closed".
+	// Returns an empty string if the channel is unknown.
+	// Otherwise returns "opening_from_swap", "open", "closing", or "closed".
 	GetChannelState(channelID string) string
 
 	// MarkChannelClosing marks a channel as unusable while retaining it in storage.

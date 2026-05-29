@@ -110,11 +110,7 @@ func (h *InMemoryClientHost) RecordPayment(channelID, stateJSON string) {
 func (h *InMemoryClientHost) GetChannelState(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	state := h.channelState[channelID]
-	if state == "" {
-		return "open"
-	}
-	return state
+	return h.channelState[channelID]
 }
 
 func (h *InMemoryClientHost) MarkChannelClosed(channelID string) {

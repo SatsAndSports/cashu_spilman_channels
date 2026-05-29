@@ -1121,6 +1121,10 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), opening);
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
         }
 
         fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
@@ -1141,6 +1145,10 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                     .unwrap()
                     .insert(channel_id.to_string(), funding);
             }
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::Open);
         }
 
         fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1165,13 +1173,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .insert(channel_id.to_string(), state);
         }
 
-        fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
-            self.states
-                .lock()
-                .unwrap()
-                .get(channel_id)
-                .copied()
-                .unwrap_or(ClientChannelState::Open)
+        fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
+            self.states.lock().unwrap().get(channel_id).copied()
         }
 
         fn mark_channel_closed(&self, channel_id: &str) {
@@ -1704,8 +1707,8 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
         fn record_payment(&self, _: &str, _: ClientPaymentState) {}
 
-        fn get_channel_state(&self, _: &str) -> ClientChannelState {
-            ClientChannelState::Open
+        fn get_channel_state(&self, _: &str) -> Option<ClientChannelState> {
+            Some(ClientChannelState::Open)
         }
 
         fn mark_channel_closed(&self, _: &str) {}

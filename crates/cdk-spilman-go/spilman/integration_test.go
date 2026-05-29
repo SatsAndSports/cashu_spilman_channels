@@ -270,11 +270,7 @@ func (h *testClientHost) RecordPayment(channelID, stateJSON string) {
 func (h *testClientHost) GetChannelState(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	state := h.channelState[channelID]
-	if state == "" {
-		return "open"
-	}
-	return state
+	return h.channelState[channelID]
 }
 
 func (h *testClientHost) MarkChannelClosed(channelID string) {

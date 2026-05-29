@@ -1136,18 +1136,19 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         let id_c = CString::new(channel_id).unwrap();
         let ptr = (self.callbacks.get_channel_state)(self.callbacks.user_data, id_c.as_ptr());
         if ptr.is_null() {
-            return ClientChannelState::Open;
+            return None;
         }
         let state_str = unsafe { CString::from_raw(ptr).into_string().unwrap_or_default() };
         match state_str.as_str() {
-            "closed" | "Closed" => ClientChannelState::Closed,
-            "closing" | "Closing" => ClientChannelState::Closing,
-            "opening_from_swap" => ClientChannelState::OpeningFromSwap,
-            _ => ClientChannelState::Open,
+            "closed" | "Closed" => Some(ClientChannelState::Closed),
+            "closing" | "Closing" => Some(ClientChannelState::Closing),
+            "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+            "open" | "Open" => Some(ClientChannelState::Open),
+            _ => None,
         }
     }
 
