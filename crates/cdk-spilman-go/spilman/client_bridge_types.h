@@ -14,7 +14,8 @@ typedef struct {
     char* (*get_payment_state)(void*, const char*);                   // Returns JSON or NULL
     void (*record_payment)(void*, const char*, const char*);          // (channel_id, state_json)
     // Lifecycle
-    char* (*get_channel_state)(void*, const char*);                   // Returns "opening_from_swap", "open", or "closed"
+    char* (*get_channel_state)(void*, const char*);                   // Returns "opening_from_swap", "open", "closing", or "closed"
+    void (*mark_channel_closing)(void*, const char*);
     void (*mark_channel_closed)(void*, const char*);
     char* (*list_channel_ids)(void*);
     void (*delete_channel)(void*, const char*);

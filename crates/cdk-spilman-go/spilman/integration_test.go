@@ -283,6 +283,12 @@ func (h *testClientHost) MarkChannelClosed(channelID string) {
 	h.channelState[channelID] = "closed"
 }
 
+func (h *testClientHost) MarkChannelClosing(channelID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.channelState[channelID] = "closing"
+}
+
 func (h *testClientHost) ListChannelIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()

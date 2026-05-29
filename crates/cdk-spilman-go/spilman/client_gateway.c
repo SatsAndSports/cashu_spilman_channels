@@ -11,6 +11,7 @@ extern char* go_client_get_payment_state(void*, const char*);
 extern void go_client_record_payment(void*, const char*, const char*);
 // Lifecycle
 extern char* go_client_get_channel_state(void*, const char*);
+extern void go_client_mark_channel_closing(void*, const char*);
 extern void go_client_mark_channel_closed(void*, const char*);
 extern char* go_client_list_channel_ids(void*);
 extern void go_client_delete_channel(void*, const char*);
@@ -36,6 +37,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     cb.record_payment = go_client_record_payment;
     // Lifecycle
     cb.get_channel_state = go_client_get_channel_state;
+    cb.mark_channel_closing = go_client_mark_channel_closing;
     cb.mark_channel_closed = go_client_mark_channel_closed;
     cb.list_channel_ids = go_client_list_channel_ids;
     cb.delete_channel = go_client_delete_channel;

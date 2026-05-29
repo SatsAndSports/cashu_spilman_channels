@@ -123,6 +123,12 @@ func (h *InMemoryClientHost) MarkChannelClosed(channelID string) {
 	h.channelState[channelID] = "closed"
 }
 
+func (h *InMemoryClientHost) MarkChannelClosing(channelID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.channelState[channelID] = "closing"
+}
+
 func (h *InMemoryClientHost) ListChannelIDs() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()

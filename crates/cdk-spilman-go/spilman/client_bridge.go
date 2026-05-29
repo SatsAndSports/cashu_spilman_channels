@@ -17,6 +17,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data);
 void* spilman_client_bridge_new(SpilmanClientHostCallbacks callbacks);
 void spilman_client_bridge_free(void* ptr);
 void spilman_client_bridge_close_channel(void* ptr, const char* channel_id);
+void spilman_client_bridge_mark_channel_unusable(void* ptr, const char* channel_id);
 void spilman_client_bridge_delete_channel(void* ptr, const char* channel_id);
 void spilman_free_string(char* ptr);
 */
@@ -124,6 +125,13 @@ func (b *ClientBridge) CloseChannel(channelID string) {
 	C.spilman_client_bridge_close_channel(b.ptr, cID)
 }
 
+// MarkChannelUnusable marks a channel as unusable while retaining it in storage.
+func (b *ClientBridge) MarkChannelUnusable(channelID string) {
+	cID := C.CString(channelID)
+	defer C.free(unsafe.Pointer(cID))
+	C.spilman_client_bridge_mark_channel_unusable(b.ptr, cID)
+}
+
 // DeleteChannel removes a channel from storage.
 func (b *ClientBridge) DeleteChannel(channelID string) {
 	cID := C.CString(channelID)
@@ -220,6 +228,13 @@ func go_client_mark_channel_closed(userData unsafe.Pointer, channelID *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	host.MarkChannelClosed(C.GoString(channelID))
+}
+
+//export go_client_mark_channel_closing
+func go_client_mark_channel_closing(userData unsafe.Pointer, channelID *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.MarkChannelClosing(C.GoString(channelID))
 }
 
 //export go_client_list_channel_ids
