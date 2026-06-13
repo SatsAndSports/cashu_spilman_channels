@@ -9,16 +9,24 @@ publish = false
 [[bin]]
 name = "cdk-spilman-test-mintd"
 path = "src/main.rs"
+required-features = ["http"]
+
+[features]
+default = ["http"]
+http = ["dep:cdk-axum", "dep:axum"]
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
+axum = { workspace = true, optional = true }
 bip39.workspace = true
 cdk.workspace = true
-cdk-axum.workspace = true
+cdk-axum = { workspace = true, optional = true }
 cdk-common.workspace = true
 cdk-fake-wallet.workspace = true
+cdk-spilman = { path = "../cdk-spilman" }
 cdk-sqlite.workspace = true
+cashu.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

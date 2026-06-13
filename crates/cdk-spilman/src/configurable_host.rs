@@ -1464,8 +1464,7 @@ pricing:
       chars: 1
 "#;
         let msg = ConfigurableHost::from_yaml(yaml, TEST_SECRET_KEY)
-            .err()
-            .expect("should fail for missing pricing");
+            .expect_err("should fail for missing pricing");
         assert!(
             msg.contains("foo"),
             "error should mention the missing unit: {msg}"

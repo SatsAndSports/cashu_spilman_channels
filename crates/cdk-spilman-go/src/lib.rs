@@ -9,9 +9,9 @@
 use cashu::nuts::SecretKey;
 use cdk_spilman::{
     self, BridgeError, BridgeErrorResponse, ChannelFunding, ChannelPolicy, ChannelState,
-    ClientChannelFunding, ClientChannelState, ClientPaymentState, ClosingData, PaymentProof,
-    SpilmanBridge, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
-    SpilmanNetworking,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+    ClosingData, PaymentProof, SpilmanBridge, SpilmanClientBridge, SpilmanClientHost,
+    SpilmanClientNetworking, SpilmanHost, SpilmanNetworking,
 };
 pub use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -968,13 +968,20 @@ pub unsafe extern "C" fn spilman_mint_proofs_from_mint(
 #[repr(C)]
 pub struct SpilmanClientHostCallbacks {
     pub user_data: *mut libc::c_void,
-    // Funding Data (immutable after creation)
-    pub save_channel_funding: extern "C" fn(
+    // Channel Opening (two-phase)
+    pub save_opening_from_swap_channel: extern "C" fn(
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
-        funding_json: *const c_char, // JSON-serialized ClientChannelFunding
+        opening_json: *const c_char, // JSON-serialized ClientChannelOpeningFromSwap
+    ),
+    pub mark_channel_open: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        funding_proofs_json: *const c_char,
     ),
     pub get_channel_funding:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
+    pub get_channel_opening_from_swap:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
     // Payment State (mutable)
     pub get_payment_state:
@@ -986,7 +993,9 @@ pub struct SpilmanClientHostCallbacks {
     ),
     // Lifecycle
     pub get_channel_state:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "open" or "closed"
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "opening_from_swap", "open", "closing", or "closed"
+    pub mark_channel_closing:
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
     pub mark_channel_closed: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
     pub list_channel_ids: extern "C" fn(user_data: *mut libc::c_void) -> *mut c_char, // JSON array string
     pub delete_channel: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
@@ -1013,6 +1022,23 @@ pub struct SpilmanClientHostCallbacks {
         swap_request_json: *const c_char,
         response_out: *mut *mut c_char,
     ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_restore: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        restore_request_json: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_keysets: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
+    pub call_mint_keys: extern "C" fn(
+        user_data: *mut libc::c_void,
+        mint_url: *const c_char,
+        keyset_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // 1 = success, 0 = error (response_out contains error message)
 }
 
 struct CGoSpilmanClientHost {
@@ -1025,24 +1051,54 @@ unsafe impl Sync for CGoSpilmanClientHost {}
 
 impl SpilmanClientHost for CGoSpilmanClientHost {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) {
         let id_c = CString::new(channel_id).unwrap();
-        let funding_json =
-            serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
-        let funding_c = CString::new(funding_json).unwrap();
-        (self.callbacks.save_channel_funding)(
+        let opening_json = serde_json::to_string(&opening)
+            .expect("ClientChannelOpeningFromSwap serialization failed");
+        let opening_c = CString::new(opening_json).unwrap();
+        (self.callbacks.save_opening_from_swap_channel)(
             self.callbacks.user_data,
             id_c.as_ptr(),
-            funding_c.as_ptr(),
+            opening_c.as_ptr(),
+        );
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        let id_c = CString::new(channel_id).unwrap();
+        let proofs_c = CString::new(funding_proofs_json).unwrap();
+        (self.callbacks.mark_channel_open)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            proofs_c.as_ptr(),
         );
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
         let id_c = CString::new(channel_id).unwrap();
         let ptr = (self.callbacks.get_channel_funding)(self.callbacks.user_data, id_c.as_ptr());
+        if ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            let json_str = CString::from_raw(ptr).into_string().unwrap();
+            serde_json::from_str(&json_str).ok()
+        }
+    }
+
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap> {
+        let id_c = CString::new(channel_id).unwrap();
+        let ptr =
+            (self.callbacks.get_channel_opening_from_swap)(self.callbacks.user_data, id_c.as_ptr());
         if ptr.is_null() {
             return None;
         }
@@ -1080,17 +1136,25 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         let id_c = CString::new(channel_id).unwrap();
         let ptr = (self.callbacks.get_channel_state)(self.callbacks.user_data, id_c.as_ptr());
         if ptr.is_null() {
-            return ClientChannelState::Open;
+            return None;
         }
         let state_str = unsafe { CString::from_raw(ptr).into_string().unwrap_or_default() };
         match state_str.as_str() {
-            "closed" | "Closed" => ClientChannelState::Closed,
-            _ => ClientChannelState::Open,
+            "closed" | "Closed" => Some(ClientChannelState::Closed),
+            "closing" | "Closing" => Some(ClientChannelState::Closing),
+            "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+            "open" | "Open" => Some(ClientChannelState::Open),
+            _ => None,
         }
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        let id_c = CString::new(channel_id).unwrap();
+        (self.callbacks.mark_channel_closing)(self.callbacks.user_data, id_c.as_ptr());
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -1212,6 +1276,74 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             }
         }
     }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let req_c = CString::new(restore_request_json).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_restore)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            req_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_keysets)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        let mint_c = CString::new(mint_url).unwrap();
+        let id_c = CString::new(keyset_id).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+
+        let ok = (self.callbacks.call_mint_keys)(
+            self.callbacks.user_data,
+            mint_c.as_ptr(),
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+
+        unsafe {
+            let response = CString::from_raw(response_ptr).into_string().unwrap();
+            if ok != 0 {
+                Ok(response)
+            } else {
+                Err(response)
+            }
+        }
+    }
 }
 
 pub struct ClientBridgeInstance {
@@ -1226,11 +1358,14 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
     // Since the callbacks struct contains the same user_data, both will work with the same Go object
     let host_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
-        save_channel_funding: callbacks.save_channel_funding,
+        save_opening_from_swap_channel: callbacks.save_opening_from_swap_channel,
+        mark_channel_open: callbacks.mark_channel_open,
         get_channel_funding: callbacks.get_channel_funding,
+        get_channel_opening_from_swap: callbacks.get_channel_opening_from_swap,
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,
         get_channel_state: callbacks.get_channel_state,
+        mark_channel_closing: callbacks.mark_channel_closing,
         mark_channel_closed: callbacks.mark_channel_closed,
         list_channel_ids: callbacks.list_channel_ids,
         delete_channel: callbacks.delete_channel,
@@ -1238,14 +1373,20 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
+        call_mint_restore: callbacks.call_mint_restore,
+        call_mint_keysets: callbacks.call_mint_keysets,
+        call_mint_keys: callbacks.call_mint_keys,
     };
     let networking_callbacks = SpilmanClientHostCallbacks {
         user_data: callbacks.user_data,
-        save_channel_funding: callbacks.save_channel_funding,
+        save_opening_from_swap_channel: callbacks.save_opening_from_swap_channel,
+        mark_channel_open: callbacks.mark_channel_open,
         get_channel_funding: callbacks.get_channel_funding,
+        get_channel_opening_from_swap: callbacks.get_channel_opening_from_swap,
         get_payment_state: callbacks.get_payment_state,
         record_payment: callbacks.record_payment,
         get_channel_state: callbacks.get_channel_state,
+        mark_channel_closing: callbacks.mark_channel_closing,
         mark_channel_closed: callbacks.mark_channel_closed,
         list_channel_ids: callbacks.list_channel_ids,
         delete_channel: callbacks.delete_channel,
@@ -1253,6 +1394,9 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         sign_with_tweaked_key: callbacks.sign_with_tweaked_key,
         compute_channel_secret: callbacks.compute_channel_secret,
         call_mint_swap: callbacks.call_mint_swap,
+        call_mint_restore: callbacks.call_mint_restore,
+        call_mint_keysets: callbacks.call_mint_keysets,
+        call_mint_keys: callbacks.call_mint_keys,
     };
     let host = CGoSpilmanClientHost {
         callbacks: host_callbacks,
@@ -1396,6 +1540,17 @@ pub unsafe extern "C" fn spilman_client_bridge_close_channel(
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
     instance.bridge.close_channel(id);
+}
+
+/// Mark a channel as unusable while retaining it in storage.
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_mark_channel_unusable(
+    ptr: *mut ClientBridgeInstance,
+    channel_id: *const c_char,
+) {
+    let instance = &*ptr;
+    let id = CStr::from_ptr(channel_id).to_str().unwrap();
+    instance.bridge.mark_channel_unusable(id);
 }
 
 #[no_mangle]

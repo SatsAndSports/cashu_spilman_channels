@@ -10,7 +10,7 @@ rust-version = "1.85.0"
 default = []
 wallet = ["cashu/wallet"]
 configurable-host = ["dep:serde_yml", "dep:rusqlite"]
-configurable-host-reqwest = ["configurable-host", "dep:reqwest"]
+configurable-host-reqwest = ["configurable-host", "dep:reqwest", "dep:tokio"]
 spilman-axum = ["configurable-host", "dep:axum"]
 
 [dependencies]
@@ -19,13 +19,14 @@ async-trait.workspace = true
 axum = { workspace = true, optional = true, features = ["macros"] }
 base64 = "0.22"
 bitcoin.workspace = true
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false }
+cashu.workspace = true
 reqwest = { workspace = true, optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yml = { version = "0.0.12", optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]

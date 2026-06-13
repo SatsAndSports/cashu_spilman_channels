@@ -22,17 +22,23 @@ func TestInMemoryClientHost_FundingStorage(t *testing.T) {
 		t.Errorf("GetChannelFunding(unknown) = %q, want empty string", got)
 	}
 
-	// SaveChannelFunding stores data
-	host.SaveChannelFunding(channelID, fundingJSON)
+	// SaveOpeningFromSwapChannel stores data
+	host.SaveOpeningFromSwapChannel(channelID, fundingJSON)
 
-	// GetChannelFunding retrieves it
-	if got := host.GetChannelFunding(channelID); got != fundingJSON {
-		t.Errorf("GetChannelFunding() = %q, want %q", got, fundingJSON)
+	// GetChannelOpeningFromSwap retrieves it
+	if got := host.GetChannelOpeningFromSwap(channelID); got != fundingJSON {
+		t.Errorf("GetChannelOpeningFromSwap() = %q, want %q", got, fundingJSON)
 	}
 
-	// SaveChannelFunding also sets state to "open"
+	// SaveOpeningFromSwapChannel sets state to "opening_from_swap"
+	if got := host.GetChannelState(channelID); got != "opening_from_swap" {
+		t.Errorf("GetChannelState() after save = %q, want %q", got, "opening_from_swap")
+	}
+
+	// MarkChannelOpen transitions state to "open"
+	host.MarkChannelOpen(channelID, "[]")
 	if got := host.GetChannelState(channelID); got != "open" {
-		t.Errorf("GetChannelState() after save = %q, want %q", got, "open")
+		t.Errorf("GetChannelState() after MarkChannelOpen = %q, want %q", got, "open")
 	}
 }
 
@@ -78,14 +84,16 @@ func TestInMemoryClientHost_Lifecycle(t *testing.T) {
 	channelID1 := "channel-1"
 	channelID2 := "channel-2"
 
-	// GetChannelState returns "open" for unknown channel
-	if got := host.GetChannelState("unknown"); got != "open" {
-		t.Errorf("GetChannelState(unknown) = %q, want %q", got, "open")
+	// GetChannelState returns empty string for unknown channel
+	if got := host.GetChannelState("unknown"); got != "" {
+		t.Errorf("GetChannelState(unknown) = %q, want empty string", got)
 	}
 
 	// Save two channels
-	host.SaveChannelFunding(channelID1, `{"id":1}`)
-	host.SaveChannelFunding(channelID2, `{"id":2}`)
+	host.SaveOpeningFromSwapChannel(channelID1, `{"id":1}`)
+	host.MarkChannelOpen(channelID1, "[]")
+	host.SaveOpeningFromSwapChannel(channelID2, `{"id":2}`)
+	host.MarkChannelOpen(channelID2, "[]")
 	host.RecordPayment(channelID1, `{"balance":10}`)
 
 	// ListChannelIDs returns all stored channels

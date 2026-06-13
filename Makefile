@@ -52,7 +52,7 @@ CONTAINER_CMD ?= podman
 # .PHONY declarations
 # ===========================================================================
 
-.PHONY: venv \
+.PHONY: fmt fmt-check lint venv \
 	build-python build-python-wheel install-python \
 	build-go build-rust-server \
 	build-wasm build-ts-wasm build-kit-ts \
@@ -71,6 +71,17 @@ CONTAINER_CMD ?= podman
 # ===========================================================================
 # Build Targets
 # ===========================================================================
+
+# --- Rust Workspace Maintenance ---
+
+fmt:
+	cargo fmt --all -- --config-path rustfmt.toml
+
+fmt-check:
+	cargo fmt --all -- --check --config-path rustfmt.toml
+
+lint:
+	cargo clippy --all-targets --all-features -- -D warnings
 
 # --- Python Bindings ---
 

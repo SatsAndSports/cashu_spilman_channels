@@ -5,7 +5,7 @@ This example shows a minimal server and client using the Python integration kit.
 ## Overview
 
 - **Server**: Flask server using `ConfigurableSpilman` (YAML config)
-- **Client**: Uses `SpilmanClient` to pay per request and optionally close the channel
+- **Client**: Uses `SpilmanClient` to open channels via token, pay per request, and optionally close.
 
 ## Prerequisites
 

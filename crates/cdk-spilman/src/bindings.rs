@@ -608,16 +608,18 @@ pub fn compute_channel_from_token(
 /// - `swap_request_json`: The swap request to send to mint (JSON)
 /// - `funding_secrets_json`: Secrets for unblinding funding outputs (JSON array)
 /// - `funding_count`: Number of funding outputs
-pub fn create_funding_swap(
+///
+/// Reconstruct the deterministic funding outputs from channel parameters.
+///
+/// This is the shared helper used by `create_funding_swap`,
+/// `create_funding_restore_request`, and `complete_funding_restore`.
+fn reconstruct_funding_outputs(
     params_json: &str,
     channel_secret_hex: &str,
     keyset_info_json: &str,
-    input_proofs_json: &str,
-) -> Result<String, String> {
-    // Parse keyset info
+) -> Result<DeterministicOutputsForOneContext, String> {
     let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
 
-    // Parse channel secret
     let channel_secret_bytes = hex::decode(channel_secret_hex)
         .map_err(|e| format!("Invalid channel secret hex: {}", e))?;
     if channel_secret_bytes.len() != 32 {
@@ -629,30 +631,31 @@ pub fn create_funding_swap(
     let mut channel_secret = [0u8; 32];
     channel_secret.copy_from_slice(&channel_secret_bytes);
 
-    // Create ChannelParameters from JSON with pre-computed channel secret
-    let params = ChannelParameters::from_json_with_channel_secret(
-        params_json,
-        keyset_info.clone(),
-        channel_secret,
-    )
-    .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
+    let params =
+        ChannelParameters::from_json_with_channel_secret(params_json, keyset_info, channel_secret)
+            .map_err(|e| format!("Failed to create ChannelParameters: {}", e))?;
 
-    // Parse input proofs
-    let input_proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
-        .map_err(|e| format!("Failed to parse input proofs: {}", e))?;
-
-    // Get the funding token nominal amount
     let funding_token_nominal = params
         .get_total_funding_token_amount()
         .map_err(|e| format!("Failed to compute funding token amount: {}", e))?;
 
-    // Create deterministic funding outputs
-    let funding_outputs = DeterministicOutputsForOneContext::new(
-        "funding".to_string(),
-        funding_token_nominal,
-        params,
-    )
-    .map_err(|e| format!("Failed to create funding outputs: {}", e))?;
+    DeterministicOutputsForOneContext::new("funding".to_string(), funding_token_nominal, params)
+        .map_err(|e| format!("Failed to create funding outputs: {}", e))
+}
+
+/// Create a funding swap request from channel parameters and input proofs.
+pub fn create_funding_swap(
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+    input_proofs_json: &str,
+) -> Result<String, String> {
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
+
+    // Parse input proofs
+    let input_proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
+        .map_err(|e| format!("Failed to parse input proofs: {}", e))?;
 
     // Get funding blinded messages
     let funding_blinded_messages = funding_outputs
@@ -694,6 +697,103 @@ pub fn create_funding_swap(
     });
 
     Ok(result.to_string())
+}
+
+/// Create a NUT-09 restore request for funding outputs.
+///
+/// Reconstructs the deterministic blinded messages from channel parameters
+/// and serializes them as a restore request JSON for POST to `/v1/restore`.
+///
+/// # Arguments
+/// * `params_json` - Channel parameters JSON
+/// * `channel_secret_hex` - Channel secret (64-char hex)
+/// * `keyset_info_json` - Keyset info (JSON)
+///
+/// # Returns
+/// JSON string: `{"outputs": [...]}`
+#[cfg(feature = "wallet")]
+pub fn create_funding_restore_request(
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+) -> Result<String, String> {
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
+
+    let blinded_messages = funding_outputs
+        .get_blinded_messages(None)
+        .map_err(|e| format!("Failed to get blinded messages: {}", e))?;
+
+    // Serialize as restore request
+    let restore_request = serde_json::json!({
+        "outputs": blinded_messages
+    });
+
+    serde_json::to_string(&restore_request)
+        .map_err(|e| format!("Failed to serialize restore request: {}", e))
+}
+
+/// Complete a funding restore by unblinding the mint's NUT-09 response.
+///
+/// Reconstructs the deterministic secrets from channel parameters (no need
+/// for externally-provided secrets since they are fully deterministic),
+/// then delegates to `complete_funding_swap` to unblind and verify DLEQ.
+///
+/// # Arguments
+/// * `restore_response_json` - Mint's restore response: `{"outputs": [...], "signatures": [...]}`
+/// * `params_json` - Channel parameters JSON
+/// * `channel_secret_hex` - Channel secret (64-char hex)
+/// * `keyset_info_json` - Keyset info (JSON)
+///
+/// # Returns
+/// JSON with `funding_proofs_json` (same as `complete_funding_swap`)
+#[cfg(feature = "wallet")]
+pub fn complete_funding_restore(
+    restore_response_json: &str,
+    params_json: &str,
+    channel_secret_hex: &str,
+    keyset_info_json: &str,
+) -> Result<String, String> {
+    // Parse restore response to extract signatures
+    let restore_response: serde_json::Value = serde_json::from_str(restore_response_json)
+        .map_err(|e| format!("Failed to parse restore response: {}", e))?;
+
+    let signatures = restore_response
+        .get("signatures")
+        .ok_or("Missing 'signatures' in restore response")?;
+
+    // Wrap signatures in swap-response format for reuse by complete_funding_swap
+    let swap_response = serde_json::json!({
+        "signatures": signatures
+    });
+    let swap_response_json = serde_json::to_string(&swap_response)
+        .map_err(|e| format!("Failed to serialize swap response: {}", e))?;
+
+    // Reconstruct funding secrets deterministically
+    let funding_outputs =
+        reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
+
+    let funding_secrets = funding_outputs
+        .get_secrets_with_blinding()
+        .map_err(|e| format!("Failed to get funding secrets: {}", e))?;
+
+    // Serialize funding secrets (same format as create_funding_swap)
+    let funding_secrets_json: Vec<serde_json::Value> = funding_secrets
+        .iter()
+        .map(|swb| {
+            serde_json::json!({
+                "secret": swb.secret.to_string(),
+                "blinding_factor": swb.blinding_factor.to_secret_hex(),
+                "amount": swb.amount
+            })
+        })
+        .collect();
+
+    let funding_secrets_str = serde_json::to_string(&funding_secrets_json)
+        .map_err(|e| format!("Failed to serialize funding secrets: {}", e))?;
+
+    // Delegate to complete_funding_swap
+    complete_funding_swap(&swap_response_json, &funding_secrets_str, keyset_info_json)
 }
 
 /// Complete a funding swap by unblinding the mint's response

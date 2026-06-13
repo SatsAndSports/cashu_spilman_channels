@@ -210,6 +210,7 @@ class MockClientHost:
 
     def __init__(self, mint_url: str):
         self.mint_url = mint_url
+        self.opening: dict[str, str] = {}  # channel_id -> opening_json
         self.funding: dict[str, str] = {}  # channel_id -> funding_json
         self.payment_state: dict[str, str] = {}  # channel_id -> payment_state_json
         self.channel_state: dict[str, str] = {}  # channel_id -> "open" or "closed"
@@ -233,16 +234,51 @@ class MockClientHost:
             raise RuntimeError(resp.text or f"swap failed with status {resp.status_code}")
         return resp.text
 
+    def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
+        resp = requests.post(
+            f"{mint_url}/v1/restore",
+            data=restore_request_json,
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(resp.text or f"restore failed with status {resp.status_code}")
+        return resp.text
+
     # ========================================================================
     # Funding Data (immutable after creation)
     # ========================================================================
 
-    def save_channel_funding(self, channel_id: str, funding_json: str):
-        self.funding[channel_id] = funding_json
+    def save_opening_from_swap_channel(self, channel_id: str, opening_json: str):
+        self.opening[channel_id] = opening_json
+        self.channel_state[channel_id] = "opening_from_swap"
+
+    def mark_channel_open(self, channel_id: str, funding_proofs_json: str):
+        if channel_id in self.opening:
+            import json
+            try:
+                opening = json.loads(self.opening[channel_id])
+                funding = {
+                    "params_json": opening.get("params_json"),
+                    "funding_proofs_json": funding_proofs_json,
+                    "channel_secret_hex": opening.get("channel_secret_hex"),
+                    "keyset_info_json": opening.get("keyset_info_json"),
+                    "sender_pubkey_hex": opening.get("sender_pubkey_hex"),
+                    "capacity": opening.get("capacity"),
+                    "funding_token_amount": opening.get("funding_token_amount"),
+                    "mint_url": opening.get("mint_url"),
+                    "created_at": opening.get("created_at"),
+                }
+                self.funding[channel_id] = json.dumps(funding)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            del self.opening[channel_id]
         self.channel_state[channel_id] = "open"
 
     def get_channel_funding(self, channel_id: str) -> str | None:
         return self.funding.get(channel_id)
+
+    def get_channel_opening_from_swap(self, channel_id: str) -> str | None:
+        return self.opening.get(channel_id)
 
     # ========================================================================
     # Payment State (mutable)
@@ -265,9 +301,10 @@ class MockClientHost:
         self.channel_state[channel_id] = "closed"
 
     def list_channel_ids(self) -> list[str]:
-        return list(self.funding.keys())
+        return list(set(list(self.funding.keys()) + list(self.opening.keys())))
 
     def delete_channel(self, channel_id: str):
+        self.opening.pop(channel_id, None)
         self.funding.pop(channel_id, None)
         self.payment_state.pop(channel_id, None)
         self.channel_state.pop(channel_id, None)

@@ -154,6 +154,14 @@ pub struct TestMintHelper {
     input_fee_ppk: u64,
 }
 
+impl std::fmt::Debug for TestMintHelper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestMintHelper")
+            .field("input_fee_ppk", &self.input_fee_ppk)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TestMintHelper {
     /// Create a new TestMintHelper with an in-memory mint.
     pub async fn new() -> Result<Self> {

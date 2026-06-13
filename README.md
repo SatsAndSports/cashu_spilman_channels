@@ -33,7 +33,7 @@ Experimental protocol. APIs and data models are subject to breaking changes.
 
 1. **Add Dependency**:
    ```toml
-   cdk-spilman = { version = "0.15.1", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
+   cdk-spilman = { version = "0.16.0-rc.1", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
    ```
 
 2. **Run ASCII Art Server**:

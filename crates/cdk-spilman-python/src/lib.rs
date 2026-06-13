@@ -15,9 +15,9 @@ use std::str::FromStr;
 use cashu::nuts::{Id, PublicKey, SecretKey};
 use spilman_core::{
     self, BridgeError, BridgeErrorResponse, ChannelPolicy, ChannelState, ClientChannelFunding,
-    ClientChannelState, ClientPaymentState, ClosingData, SpilmanBridge as RustSpilmanBridge,
-    SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
-    SpilmanHost,
+    ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState, ClosingData,
+    SpilmanBridge as RustSpilmanBridge, SpilmanClientBridge as RustSpilmanClientBridge,
+    SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
 // ============================================================================
@@ -1097,16 +1097,19 @@ pub struct ClientChannelInfo {
 ///
 /// The Python object must implement these methods:
 ///
-/// Storage (immutable funding data):
-/// - save_channel_funding(channel_id: str, funding_json: str)
+/// Channel opening (two-phase):
+/// - save_opening_from_swap_channel(channel_id: str, opening_json: str)
+/// - mark_channel_open(channel_id: str, funding_proofs_json: str)
 /// - get_channel_funding(channel_id: str) -> Optional[str]  # Returns funding JSON or None
+/// - get_channel_opening_from_swap(channel_id: str) -> Optional[str]  # Returns opening JSON or None
 ///
 /// Storage (mutable payment state):
 /// - get_payment_state(channel_id: str) -> Optional[str]  # Returns payment state JSON or None
 /// - record_payment(channel_id: str, state_json: str)
 ///
 /// Lifecycle:
-/// - get_channel_state(channel_id: str) -> str  # Returns "open" or "closed"
+/// - get_channel_state(channel_id: str) -> str  # Returns "opening_from_swap", "open", "closing", or "closed"
+/// - mark_channel_closing(channel_id: str)
 /// - mark_channel_closed(channel_id: str)
 /// - list_channel_ids() -> List[str]
 /// - delete_channel(channel_id: str)
@@ -1138,16 +1141,32 @@ fn python_error_message(py: Python<'_>, err: PyErr) -> String {
 
 impl SpilmanClientHost for PySpilmanClientHost {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) {
         Python::with_gil(|py| {
-            let funding_json =
-                serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
-            let _ =
-                self.py_host
-                    .call_method1(py, "save_channel_funding", (channel_id, funding_json));
+            let opening_json = serde_json::to_string(&opening)
+                .expect("ClientChannelOpeningFromSwap serialization failed");
+            let _ = self.py_host.call_method1(
+                py,
+                "save_opening_from_swap_channel",
+                (channel_id, opening_json),
+            );
+        });
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        Python::with_gil(|py| {
+            let _ = self.py_host.call_method1(
+                py,
+                "mark_channel_open",
+                (channel_id, funding_proofs_json),
+            );
         });
     }
 
@@ -1156,6 +1175,25 @@ impl SpilmanClientHost for PySpilmanClientHost {
             let result = self
                 .py_host
                 .call_method1(py, "get_channel_funding", (channel_id,))
+                .ok()?;
+
+            if result.is_none(py) {
+                return None;
+            }
+
+            let json_str = result.extract::<String>(py).ok()?;
+            serde_json::from_str(&json_str).ok()
+        })
+    }
+
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap> {
+        Python::with_gil(|py| {
+            let result = self
+                .py_host
+                .call_method1(py, "get_channel_opening_from_swap", (channel_id,))
                 .ok()?;
 
             if result.is_none(py) {
@@ -1201,7 +1239,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         Python::with_gil(|py| {
             match self
                 .py_host
@@ -1209,14 +1247,25 @@ impl SpilmanClientHost for PySpilmanClientHost {
             {
                 Ok(result) => match result.extract::<String>(py) {
                     Ok(state_str) => match state_str.as_str() {
-                        "closed" | "Closed" => ClientChannelState::Closed,
-                        _ => ClientChannelState::Open,
+                        "closed" | "Closed" => Some(ClientChannelState::Closed),
+                        "closing" | "Closing" => Some(ClientChannelState::Closing),
+                        "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+                        "open" | "Open" => Some(ClientChannelState::Open),
+                        _ => None,
                     },
-                    Err(_) => ClientChannelState::Open,
+                    Err(_) => None,
                 },
-                Err(_) => ClientChannelState::Open,
+                Err(_) => None,
             }
         })
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        Python::with_gil(|py| {
+            let _ = self
+                .py_host
+                .call_method1(py, "mark_channel_closing", (channel_id,));
+        });
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -1303,6 +1352,47 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
             match self
                 .py_host
                 .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
+            {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self.py_host.call_method1(
+                py,
+                "call_mint_restore",
+                (mint_url, restore_request_json),
+            ) {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "call_mint_keysets", (mint_url,))
+            {
+                Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
+                Err(e) => Err(python_error_message(py, e)),
+            }
+        })
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        Python::with_gil(|py| {
+            match self
+                .py_host
+                .call_method1(py, "call_mint_keys", (mint_url, keyset_id))
             {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
@@ -1504,6 +1594,12 @@ impl ClientBridge {
         self.inner.close_channel(channel_id);
     }
 
+    /// Mark a channel as unusable while retaining it in storage.
+    #[pyo3(signature = (channel_id))]
+    fn mark_channel_unusable(&self, channel_id: &str) {
+        self.inner.mark_channel_unusable(channel_id);
+    }
+
     /// Get information about a stored channel.
     ///
     /// Args:
@@ -1515,7 +1611,9 @@ impl ClientBridge {
     fn get_channel_info(&self, channel_id: &str) -> Option<ClientChannelInfo> {
         self.inner.get_channel_info(channel_id).map(|info| {
             let state_str = match info.state {
+                ClientChannelState::OpeningFromSwap => "opening_from_swap",
                 ClientChannelState::Open => "open",
+                ClientChannelState::Closing => "closing",
                 ClientChannelState::Closed => "closed",
             };
             ClientChannelInfo {

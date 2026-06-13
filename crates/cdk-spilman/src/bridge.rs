@@ -685,7 +685,10 @@ fn should_retry_swap_error(raw: &str) -> bool {
         Some(code) => {
             let retryable = is_keyset_error_code(code);
             if retryable {
-                tracing::debug!(code, "Keyset error detected, will retry after refreshing keysets");
+                tracing::debug!(
+                    code,
+                    "Keyset error detected, will retry after refreshing keysets"
+                );
             } else {
                 tracing::debug!(code, "Non-retryable NUT-00 error code, failing immediately");
             }

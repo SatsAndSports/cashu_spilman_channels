@@ -72,7 +72,7 @@ This example uses `cdk-spilman` with `default-features = false` and the `spilman
 
 ```toml
 [dependencies]
-cdk-spilman = { version = "0.15.1", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
+cdk-spilman = { version = "0.16.0-rc.1", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
 ```
 
 This pulls in the Spilman implementation, Axum router, YAML config support, SQLite persistence, and `reqwest` for mint communication.

@@ -1,10 +1,3 @@
-tab_spaces = 4
-newline_style = "Auto"
-reorder_imports = true
-reorder_modules = true
-reorder_impl_items = false
-indent_style = "Block"
-normalize_comments = false
-imports_granularity = "Module"
-group_imports = "StdExternalCrate"
-format_code_in_doc_comments = true
+edition = "2021"
+newline_style = "Unix"
+use_small_heuristics = "Default"

@@ -1,19 +1,29 @@
 //! Minimal standalone test mint used by Spilman demos and integration tests.
+//!
+//! Also provides reusable test helpers for external consumers:
+//! [`TestMintHelper`] for creating in-memory mints and minting proofs,
+//! [`InMemoryMintNetworking`] for calling the mint without HTTP,
+//! and [`TestServerHost`] as a minimal [`SpilmanHost`](cdk_spilman::SpilmanHost) implementation.
+
+pub mod in_memory_networking;
+pub mod test_helpers;
+pub mod test_server_host;
+
+pub use in_memory_networking::InMemoryMintNetworking;
+pub use test_helpers::{create_test_mint, mint_test_proofs, TestMintHelper};
+pub use test_server_host::TestServerHost;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use axum::Router;
 use bip39::Mnemonic;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::FeeReserve;
-use cdk_axum::create_mint_router;
 use cdk_common::common::QuoteTTL;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::memory;
@@ -189,7 +199,7 @@ pub async fn build_test_mint(config: &TestMintConfig) -> Result<Mint> {
 
     let seed = fixed_seed()?;
     let mint = builder.build_with_seed(db.clone(), &seed).await?;
-    mint.set_quote_ttl(config.quote_ttl.clone()).await?;
+    mint.set_quote_ttl(config.quote_ttl).await?;
 
     let active_keysets = mint.get_active_keysets();
     for unit in supported_units() {
@@ -203,8 +213,9 @@ pub async fn build_test_mint(config: &TestMintConfig) -> Result<Mint> {
 }
 
 /// Build the axum router for the standalone test mint.
-pub async fn build_router(mint: Arc<Mint>) -> Result<Router> {
-    create_mint_router(
+#[cfg(feature = "http")]
+pub async fn build_router(mint: Arc<Mint>) -> Result<axum::Router> {
+    cdk_axum::create_mint_router(
         mint,
         vec![PaymentMethod::Known(KnownMethod::Bolt11).to_string()],
     )
@@ -212,6 +223,7 @@ pub async fn build_router(mint: Arc<Mint>) -> Result<Router> {
 }
 
 /// Serve the standalone test mint until a shutdown signal is received.
+#[cfg(feature = "http")]
 pub async fn serve_mint_with_shutdown(
     config: TestMintConfig,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
@@ -219,7 +231,7 @@ pub async fn serve_mint_with_shutdown(
     let mint = Arc::new(build_test_mint(&config).await?);
     let router = build_router(Arc::clone(&mint)).await?;
 
-    let socket_addr = SocketAddr::new(
+    let socket_addr = std::net::SocketAddr::new(
         config
             .listen_host
             .parse()
@@ -242,6 +254,10 @@ pub async fn serve_mint_with_shutdown(
 }
 
 /// Serve the standalone test mint until interrupted.
+#[cfg(feature = "http")]
+/// # Panics
+///
+/// Panics if installing the Unix SIGTERM handler fails.
 pub async fn serve_mint(config: TestMintConfig) -> Result<()> {
     serve_mint_with_shutdown(config, async {
         #[cfg(unix)]

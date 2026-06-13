@@ -6,14 +6,20 @@ import { WasmSpilmanClientBridge } from "../wasm/cdk_wasm.js";
  */
 export interface SpilmanClientHost {
   // ========================================================================
-  // Funding Data (immutable after creation)
+  // Channel Opening (two-phase)
   // ========================================================================
 
-  /** Persists immutable channel funding data. fundingJson is a JSON-serialized ClientChannelFunding struct. */
-  saveChannelFunding(channelId: string, fundingJson: string): void;
+  /** Save channel metadata before the funding swap. Channel enters OpeningFromSwap state. */
+  saveOpeningFromSwapChannel(channelId: string, openingJson: string): void;
+
+  /** Transition channel from OpeningFromSwap to Open with the funding proofs. */
+  markChannelOpen(channelId: string, fundingProofsJson: string): void;
 
   /** Retrieves channel funding data. Returns null if the channel doesn't exist. */
   getChannelFunding(channelId: string): string | null;
+
+  /** Retrieves channel opening data. Returns null if not in opening_from_swap state. */
+  getChannelOpeningFromSwap(channelId: string): string | null;
 
   // ========================================================================
   // Payment State (mutable)
@@ -29,7 +35,7 @@ export interface SpilmanClientHost {
   // Channel Lifecycle
   // ========================================================================
 
-  /** Returns the lifecycle state of a channel. Returns "open" or "closed". */
+  /** Returns the lifecycle state of a channel. Returns "opening_from_swap", "open", or "closed". */
   getChannelState(channelId: string): string;
 
   /** Marks a channel as closed. */
@@ -74,6 +80,12 @@ export interface SpilmanClientHost {
    * Posts swapRequestJson to {mintUrl}/v1/swap and returns the response body.
    */
   callMintSwap(mintUrl: string, swapRequestJson: string): Promise<string>;
+
+  /**
+   * Executes a NUT-09 restore with the mint (async for JS).
+   * Posts restoreRequestJson to {mintUrl}/v1/restore and returns the response body.
+   */
+  callMintRestore(mintUrl: string, restoreRequestJson: string): Promise<string>;
 }
 
 /**

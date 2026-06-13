@@ -17,6 +17,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data);
 void* spilman_client_bridge_new(SpilmanClientHostCallbacks callbacks);
 void spilman_client_bridge_free(void* ptr);
 void spilman_client_bridge_close_channel(void* ptr, const char* channel_id);
+void spilman_client_bridge_mark_channel_unusable(void* ptr, const char* channel_id);
 void spilman_client_bridge_delete_channel(void* ptr, const char* channel_id);
 void spilman_free_string(char* ptr);
 */
@@ -124,6 +125,13 @@ func (b *ClientBridge) CloseChannel(channelID string) {
 	C.spilman_client_bridge_close_channel(b.ptr, cID)
 }
 
+// MarkChannelUnusable marks a channel as unusable while retaining it in storage.
+func (b *ClientBridge) MarkChannelUnusable(channelID string) {
+	cID := C.CString(channelID)
+	defer C.free(unsafe.Pointer(cID))
+	C.spilman_client_bridge_mark_channel_unusable(b.ptr, cID)
+}
+
 // DeleteChannel removes a channel from storage.
 func (b *ClientBridge) DeleteChannel(channelID string) {
 	cID := C.CString(channelID)
@@ -144,13 +152,20 @@ func (b *ClientBridge) ProcessCooperativeCloseResponse(responseJSON string) erro
 // --- Client Host Callbacks Implementation ---
 // These are exported to C and called by the Rust client bridge via client_gateway.c
 
-// Funding Data
+// Channel Opening (two-phase)
 
-//export go_client_save_channel_funding
-func go_client_save_channel_funding(userData unsafe.Pointer, channelID *C.char, fundingJSON *C.char) {
+//export go_client_save_opening_from_swap_channel
+func go_client_save_opening_from_swap_channel(userData unsafe.Pointer, channelID *C.char, openingJSON *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.SaveChannelFunding(C.GoString(channelID), C.GoString(fundingJSON))
+	host.SaveOpeningFromSwapChannel(C.GoString(channelID), C.GoString(openingJSON))
+}
+
+//export go_client_mark_channel_open
+func go_client_mark_channel_open(userData unsafe.Pointer, channelID *C.char, fundingProofsJSON *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.MarkChannelOpen(C.GoString(channelID), C.GoString(fundingProofsJSON))
 }
 
 //export go_client_get_channel_funding
@@ -158,6 +173,17 @@ func go_client_get_channel_funding(userData unsafe.Pointer, channelID *C.char) *
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	result := host.GetChannelFunding(C.GoString(channelID))
+	if result == "" {
+		return nil
+	}
+	return C.CString(result)
+}
+
+//export go_client_get_channel_opening_from_swap
+func go_client_get_channel_opening_from_swap(userData unsafe.Pointer, channelID *C.char) *C.char {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	result := host.GetChannelOpeningFromSwap(C.GoString(channelID))
 	if result == "" {
 		return nil
 	}
@@ -202,6 +228,13 @@ func go_client_mark_channel_closed(userData unsafe.Pointer, channelID *C.char) {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	host.MarkChannelClosed(C.GoString(channelID))
+}
+
+//export go_client_mark_channel_closing
+func go_client_mark_channel_closing(userData unsafe.Pointer, channelID *C.char) {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	host.MarkChannelClosing(C.GoString(channelID))
 }
 
 //export go_client_list_channel_ids
@@ -267,6 +300,19 @@ func go_client_call_mint_swap(userData unsafe.Pointer, mintURL *C.char, swapRequ
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	resp, err := host.CallMintSwap(C.GoString(mintURL), C.GoString(swapRequestJSON))
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = C.CString(resp)
+	return 1
+}
+
+//export go_client_call_mint_restore
+func go_client_call_mint_restore(userData unsafe.Pointer, mintURL *C.char, restoreRequestJSON *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	resp, err := host.CallMintRestore(C.GoString(mintURL), C.GoString(restoreRequestJSON))
 	if err != nil {
 		*responseOut = C.CString(err.Error())
 		return 0

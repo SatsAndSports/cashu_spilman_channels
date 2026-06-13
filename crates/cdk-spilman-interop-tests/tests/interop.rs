@@ -948,7 +948,11 @@ async fn assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
     let store = Arc::new(memory::empty().await?);
     let seed = random::<[u8; 64]>();
     let wallet = WalletBuilder::new()
-        .mint_url("http://localhost:3338".parse().unwrap())
+        .mint_url(
+            "http://localhost:3338"
+                .parse()
+                .expect("localhost mint URL should parse"),
+        )
         .unit(CurrencyUnit::Sat)
         .localstore(store)
         .seed(seed)
@@ -1014,8 +1018,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk::nuts::PublicKey;
     use cdk_spilman::{
-        base64_decode, BridgeError, ClientChannelFunding, ClientChannelState, ClientPaymentState,
-        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+        base64_decode, BridgeError, ClientChannelFunding, ClientChannelOpeningFromSwap,
+        ClientChannelState, ClientPaymentState, SpilmanClientBridge, SpilmanClientHost,
+        SpilmanClientNetworking,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -1049,6 +1054,44 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize swap response: {}", e))
         }
+
+        fn call_mint_restore(
+            &self,
+            _mint_url: &str,
+            restore_request_json: &str,
+        ) -> Result<String, String> {
+            let restore_request: RestoreRequest = serde_json::from_str(restore_request_json)
+                .map_err(|e| format!("Failed to parse restore request: {}", e))?;
+            let mint = Arc::clone(&self.mint);
+            let response = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(async { mint.restore(restore_request).await })
+            })
+            .map_err(|e| {
+                serde_json::to_string(&cdk_common::error::ErrorResponse::from(e))
+                    .unwrap_or_else(|ser_err| format!("Mint restore failed: {ser_err}"))
+            })?;
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize restore response: {}", e))
+        }
+
+        fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+            let response = self.mint.keysets();
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize keysets response: {}", e))
+        }
+
+        fn call_mint_keys(&self, _mint_url: &str, keyset_id: &str) -> Result<String, String> {
+            let id: cdk::nuts::Id = keyset_id
+                .parse()
+                .map_err(|e| format!("Invalid keyset ID: {}", e))?;
+            let response = self
+                .mint
+                .keyset_pubkeys(&id)
+                .map_err(|e| format!("Failed to get keyset pubkeys: {}", e))?;
+            serde_json::to_string(&response)
+                .map_err(|e| format!("Failed to serialize keys response: {}", e))
+        }
     }
 
     // ====================================================================
@@ -1056,6 +1099,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // ====================================================================
 
     struct TestClientHost {
+        opening: Mutex<HashMap<String, ClientChannelOpeningFromSwap>>,
         funding: Mutex<HashMap<String, ClientChannelFunding>>,
         payments: Mutex<HashMap<String, ClientPaymentState>>,
         states: Mutex<HashMap<String, ClientChannelState>>,
@@ -1072,15 +1116,54 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     }
 
     impl SpilmanClientHost for TestClientHost {
-        fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
-            self.funding
+        fn save_opening_from_swap_channel(
+            &self,
+            channel_id: &str,
+            opening: ClientChannelOpeningFromSwap,
+        ) {
+            self.opening
                 .lock()
                 .unwrap()
-                .insert(channel_id.to_string(), funding);
+                .insert(channel_id.to_string(), opening);
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
+        }
+
+        fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+            if let Some(opening) = self.opening.lock().unwrap().remove(channel_id) {
+                let funding = ClientChannelFunding {
+                    params_json: opening.params_json,
+                    funding_proofs_json: funding_proofs_json.to_string(),
+                    channel_secret_hex: opening.channel_secret_hex,
+                    keyset_info_json: opening.keyset_info_json,
+                    sender_pubkey_hex: opening.sender_pubkey_hex,
+                    capacity: opening.capacity,
+                    funding_token_amount: opening.funding_token_amount,
+                    mint_url: opening.mint_url,
+                    created_at: opening.created_at,
+                };
+                self.funding
+                    .lock()
+                    .unwrap()
+                    .insert(channel_id.to_string(), funding);
+            }
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::Open);
         }
 
         fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
             self.funding.lock().unwrap().get(channel_id).cloned()
+        }
+
+        fn get_channel_opening_from_swap(
+            &self,
+            channel_id: &str,
+        ) -> Option<ClientChannelOpeningFromSwap> {
+            self.opening.lock().unwrap().get(channel_id).cloned()
         }
 
         fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
@@ -1094,13 +1177,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .insert(channel_id.to_string(), state);
         }
 
-        fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
-            self.states
-                .lock()
-                .unwrap()
-                .get(channel_id)
-                .copied()
-                .unwrap_or(ClientChannelState::Open)
+        fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
+            self.states.lock().unwrap().get(channel_id).copied()
         }
 
         fn mark_channel_closed(&self, channel_id: &str) {
@@ -1108,6 +1186,13 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::Closed);
+        }
+
+        fn mark_channel_closing(&self, channel_id: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::Closing);
         }
 
         fn list_channel_ids(&self) -> Vec<String> {
@@ -1182,7 +1267,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         fn get_funding(&self, channel_id: &str) -> Option<ChannelFunding> {
             self.funding_data
                 .lock()
-                .unwrap()
+                .expect("funding_data lock")
                 .get(channel_id)
                 .cloned()
                 .map(
@@ -1202,7 +1287,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             funding: ChannelFunding,
             _initial_payment: PaymentProof,
         ) {
-            self.funding_data.lock().unwrap().insert(
+            self.funding_data.lock().expect("funding_data lock").insert(
                 channel_id.to_string(),
                 (
                     funding.params_json,
@@ -1358,6 +1443,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     let sender_pubkey_hex = alice_secret.public_key().to_hex();
 
     let client_host = TestClientHost {
+        opening: Mutex::new(HashMap::new()),
         funding: Mutex::new(HashMap::new()),
         payments: Mutex::new(HashMap::new()),
         states: Mutex::new(HashMap::new()),
@@ -1535,6 +1621,17 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         other => panic!("Unexpected error: {:?}", other),
     }
 
+    // Marking a channel unusable keeps it in storage but blocks new payments.
+    client_bridge.mark_channel_unusable(&open_result.channel_id);
+    let info = client_bridge
+        .get_channel_info(&open_result.channel_id)
+        .ok_or_else(|| anyhow::anyhow!("missing channel info after mark_channel_unusable"))?;
+    assert_eq!(info.state, ClientChannelState::Closing);
+    let err = client_bridge
+        .create_payment(&open_result.channel_id, 21)
+        .expect_err("closing channel should reject new payments");
+    assert!(err.contains("not usable for payments"));
+
     // ====================================================================
     // Delete channel
     // ====================================================================
@@ -1552,8 +1649,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
 async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk_spilman::{
-        ClientChannelFunding, ClientChannelState, ClientPaymentState, SpilmanClientBridge,
-        SpilmanClientHost, SpilmanClientNetworking,
+        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
     };
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1565,6 +1662,18 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
     impl SpilmanClientNetworking for FailingClientNetworking {
         fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+            Err(self.mint_error_json.clone())
+        }
+
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
             Err(self.mint_error_json.clone())
         }
     }
@@ -1584,9 +1693,15 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientHost for FailingClientHost {
-        fn save_channel_funding(&self, _: &str, _: ClientChannelFunding) {}
+        fn save_opening_from_swap_channel(&self, _: &str, _: ClientChannelOpeningFromSwap) {}
+
+        fn mark_channel_open(&self, _: &str, _: &str) {}
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
+            None
+        }
+
+        fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {
             None
         }
 
@@ -1596,11 +1711,13 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
         fn record_payment(&self, _: &str, _: ClientPaymentState) {}
 
-        fn get_channel_state(&self, _: &str) -> ClientChannelState {
-            ClientChannelState::Open
+        fn get_channel_state(&self, _: &str) -> Option<ClientChannelState> {
+            Some(ClientChannelState::Open)
         }
 
         fn mark_channel_closed(&self, _: &str) {}
+
+        fn mark_channel_closing(&self, _: &str) {}
 
         fn list_channel_ids(&self) -> Vec<String> {
             Vec::new()
@@ -1745,7 +1862,7 @@ mod close_balance_tests {
         fn get_funding(&self, channel_id: &str) -> Option<ChannelFunding> {
             self.funding_data
                 .lock()
-                .unwrap()
+                .expect("funding_data lock")
                 .get(channel_id)
                 .cloned()
                 .map(
@@ -1765,7 +1882,7 @@ mod close_balance_tests {
             funding: ChannelFunding,
             _initial_payment: PaymentProof,
         ) {
-            self.funding_data.lock().unwrap().insert(
+            self.funding_data.lock().expect("funding_data lock").insert(
                 channel_id.to_string(),
                 (
                     funding.params_json,
@@ -1782,7 +1899,7 @@ mod close_balance_tests {
             *self.stored_payment.borrow_mut() = Some(payment);
         }
         fn get_channel_state(&self, _channel_id: &str) -> ChannelState {
-            self.channel_state.borrow().clone()
+            *self.channel_state.borrow()
         }
         fn mark_channel_closing(
             &self,
@@ -1919,7 +2036,11 @@ mod close_balance_tests {
     }
 
     pub(super) async fn setup_overpayment_scenario() -> OverpaymentScenario {
-        let shared_mint = Arc::new(create_test_mint().await.unwrap());
+        let shared_mint = Arc::new(
+            create_test_mint()
+                .await
+                .expect("test mint should be created successfully"),
+        );
 
         let keyset_id = shared_mint
             .get_active_keysets()
@@ -1928,15 +2049,22 @@ mod close_balance_tests {
             .expect("SAT keyset");
         let keyset_info_json = keyset_info_json_from_mint(&shared_mint, keyset_id);
         let keyset_keys: Keys = {
-            let pubkeys = shared_mint.keyset_pubkeys(&keyset_id).unwrap();
-            pubkeys.keysets.first().unwrap().keys.clone()
+            let pubkeys = shared_mint
+                .keyset_pubkeys(&keyset_id)
+                .expect("mint should return keyset pubkeys");
+            pubkeys
+                .keysets
+                .first()
+                .expect("keyset pubkeys response should contain one keyset")
+                .keys
+                .clone()
         };
         let fee_ppk = shared_mint
             .keysets()
             .keysets
             .iter()
             .find(|k| k.id == keyset_id)
-            .unwrap()
+            .expect("active SAT keyset should be present")
             .input_fee_ppk;
 
         let alice_secret = cdk::nuts::SecretKey::generate();
@@ -2014,13 +2142,16 @@ mod close_balance_tests {
         let overpayment_balance = 50u64;
         let (overpay_update, _) = sender
             .create_signed_balance_update(overpayment_balance)
-            .unwrap();
+            .expect("overpayment balance update should be signed");
 
         let amount_due = 10u64;
-        let (close_update, _) = sender.create_signed_balance_update(amount_due).unwrap();
+        let (close_update, _) = sender
+            .create_signed_balance_update(amount_due)
+            .expect("close balance update should be signed");
 
         let params_json = params.get_channel_id_params_json();
-        let funding_proofs_json = serde_json::to_string(&funding_proofs).unwrap();
+        let funding_proofs_json =
+            serde_json::to_string(&funding_proofs).expect("funding proofs should serialize");
         let channel_secret_hex = hex::encode(channel_secret);
 
         let mut keyset_infos = HashMap::new();
@@ -2033,7 +2164,10 @@ mod close_balance_tests {
                 params_json,
                 funding_proofs_json,
                 channel_secret_hex,
-                keyset_infos.get(&keyset_id).unwrap().clone(),
+                keyset_infos
+                    .get(&keyset_id)
+                    .expect("stored keyset info should exist")
+                    .clone(),
             ),
         );
 
@@ -2076,13 +2210,13 @@ mod close_balance_tests {
         for (i, proof) in receiver_proofs.iter().enumerate() {
             let p2pk_e = proof.get("p2pk_e");
             assert!(
-                p2pk_e.is_some() && !p2pk_e.unwrap().is_null(),
+                p2pk_e.is_some_and(|value| !value.is_null()),
                 "Receiver proof {} should include p2pk_e",
                 i
             );
             let witness = proof.get("witness");
             assert!(
-                witness.is_some() && !witness.unwrap().is_null(),
+                witness.is_some_and(|value| !value.is_null()),
                 "Receiver proof {} should have witness",
                 i
             );
@@ -2095,7 +2229,11 @@ mod close_balance_tests {
         let store = Arc::new(memory::empty().await.expect("wallet store"));
         let seed = random::<[u8; 64]>();
         let wallet = WalletBuilder::new()
-            .mint_url("http://localhost:3338".parse().unwrap())
+            .mint_url(
+                "http://localhost:3338"
+                    .parse()
+                    .expect("localhost mint URL should parse"),
+            )
             .unit(CurrencyUnit::Sat)
             .localstore(store)
             .seed(seed)
@@ -2134,20 +2272,23 @@ async fn test_cooperative_close_with_overpayment() -> anyhow::Result<()> {
         ChannelState::Closed
     ));
 
-    let closed = s.bridge.host().closed_data.borrow();
-    let (closed_balance, _closed_total, ref receiver_proofs_json, ref _sender_proofs_json) = closed
-        .as_ref()
-        .expect("mark_channel_closed should have been called");
+    let (closed_balance, receiver_proofs_json) = {
+        let closed = s.bridge.host().closed_data.borrow();
+        let (closed_balance, _closed_total, receiver_proofs_json, _sender_proofs_json) = closed
+            .as_ref()
+            .expect("mark_channel_closed should have been called");
+        (*closed_balance, receiver_proofs_json.clone())
+    };
 
     assert_eq!(
-        *closed_balance, s.amount_due,
+        closed_balance, s.amount_due,
         "Closed balance should be amount_due ({}), not overpayment ({})",
         s.amount_due, s.overpayment_balance
     );
     assert!(success.receiver_sum > 0);
     assert!(success.receiver_sum < 20);
 
-    close_balance_tests::verify_receiver_proofs_spendable(receiver_proofs_json, &s.shared_mint)
+    close_balance_tests::verify_receiver_proofs_spendable(&receiver_proofs_json, &s.shared_mint)
         .await;
     Ok(())
 }
@@ -2167,20 +2308,23 @@ async fn test_unilateral_close_uses_latest_payment_balance() -> anyhow::Result<(
         ChannelState::Closed
     ));
 
-    let closed = s.bridge.host().closed_data.borrow();
-    let (closed_balance, _closed_total, ref receiver_proofs_json, ref _sender_proofs_json) = closed
-        .as_ref()
-        .expect("mark_channel_closed should have been called");
+    let (closed_balance, receiver_proofs_json) = {
+        let closed = s.bridge.host().closed_data.borrow();
+        let (closed_balance, _closed_total, receiver_proofs_json, _sender_proofs_json) = closed
+            .as_ref()
+            .expect("mark_channel_closed should have been called");
+        (*closed_balance, receiver_proofs_json.clone())
+    };
 
     assert_eq!(
-        *closed_balance, s.overpayment_balance,
+        closed_balance, s.overpayment_balance,
         "Closed balance should be latest payment ({}), not amount_due ({})",
         s.overpayment_balance, s.amount_due
     );
     assert!(success.receiver_sum > 0);
     assert!(success.receiver_sum > 30);
 
-    close_balance_tests::verify_receiver_proofs_spendable(receiver_proofs_json, &s.shared_mint)
+    close_balance_tests::verify_receiver_proofs_spendable(&receiver_proofs_json, &s.shared_mint)
         .await;
     Ok(())
 }
@@ -2224,7 +2368,7 @@ mod retry_tests {
         fn get_funding(&self, channel_id: &str) -> Option<ChannelFunding> {
             self.funding_data
                 .lock()
-                .unwrap()
+                .expect("funding_data lock")
                 .get(channel_id)
                 .cloned()
                 .map(
@@ -2244,7 +2388,7 @@ mod retry_tests {
             funding: ChannelFunding,
             _initial_payment: PaymentProof,
         ) {
-            self.funding_data.lock().unwrap().insert(
+            self.funding_data.lock().expect("funding_data lock").insert(
                 channel_id.to_string(),
                 (
                     funding.params_json,
@@ -2261,7 +2405,7 @@ mod retry_tests {
             *self.stored_payment.borrow_mut() = Some(payment);
         }
         fn get_channel_state(&self, _channel_id: &str) -> ChannelState {
-            self.channel_state.borrow().clone()
+            *self.channel_state.borrow()
         }
         fn mark_channel_closing(
             &self,
@@ -2411,7 +2555,11 @@ mod retry_tests {
     }
 
     pub(super) async fn setup_retry_scenario() -> RetryScenario {
-        let shared_mint = Arc::new(create_test_mint().await.unwrap());
+        let shared_mint = Arc::new(
+            create_test_mint()
+                .await
+                .expect("test mint should be created successfully"),
+        );
 
         let keyset_a_id = shared_mint
             .get_active_keysets()
@@ -2420,15 +2568,22 @@ mod retry_tests {
             .expect("SAT keyset");
         let keyset_a_info_json = keyset_info_json_from_mint(&shared_mint, keyset_a_id);
         let keyset_a_keys: Keys = {
-            let pubkeys = shared_mint.keyset_pubkeys(&keyset_a_id).unwrap();
-            pubkeys.keysets.first().unwrap().keys.clone()
+            let pubkeys = shared_mint
+                .keyset_pubkeys(&keyset_a_id)
+                .expect("mint should return keyset pubkeys");
+            pubkeys
+                .keysets
+                .first()
+                .expect("keyset pubkeys response should contain one keyset")
+                .keys
+                .clone()
         };
         let keyset_a_fee_ppk = shared_mint
             .keysets()
             .keysets
             .iter()
             .find(|k| k.id == keyset_a_id)
-            .unwrap()
+            .expect("active SAT keyset should be present")
             .input_fee_ppk;
 
         let alice_secret = cdk::nuts::SecretKey::generate();
@@ -2503,7 +2658,9 @@ mod retry_tests {
             EstablishedChannel::new(params.clone(), funding_proofs.clone()).expect("channel");
         let sender = SpilmanChannelSender::new(alice_secret.clone(), channel);
         let balance = 5u64;
-        let (balance_update, _) = sender.create_signed_balance_update(balance).unwrap();
+        let (balance_update, _) = sender
+            .create_signed_balance_update(balance)
+            .expect("balance update should be signed");
 
         // Rotate keyset: A -> inactive, B -> active
         let keyset_b_info = shared_mint
@@ -2524,7 +2681,8 @@ mod retry_tests {
         keyset_infos.insert(keyset_b_id, keyset_b_info_json);
 
         let params_json = params.get_channel_id_params_json();
-        let funding_proofs_json = serde_json::to_string(&funding_proofs).unwrap();
+        let funding_proofs_json =
+            serde_json::to_string(&funding_proofs).expect("funding proofs should serialize");
         let channel_secret_hex = hex::encode(channel_secret);
 
         let mut funding_data_map = HashMap::new();
@@ -2534,7 +2692,10 @@ mod retry_tests {
                 params_json,
                 funding_proofs_json,
                 channel_secret_hex,
-                keyset_infos.get(&keyset_a_id).unwrap().clone(),
+                keyset_infos
+                    .get(&keyset_a_id)
+                    .expect("stored keyset info should exist")
+                    .clone(),
             ),
         );
 
@@ -2630,10 +2791,13 @@ async fn test_cooperative_close_full_retry_with_real_mint() -> anyhow::Result<()
         .get("code")
         .and_then(|v| v.as_u64())
         .expect("NUT-00 error should contain a 'code' field");
+    let detail = err_value
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<missing>");
     eprintln!(
-        "[test] first swap NUT-00 error: code={}, detail={:?}",
-        nut00_code,
-        err_value.get("detail").and_then(|v| v.as_str())
+        "[test] first swap NUT-00 error: code={}, detail={}",
+        nut00_code, detail
     );
     assert!(
         nut00_code == 12001 || nut00_code == 12002,
@@ -2980,7 +3144,10 @@ async fn test_close_no_retry_on_token_spent_error() -> anyhow::Result<()> {
         CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
             assert_eq!(mint_error["code"], serde_json::json!(11001));
-            assert_eq!(mint_error["detail"], serde_json::json!("Token already spent"));
+            assert_eq!(
+                mint_error["detail"],
+                serde_json::json!("Token already spent")
+            );
         }
         other => panic!("expected MintRejected, got {other:?}"),
     }
@@ -3097,10 +3264,7 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
         CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
             // The unparseable error should be wrapped as a JSON string
-            assert_eq!(
-                mint_error,
-                serde_json::json!("Internal server error")
-            );
+            assert_eq!(mint_error, serde_json::json!("Internal server error"));
         }
         other => panic!("expected MintRejected, got {other:?}"),
     }
@@ -3228,8 +3392,7 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
         "First close should use 2 swap calls (initial + retry)"
     );
     assert_eq!(
-        after_first_close_refresh_count,
-        1,
+        after_first_close_refresh_count, 1,
         "First close should use 1 refresh call"
     );
 
@@ -3260,7 +3423,7 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
 
     // The second close should fail
     let err = result2.expect_err("Second close should fail (proofs already spent)");
-    eprintln!("[selective-retry] Second close error: {err:?}");
+    eprintln!("[selective-retry] Second close error: {err}");
 
     // KEY ASSERTION: Second close should use only 1 swap (no retry for 11001)
     let second_close_swaps = after_second_close_swap_count - after_first_close_swap_count;
@@ -3287,10 +3450,7 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
                 "[selective-retry] Got MintRejected: status={}, error={}",
                 status, mint_error
             );
-            let code = mint_error
-                .get("code")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let code = mint_error.get("code").and_then(|v| v.as_u64()).unwrap_or(0);
             eprintln!("[selective-retry] NUT-00 error code: {code}");
 
             // 11001 = TokenAlreadySpent

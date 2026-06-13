@@ -72,7 +72,7 @@ cargo build -p cdk-spilman-test-mint --manifest-path Cargo.toml
 When it is ready, it prints a one-line summary like:
 
 ```text
-MINT_READY source=spawned url=http://127.0.0.1:3338 name="Spilman Test Mint" version="cdk-spilman-test-mintd/0.15.1" units=[sat,msat,usd]
+MINT_READY source=spawned url=http://127.0.0.1:3338 name="Spilman Test Mint" version="cdk-spilman-test-mintd/0.16.0-rc.1" units=[sat,msat,usd]
 ```
 
 The standalone mint uses a fixed mnemonic for reproducible keyset IDs:
@@ -97,6 +97,13 @@ MINT_URL=http://localhost:3338 make test-integration-all test-demo-all
 their own standalone test mint internally because the Rust harness controls
 the mint lifecycle. `MINT_URL` is respected by the integration and demo
 targets that go through `scripts/run_with_mint.sh`.
+
+### Integration Kit Tests
+
+```bash
+# Run unit and integration tests for all kits (Go, Python, TS)
+make test-kit-all
+```
 
 ---
 

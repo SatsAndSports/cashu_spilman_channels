@@ -43,14 +43,16 @@ func main() {
 ```go
 import "github.com/SatsAndSports/demo_of_spillman_cashu_channel/crates/cdk-spilman-go/spilman"
 
-// Derive `_channel secret_` with receiver
-channelSecret, _ := spilman.ComputeChannelSecret(senderSecret, receiverPubkey)
+host := spilman.NewInMemoryClientHost(senderSecret)
+bridge := spilman.NewClientBridge(host)
 
-// Create funding outputs for minting
-funding, _ := spilman.CreateFundingOutputs(paramsJson, senderSecret, keysetJson)
+// Simplified channel opening
+result, err := bridge.OpenChannelFromToken(
+    token, receiverPubkey, senderPubkey, expiry, keysetInfo, maxAmount
+)
 
 // Create signed payment
-signature, _ := spilman.CreateSignedBalanceUpdate(paramsJson, keysetJson, senderSecret, proofsJson, balance)
+payment, err := bridge.CreatePayment(result.ChannelID, balance)
 ```
 
 ## API Reference
@@ -58,11 +60,11 @@ signature, _ := spilman.CreateSignedBalanceUpdate(paramsJson, keysetJson, sender
 ### Core Functions
 - `GenerateKeypair()` - Generate a new secp256k1 keypair
 - `ComputeChannelSecret(secret, pubkey)` - Derive `_channel secret_`
-- `CreateFundingOutputs(params, secret, keyset)` - Create blinded outputs for funding
-- `CreateSignedBalanceUpdate(...)` - Sign a payment
+- `BuildCashuBToken(mint, proofs)` - Build a Cashu B token
 
 ### Bridge Methods
-- `ProcessPayment(payment, context)`
-- `FundChannel(payment)`
-- `ExecuteCooperativeClose(payment)`
-- `ExecuteUnilateralClose(channelId)`
+- `OpenChannelFromToken(...)` - Full two-phase funding flow
+- `RestoreFundingProofs(channelId)` - NUT-09 recovery
+- `CreatePayment(channelId, balance)`
+- `CreatePaymentWithFunding(channelId, balance)`
+- `ExecuteCooperativeClose(channelId, finalBalance)`

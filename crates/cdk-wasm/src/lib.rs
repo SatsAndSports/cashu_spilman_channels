@@ -11,9 +11,9 @@ use cashu::util::hex;
 use cdk_spilman::{
     compute_funding_token_amount as rust_compute_funding_token_amount, BalanceUpdateMessage,
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
-    ChannelState, ClientChannelFunding, ClientChannelState, ClientPaymentState, ClosingData,
-    EstablishedChannel, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge,
-    SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
+    ChannelState, ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
+    ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof, SpilmanAsyncNetworking,
+    SpilmanBridge, SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
     SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
@@ -118,27 +118,29 @@ extern "C" {
     ) -> Result<String, JsValue>;
 
     pub type JsSpilmanClientHost;
-    // Funding data (immutable)
-    #[wasm_bindgen(method, js_name = saveChannelFunding)]
-    fn save_channel_funding(
+    // Channel opening (two-phase)
+    #[wasm_bindgen(method, js_name = saveOpeningFromSwapChannel)]
+    fn save_opening_from_swap_channel(
         this: &JsSpilmanClientHost,
         channel_id: &str,
-        funding_json: &str,
+        opening_json: &str,
     );
+    #[wasm_bindgen(method, js_name = markChannelOpen)]
+    fn mark_channel_open(this: &JsSpilmanClientHost, channel_id: &str, funding_proofs_json: &str);
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    #[wasm_bindgen(method, js_name = getChannelOpeningFromSwap)]
+    fn get_channel_opening_from_swap(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     // Payment state (mutable)
     #[wasm_bindgen(method, js_name = getPaymentState)]
     fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     #[wasm_bindgen(method, js_name = recordPayment)]
-    fn client_record_payment(
-        this: &JsSpilmanClientHost,
-        channel_id: &str,
-        state_json: &str,
-    );
+    fn client_record_payment(this: &JsSpilmanClientHost, channel_id: &str, state_json: &str);
     // Lifecycle
     #[wasm_bindgen(method, js_name = getChannelState)]
     fn client_get_channel_state(this: &JsSpilmanClientHost, channel_id: &str) -> String;
+    #[wasm_bindgen(method, js_name = markChannelClosing)]
+    fn client_mark_channel_closing(this: &JsSpilmanClientHost, channel_id: &str);
     #[wasm_bindgen(method, js_name = markChannelClosed)]
     fn client_mark_channel_closed(this: &JsSpilmanClientHost, channel_id: &str);
     #[wasm_bindgen(method, js_name = listChannelIds)]
@@ -168,6 +170,20 @@ extern "C" {
         this: &JsSpilmanClientHost,
         mint_url: &str,
         swap_request_json: &str,
+    ) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintRestore)]
+    fn client_call_mint_restore(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintKeysets)]
+    fn client_call_mint_keysets(this: &JsSpilmanClientHost, mint_url: &str) -> js_sys::Promise;
+    #[wasm_bindgen(method, js_name = callMintKeys)]
+    fn client_call_mint_keys(
+        this: &JsSpilmanClientHost,
+        mint_url: &str,
+        keyset_id: &str,
     ) -> js_sys::Promise;
 }
 
@@ -422,17 +438,39 @@ unsafe impl Sync for WasmSpilmanClientHostProxy {}
 
 impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     // ========================================================================
-    // Funding Data (immutable after creation)
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
-        let funding_json =
-            serde_json::to_string(&funding).expect("ClientChannelFunding serialization failed");
-        self.js_host.save_channel_funding(channel_id, &funding_json);
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) {
+        let opening_json = serde_json::to_string(&opening)
+            .expect("ClientChannelOpeningFromSwap serialization failed");
+        self.js_host
+            .save_opening_from_swap_channel(channel_id, &opening_json);
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        self.js_host
+            .mark_channel_open(channel_id, funding_proofs_json);
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
         let val = self.js_host.get_channel_funding(channel_id);
+        if val.is_null() || val.is_undefined() {
+            return None;
+        }
+        let json_str = val.as_string()?;
+        serde_json::from_str(&json_str).ok()
+    }
+
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap> {
+        let val = self.js_host.get_channel_opening_from_swap(channel_id);
         if val.is_null() || val.is_undefined() {
             return None;
         }
@@ -463,11 +501,18 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     // Channel Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         match self.js_host.client_get_channel_state(channel_id).as_str() {
-            "closed" | "Closed" => ClientChannelState::Closed,
-            _ => ClientChannelState::Open,
+            "closed" | "Closed" => Some(ClientChannelState::Closed),
+            "closing" | "Closing" => Some(ClientChannelState::Closing),
+            "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+            "open" | "Open" => Some(ClientChannelState::Open),
+            _ => None,
         }
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        self.js_host.client_mark_channel_closing(channel_id);
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
@@ -529,6 +574,19 @@ impl SpilmanClientNetworking for WasmDummyNetworking {
     fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
         Err("Sync networking not supported in WASM; use openChannelFromTokenAsync".to_string())
     }
+    fn call_mint_restore(
+        &self,
+        _mint_url: &str,
+        _restore_request_json: &str,
+    ) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async restore".to_string())
+    }
+    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    }
+    fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
+        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    }
 }
 
 // ============================================================================
@@ -550,7 +608,38 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         mint_url: &str,
         swap_request_json: &str,
     ) -> Result<String, String> {
-        JsFuture::from(self.js_host.client_call_mint_swap(mint_url, swap_request_json))
+        JsFuture::from(
+            self.js_host
+                .client_call_mint_swap(mint_url, swap_request_json),
+        )
+        .await
+        .map_err(js_error_to_string)?
+        .as_string()
+        .ok_or_else(|| "Result not a string".to_string())
+    }
+    async fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        JsFuture::from(
+            self.js_host
+                .client_call_mint_restore(mint_url, restore_request_json),
+        )
+        .await
+        .map_err(js_error_to_string)?
+        .as_string()
+        .ok_or_else(|| "Result not a string".to_string())
+    }
+    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        JsFuture::from(self.js_host.client_call_mint_keysets(mint_url))
+            .await
+            .map_err(js_error_to_string)?
+            .as_string()
+            .ok_or_else(|| "Result not a string".to_string())
+    }
+    async fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        JsFuture::from(self.js_host.client_call_mint_keys(mint_url, keyset_id))
             .await
             .map_err(js_error_to_string)?
             .as_string()
@@ -566,6 +655,19 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         _mint_url: &str,
         _swap_request_json: &str,
     ) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_restore(
+        &self,
+        _mint_url: &str,
+        _restore_request_json: &str,
+    ) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        Err("WASM proxy only works on wasm32".to_string())
+    }
+    async fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
         Err("WASM proxy only works on wasm32".to_string())
     }
 }
@@ -798,6 +900,12 @@ impl WasmSpilmanClientBridge {
     #[wasm_bindgen(js_name = closeChannel)]
     pub fn close_channel(&self, channel_id: &str) {
         self.bridge.close_channel(channel_id);
+    }
+
+    /// Mark a channel as unusable while retaining it in storage.
+    #[wasm_bindgen(js_name = markChannelUnusable)]
+    pub fn mark_channel_unusable(&self, channel_id: &str) {
+        self.bridge.mark_channel_unusable(channel_id);
     }
 
     #[wasm_bindgen(js_name = deleteChannel)]

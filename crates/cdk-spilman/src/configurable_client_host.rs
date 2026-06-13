@@ -28,8 +28,8 @@ use cashu::nuts::SecretKey;
 use super::bindings::{compute_channel_secret_from_hex, sign_with_tweaked_key_util};
 use super::client_bridge::SpilmanClientHost;
 use super::client_storage::{
-    ClientChannelFunding, ClientChannelState, ClientPaymentState, ClientStorage,
-    MemoryClientStorage,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+    ClientStorage, MemoryClientStorage,
 };
 
 // ============================================================================
@@ -151,11 +151,33 @@ impl ConfigurableClientHost<MemoryClientStorage> {
 
 impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     // ========================================================================
-    // Funding Data
+    // Channel Opening (two-phase)
     // ========================================================================
 
-    fn save_channel_funding(&self, channel_id: &str, funding: ClientChannelFunding) {
-        self.storage.borrow_mut().save_funding(channel_id, funding);
+    fn save_opening_from_swap_channel(
+        &self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) {
+        self.storage
+            .borrow_mut()
+            .save_opening_from_swap(channel_id, opening);
+    }
+
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        self.storage
+            .borrow_mut()
+            .set_open(channel_id, funding_proofs_json);
+    }
+
+    fn get_channel_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Option<ClientChannelOpeningFromSwap> {
+        self.storage
+            .borrow()
+            .get_opening_from_swap(channel_id)
+            .cloned()
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -180,12 +202,16 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     // Lifecycle
     // ========================================================================
 
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         self.storage.borrow().get_state(channel_id)
     }
 
     fn mark_channel_closed(&self, channel_id: &str) {
         self.storage.borrow_mut().set_closed(channel_id);
+    }
+
+    fn mark_channel_closing(&self, channel_id: &str) {
+        self.storage.borrow_mut().set_closing(channel_id);
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -287,30 +313,47 @@ mod tests {
 
         // Initially no channel
         assert!(host.get_channel_funding(channel_id).is_none());
-        assert_eq!(
-            host.get_channel_state(channel_id),
-            ClientChannelState::Closed
-        );
+        assert_eq!(host.get_channel_state(channel_id), None);
 
-        // Save funding
-        let funding = ClientChannelFunding {
+        // Save as opening from swap
+        let opening = ClientChannelOpeningFromSwap {
             params_json: "{}".to_string(),
-            funding_proofs_json: "[]".to_string(),
             channel_secret_hex: "aa".repeat(32),
             keyset_info_json: "{}".to_string(),
             sender_pubkey_hex: "02".to_string() + &"bb".repeat(32),
             capacity: 1000,
             funding_token_amount: 1100,
             mint_url: "https://mint.example.com".to_string(),
+            input_token: "cashuAtest".to_string(),
             created_at: 12345,
         };
 
-        host.save_channel_funding(channel_id, funding.clone());
+        host.save_opening_from_swap_channel(channel_id, opening);
 
-        // Now retrievable
+        // Should be in OpeningFromSwap state
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            Some(ClientChannelState::OpeningFromSwap)
+        );
+
+        // Opening data should be retrievable
+        let o = host.get_channel_opening_from_swap(channel_id).unwrap();
+        assert_eq!(o.input_token, "cashuAtest");
+
+        // Funding not yet available
+        assert!(host.get_channel_funding(channel_id).is_none());
+
+        // Mark open with proofs
+        host.mark_channel_open(channel_id, "[]");
+
+        // Opening data gone, funding now available
+        assert!(host.get_channel_opening_from_swap(channel_id).is_none());
         let retrieved = host.get_channel_funding(channel_id).unwrap();
         assert_eq!(retrieved.capacity, 1000);
-        assert_eq!(host.get_channel_state(channel_id), ClientChannelState::Open);
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            Some(ClientChannelState::Open)
+        );
 
         // Record payment
         assert!(host.get_payment_state(channel_id).is_none());
@@ -327,11 +370,18 @@ mod tests {
         let state = host.get_payment_state(channel_id).unwrap();
         assert_eq!(state.balance, 100);
 
+        // Mark unusable / closing
+        host.mark_channel_closing(channel_id);
+        assert_eq!(
+            host.get_channel_state(channel_id),
+            Some(ClientChannelState::Closing)
+        );
+
         // Close channel
         host.mark_channel_closed(channel_id);
         assert_eq!(
             host.get_channel_state(channel_id),
-            ClientChannelState::Closed
+            Some(ClientChannelState::Closed)
         );
 
         // List channels

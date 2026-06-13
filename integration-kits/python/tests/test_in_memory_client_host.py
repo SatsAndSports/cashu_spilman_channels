@@ -1,17 +1,18 @@
-"""Unit tests for InMemoryClientHost."""
+"""Unit tests for InMemorySpilmanClientHost."""
 
 import pytest
-from cdk_spilman_kit.in_memory_client_host import InMemoryClientHost
+import json
+from cdk_spilman_kit.in_memory_client_host import InMemorySpilmanClientHost
 
 
-class TestInMemoryClientHost:
-    """Tests for InMemoryClientHost storage methods."""
+class TestInMemorySpilmanClientHost:
+    """Tests for InMemorySpilmanClientHost storage methods."""
 
     @pytest.fixture
     def host(self):
         # Use a dummy secret key (32 bytes hex = 64 chars)
         secret_key = "0" * 64
-        return InMemoryClientHost(secret_key)
+        return InMemorySpilmanClientHost(secret_key)
 
     # ========================================================================
     # Channel Funding
@@ -20,22 +21,33 @@ class TestInMemoryClientHost:
     def test_save_and_get_channel_funding(self, host):
         """Test saving and retrieving channel funding."""
         channel_id = "channel-123"
-        funding_json = '{"capacity": 1000}'
+        funding_json = json.dumps({"capacity": 1000, "params_json": "{}"})
+        opening_json = json.dumps({"capacity": 1000, "params_json": "{}"})
 
-        host.save_channel_funding(channel_id, funding_json)
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+        host.mark_channel_open(channel_id, "[]")
+        
         result = host.get_channel_funding(channel_id)
-
-        assert result == funding_json
+        assert result is not None
+        assert json.loads(result)["capacity"] == 1000
 
     def test_get_channel_funding_not_found(self, host):
         """Test getting non-existent channel returns None."""
         result = host.get_channel_funding("nonexistent")
         assert result is None
 
-    def test_save_channel_funding_sets_state_open(self, host):
-        """Test that saving funding also sets channel state to open."""
+    def test_save_opening_from_swap_channel_sets_state(self, host):
+        """Test that saving opening data sets correct state."""
         channel_id = "channel-123"
-        host.save_channel_funding(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
+
+        assert host.get_channel_state(channel_id) == "opening_from_swap"
+
+    def test_mark_channel_open_sets_state_open(self, host):
+        """Test that marking open transitions to open state."""
+        channel_id = "channel-123"
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
+        host.mark_channel_open(channel_id, "[]")
 
         assert host.get_channel_state(channel_id) == "open"
 
@@ -79,7 +91,8 @@ class TestInMemoryClientHost:
     def test_mark_channel_closed(self, host):
         """Test marking a channel as closed."""
         channel_id = "channel-123"
-        host.save_channel_funding(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
+        host.mark_channel_open(channel_id, "[]")
 
         host.mark_channel_closed(channel_id)
 
@@ -92,8 +105,9 @@ class TestInMemoryClientHost:
 
     def test_list_channel_ids(self, host):
         """Test listing channel IDs."""
-        host.save_channel_funding("channel-1", '{"capacity": 100}')
-        host.save_channel_funding("channel-2", '{"capacity": 200}')
+        host.save_opening_from_swap_channel("channel-1", '{"capacity": 100}')
+        host.mark_channel_open("channel-1", "[]")
+        host.save_opening_from_swap_channel("channel-2", '{"capacity": 200}')
 
         result = host.list_channel_ids()
 
@@ -102,7 +116,8 @@ class TestInMemoryClientHost:
     def test_delete_channel(self, host):
         """Test deleting a channel removes all data."""
         channel_id = "channel-123"
-        host.save_channel_funding(channel_id, '{"capacity": 1000}')
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
+        host.mark_channel_open(channel_id, "[]")
         host.record_payment(channel_id, '{"balance": 500}')
         host.mark_channel_closed(channel_id)
 
