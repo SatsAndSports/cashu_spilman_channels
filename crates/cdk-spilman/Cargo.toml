@@ -12,6 +12,7 @@ wallet = ["cashu/wallet"]
 configurable-host = ["dep:serde_yml", "dep:rusqlite"]
 configurable-host-reqwest = ["configurable-host", "dep:reqwest", "dep:tokio"]
 spilman-axum = ["configurable-host", "dep:axum"]
+client-sqlite = ["dep:rusqlite"]
 
 [dependencies]
 anyhow.workspace = true

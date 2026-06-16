@@ -145,6 +145,28 @@ impl ConfigurableClientHost<MemoryClientStorage> {
     }
 }
 
+#[cfg(feature = "client-sqlite")]
+impl ConfigurableClientHost<crate::SqliteClientStorage> {
+    /// Open or create a SQLite-backed client host at the given path.
+    ///
+    /// # Errors
+    /// Returns an error if the SQLite database cannot be opened or its schema
+    /// initialized.
+    pub fn open_sqlite(path: &str) -> Result<Self, String> {
+        let storage = crate::SqliteClientStorage::open(path)?;
+        Ok(Self::new(storage))
+    }
+
+    /// Create a client host backed by an in-memory SQLite database.
+    ///
+    /// Useful for tests. Data is lost when the host is dropped.
+    #[cfg(test)]
+    pub fn open_sqlite_in_memory() -> Result<Self, String> {
+        let storage = crate::SqliteClientStorage::open_in_memory()?;
+        Ok(Self::new(storage))
+    }
+}
+
 // ============================================================================
 // SpilmanClientHost implementation
 // ============================================================================
@@ -174,14 +196,11 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         &self,
         channel_id: &str,
     ) -> Option<ClientChannelOpeningFromSwap> {
-        self.storage
-            .borrow()
-            .get_opening_from_swap(channel_id)
-            .cloned()
+        self.storage.borrow().get_opening_from_swap(channel_id)
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
-        self.storage.borrow().get_funding(channel_id).cloned()
+        self.storage.borrow().get_funding(channel_id)
     }
 
     // ========================================================================
@@ -189,7 +208,7 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     // ========================================================================
 
     fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
-        self.storage.borrow().get_payment_state(channel_id).cloned()
+        self.storage.borrow().get_payment_state(channel_id)
     }
 
     fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {

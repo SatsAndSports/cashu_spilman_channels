@@ -211,7 +211,7 @@ run-ts-client:
 
 # Run Spilman unit tests (Rust)
 test-unit-spilman:
-	cargo test -p cdk-spilman --features configurable-host --manifest-path Cargo.toml
+	cargo test -p cdk-spilman --features configurable-host,client-sqlite --manifest-path Cargo.toml
 
 # Run workspace tests
 test-core:

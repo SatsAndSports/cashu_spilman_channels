@@ -572,3 +572,138 @@ async fn test_reqwest_client_networking_http_round_trip() {
 
     let _ = shutdown_tx.send(());
 }
+
+/// Test that SQLite-backed client storage persists channel state across a
+/// close/reopen of the database, and that payments can continue on the
+/// restored channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sqlite_client_storage_persists_channel_and_payments() {
+    // === Setup mint and server ===
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+    let mint = mint_helper.mint();
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        mint_helper.keyset_id(),
+        keyset_info_json.clone(),
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    // === SQLite file path ===
+    let dir = std::env::temp_dir().join(format!(
+        "cdk_spilman_sqlite_client_integration_test_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let db_path = dir.join("client.db");
+    let db_path_str = db_path.to_str().unwrap().to_string();
+
+    let sender_secret = SecretKey::generate();
+    let sender_pubkey_hex = sender_secret.public_key().to_hex();
+    let receiver_pubkey_hex = receiver_secret.public_key().to_hex();
+    let channel_id: String;
+
+    // === First session: open channel and make one payment ===
+    {
+        let mut client_host = ConfigurableClientHost::open_sqlite(&db_path_str).unwrap();
+        client_host.add_key(sender_secret.clone());
+        let client_networking = InMemoryMintNetworking::new(mint.clone());
+        let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+        let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+        let token = build_cashu_b_token(
+            "https://test-mint",
+            "sat",
+            &serde_json::to_string(&proofs).unwrap(),
+        )
+        .expect("build token");
+
+        let open_result = client_bridge
+            .open_channel_from_token(
+                &token,
+                &receiver_pubkey_hex,
+                &sender_pubkey_hex,
+                now_seconds() + 3600,
+                &keyset_info_json,
+                64,
+            )
+            .expect("open channel");
+
+        channel_id = open_result.channel_id.clone();
+        assert!(open_result.capacity > 0);
+        eprintln!(
+            "SQLite session 1: opened channel id={}, capacity={}",
+            channel_id, open_result.capacity
+        );
+
+        let payment = client_bridge
+            .create_payment_with_funding(&channel_id, 10)
+            .expect("create first payment");
+
+        let result = server_bridge
+            .process_payment(
+                &payment.channel_id,
+                payment.balance,
+                &payment.signature,
+                payment.params.as_ref(),
+                payment.funding_proofs.as_deref(),
+                &(),
+            )
+            .expect("server should accept first payment");
+
+        assert_eq!(result.balance, 10);
+        eprintln!("SQLite session 1: server accepted payment balance=10");
+    }
+
+    // === Second session: reopen SQLite storage and continue paying ===
+    {
+        let mut client_host = ConfigurableClientHost::open_sqlite(&db_path_str).unwrap();
+        client_host.add_key(sender_secret.clone());
+        let client_networking = InMemoryMintNetworking::new(mint.clone());
+        let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+        let channels = client_bridge.list_channels();
+        assert!(
+            channels.contains(&channel_id),
+            "restored channel should be listed"
+        );
+        eprintln!("SQLite session 2: restored channel {}", channel_id);
+
+        let info = client_bridge
+            .get_channel_info(&channel_id)
+            .expect("channel info should be available");
+        assert_eq!(info.current_balance, 10);
+        assert_eq!(info.payment_count, 1);
+        assert_eq!(info.state, cdk_spilman::ClientChannelState::Open);
+
+        let payment = client_bridge
+            .create_payment(&channel_id, 25)
+            .expect("create second payment after reopen");
+        assert_eq!(payment.balance, 25);
+
+        let result = server_bridge
+            .process_payment(
+                &payment.channel_id,
+                payment.balance,
+                &payment.signature,
+                None,
+                None,
+                &(),
+            )
+            .expect("server should accept second payment after reopen");
+
+        assert_eq!(result.balance, 25);
+        eprintln!("SQLite session 2: server accepted payment balance=25 after reopen");
+
+        let info = client_bridge
+            .get_channel_info(&channel_id)
+            .expect("channel info should still be available");
+        assert_eq!(info.current_balance, 25);
+        assert_eq!(info.payment_count, 2);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
