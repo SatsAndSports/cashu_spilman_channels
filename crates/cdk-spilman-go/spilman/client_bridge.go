@@ -152,20 +152,29 @@ func (b *ClientBridge) ProcessCooperativeCloseResponse(responseJSON string) erro
 // --- Client Host Callbacks Implementation ---
 // These are exported to C and called by the Rust client bridge via client_gateway.c
 
+func callbackError(responseOut **C.char, err error) C.int {
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = nil
+	return 1
+}
+
 // Channel Opening (two-phase)
 
 //export go_client_save_opening_from_swap_channel
-func go_client_save_opening_from_swap_channel(userData unsafe.Pointer, channelID *C.char, openingJSON *C.char) {
+func go_client_save_opening_from_swap_channel(userData unsafe.Pointer, channelID *C.char, openingJSON *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.SaveOpeningFromSwapChannel(C.GoString(channelID), C.GoString(openingJSON))
+	return callbackError(responseOut, host.SaveOpeningFromSwapChannel(C.GoString(channelID), C.GoString(openingJSON)))
 }
 
 //export go_client_mark_channel_open
-func go_client_mark_channel_open(userData unsafe.Pointer, channelID *C.char, fundingProofsJSON *C.char) {
+func go_client_mark_channel_open(userData unsafe.Pointer, channelID *C.char, fundingProofsJSON *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.MarkChannelOpen(C.GoString(channelID), C.GoString(fundingProofsJSON))
+	return callbackError(responseOut, host.MarkChannelOpen(C.GoString(channelID), C.GoString(fundingProofsJSON)))
 }
 
 //export go_client_get_channel_funding
@@ -204,10 +213,10 @@ func go_client_get_payment_state(userData unsafe.Pointer, channelID *C.char) *C.
 }
 
 //export go_client_record_payment
-func go_client_record_payment(userData unsafe.Pointer, channelID *C.char, stateJSON *C.char) {
+func go_client_record_payment(userData unsafe.Pointer, channelID *C.char, stateJSON *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.RecordPayment(C.GoString(channelID), C.GoString(stateJSON))
+	return callbackError(responseOut, host.RecordPayment(C.GoString(channelID), C.GoString(stateJSON)))
 }
 
 // Lifecycle
@@ -224,17 +233,17 @@ func go_client_get_channel_state(userData unsafe.Pointer, channelID *C.char) *C.
 }
 
 //export go_client_mark_channel_closed
-func go_client_mark_channel_closed(userData unsafe.Pointer, channelID *C.char) {
+func go_client_mark_channel_closed(userData unsafe.Pointer, channelID *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.MarkChannelClosed(C.GoString(channelID))
+	return callbackError(responseOut, host.MarkChannelClosed(C.GoString(channelID)))
 }
 
 //export go_client_mark_channel_closing
-func go_client_mark_channel_closing(userData unsafe.Pointer, channelID *C.char) {
+func go_client_mark_channel_closing(userData unsafe.Pointer, channelID *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.MarkChannelClosing(C.GoString(channelID))
+	return callbackError(responseOut, host.MarkChannelClosing(C.GoString(channelID)))
 }
 
 //export go_client_list_channel_ids
@@ -250,10 +259,10 @@ func go_client_list_channel_ids(userData unsafe.Pointer) *C.char {
 }
 
 //export go_client_delete_channel
-func go_client_delete_channel(userData unsafe.Pointer, channelID *C.char) {
+func go_client_delete_channel(userData unsafe.Pointer, channelID *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	host.DeleteChannel(C.GoString(channelID))
+	return callbackError(responseOut, host.DeleteChannel(C.GoString(channelID)))
 }
 
 // Time
@@ -313,6 +322,32 @@ func go_client_call_mint_restore(userData unsafe.Pointer, mintURL *C.char, resto
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
 	resp, err := host.CallMintRestore(C.GoString(mintURL), C.GoString(restoreRequestJSON))
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = C.CString(resp)
+	return 1
+}
+
+//export go_client_call_mint_keysets
+func go_client_call_mint_keysets(userData unsafe.Pointer, mintURL *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	resp, err := host.CallMintKeysets(C.GoString(mintURL))
+	if err != nil {
+		*responseOut = C.CString(err.Error())
+		return 0
+	}
+	*responseOut = C.CString(resp)
+	return 1
+}
+
+//export go_client_call_mint_keys
+func go_client_call_mint_keys(userData unsafe.Pointer, mintURL *C.char, keysetID *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	resp, err := host.CallMintKeys(C.GoString(mintURL), C.GoString(keysetID))
 	if err != nil {
 		*responseOut = C.CString(err.Error())
 		return 0

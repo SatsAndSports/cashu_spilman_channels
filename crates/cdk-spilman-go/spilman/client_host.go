@@ -14,13 +14,13 @@ type SpilmanClientHost interface {
 	// SaveOpeningFromSwapChannel persists channel metadata before the funding swap.
 	// The channel enters OpeningFromSwap state. openingJSON is a JSON-serialized
 	// ClientChannelOpeningFromSwap struct.
-	SaveOpeningFromSwapChannel(channelID, openingJSON string)
+	SaveOpeningFromSwapChannel(channelID, openingJSON string) error
 
 	// MarkChannelOpen transitions a channel from OpeningFromSwap to Open.
 	// Called after the funding swap succeeds with the unblinded funding proofs.
 	// The host reads the opening data, constructs a ClientChannelFunding
 	// (copying fields + adding proofs), stores funding, and removes the opening record.
-	MarkChannelOpen(channelID, fundingProofsJSON string)
+	MarkChannelOpen(channelID, fundingProofsJSON string) error
 
 	// GetChannelFunding retrieves channel funding data.
 	// Returns empty string if the channel doesn't exist.
@@ -41,7 +41,7 @@ type SpilmanClientHost interface {
 
 	// RecordPayment stores a new payment state.
 	// stateJSON is a JSON-serialized ClientPaymentState.
-	RecordPayment(channelID, stateJSON string)
+	RecordPayment(channelID, stateJSON string) error
 
 	// ========================================================================
 	// Channel Lifecycle
@@ -53,16 +53,16 @@ type SpilmanClientHost interface {
 	GetChannelState(channelID string) string
 
 	// MarkChannelClosing marks a channel as unusable while retaining it in storage.
-	MarkChannelClosing(channelID string)
+	MarkChannelClosing(channelID string) error
 
 	// MarkChannelClosed marks a channel as closed.
-	MarkChannelClosed(channelID string)
+	MarkChannelClosed(channelID string) error
 
 	// ListChannelIDs returns all stored channel IDs.
 	ListChannelIDs() []string
 
 	// DeleteChannel removes a channel and all its data.
-	DeleteChannel(channelID string)
+	DeleteChannel(channelID string) error
 
 	// ========================================================================
 	// Time
@@ -117,6 +117,12 @@ type SpilmanClientHost interface {
 	// Posts restoreRequestJSON to {mintURL}/v1/restore and returns the response body.
 	// Returns the response JSON string on success, or an error.
 	CallMintRestore(mintURL, restoreRequestJSON string) (string, error)
+
+	// CallMintKeysets fetches /v1/keysets from the mint.
+	CallMintKeysets(mintURL string) (string, error)
+
+	// CallMintKeys fetches /v1/keys/{keyset_id} from the mint.
+	CallMintKeys(mintURL, keysetID string) (string, error)
 }
 
 // OpenChannelResult contains the result of opening a new channel.

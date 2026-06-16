@@ -2,19 +2,19 @@
 
 // Go exports for client host callbacks
 // Channel Opening (two-phase)
-extern void go_client_save_opening_from_swap_channel(void*, const char*, const char*);
-extern void go_client_mark_channel_open(void*, const char*, const char*);
+extern int go_client_save_opening_from_swap_channel(void*, const char*, const char*, char**);
+extern int go_client_mark_channel_open(void*, const char*, const char*, char**);
 extern char* go_client_get_channel_funding(void*, const char*);
 extern char* go_client_get_channel_opening_from_swap(void*, const char*);
 // Payment State
 extern char* go_client_get_payment_state(void*, const char*);
-extern void go_client_record_payment(void*, const char*, const char*);
+extern int go_client_record_payment(void*, const char*, const char*, char**);
 // Lifecycle
 extern char* go_client_get_channel_state(void*, const char*);
-extern void go_client_mark_channel_closing(void*, const char*);
-extern void go_client_mark_channel_closed(void*, const char*);
+extern int go_client_mark_channel_closing(void*, const char*, char**);
+extern int go_client_mark_channel_closed(void*, const char*, char**);
 extern char* go_client_list_channel_ids(void*);
-extern void go_client_delete_channel(void*, const char*);
+extern int go_client_delete_channel(void*, const char*, char**);
 // Time
 extern uint64_t go_client_now_seconds(void*);
 // Crypto
@@ -23,6 +23,8 @@ extern int go_client_compute_channel_secret(void*, const char*, const char*, cha
 // Networking
 extern int go_client_call_mint_swap(void*, const char*, const char*, char**);
 extern int go_client_call_mint_restore(void*, const char*, const char*, char**);
+extern int go_client_call_mint_keysets(void*, const char*, char**);
+extern int go_client_call_mint_keys(void*, const char*, const char*, char**);
 
 SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     SpilmanClientHostCallbacks cb;
@@ -49,5 +51,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     // Networking
     cb.call_mint_swap = go_client_call_mint_swap;
     cb.call_mint_restore = go_client_call_mint_restore;
+    cb.call_mint_keysets = go_client_call_mint_keysets;
+    cb.call_mint_keys = go_client_call_mint_keys;
     return cb;
 }

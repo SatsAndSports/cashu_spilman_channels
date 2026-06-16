@@ -41,14 +41,15 @@ func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 // Channel Opening (two-phase)
 // ============================================================================
 
-func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON string) {
+func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.opening[channelID] = openingJSON
 	h.channelState[channelID] = "opening_from_swap"
+	return nil
 }
 
-func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) {
+func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	// Read opening data, construct funding, store in funding map, remove from opening map
@@ -73,6 +74,7 @@ func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string
 		delete(h.opening, channelID)
 	}
 	h.channelState[channelID] = "open"
+	return nil
 }
 
 func (h *InMemoryClientHost) GetChannelFunding(channelID string) string {
@@ -97,10 +99,11 @@ func (h *InMemoryClientHost) GetPaymentState(channelID string) string {
 	return h.paymentState[channelID]
 }
 
-func (h *InMemoryClientHost) RecordPayment(channelID, stateJSON string) {
+func (h *InMemoryClientHost) RecordPayment(channelID, stateJSON string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.paymentState[channelID] = stateJSON
+	return nil
 }
 
 // ============================================================================
@@ -113,16 +116,18 @@ func (h *InMemoryClientHost) GetChannelState(channelID string) string {
 	return h.channelState[channelID]
 }
 
-func (h *InMemoryClientHost) MarkChannelClosed(channelID string) {
+func (h *InMemoryClientHost) MarkChannelClosed(channelID string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.channelState[channelID] = "closed"
+	return nil
 }
 
-func (h *InMemoryClientHost) MarkChannelClosing(channelID string) {
+func (h *InMemoryClientHost) MarkChannelClosing(channelID string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.channelState[channelID] = "closing"
+	return nil
 }
 
 func (h *InMemoryClientHost) ListChannelIDs() []string {
@@ -142,13 +147,14 @@ func (h *InMemoryClientHost) ListChannelIDs() []string {
 	return ids
 }
 
-func (h *InMemoryClientHost) DeleteChannel(channelID string) {
+func (h *InMemoryClientHost) DeleteChannel(channelID string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.opening, channelID)
 	delete(h.funding, channelID)
 	delete(h.paymentState, channelID)
 	delete(h.channelState, channelID)
+	return nil
 }
 
 // ============================================================================
@@ -221,6 +227,40 @@ func (h *InMemoryClientHost) CallMintRestore(mintURL, restoreRequestJSON string)
 			return "", errors.New(string(body))
 		}
 		return "", fmt.Errorf("restore failed with status %d", resp.StatusCode)
+	}
+	return string(body), nil
+}
+
+func (h *InMemoryClientHost) CallMintKeysets(mintURL string) (string, error) {
+	resp, err := http.Get(mintURL + "/v1/keysets")
+	if err != nil {
+		return "", fmt.Errorf("HTTP error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		if len(body) > 0 {
+			return "", errors.New(string(body))
+		}
+		return "", fmt.Errorf("keysets failed with status %d", resp.StatusCode)
+	}
+	return string(body), nil
+}
+
+func (h *InMemoryClientHost) CallMintKeys(mintURL, keysetID string) (string, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/v1/keys/%s", mintURL, keysetID))
+	if err != nil {
+		return "", fmt.Errorf("HTTP error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		if len(body) > 0 {
+			return "", errors.New(string(body))
+		}
+		return "", fmt.Errorf("keys failed with status %d", resp.StatusCode)
 	}
 	return string(body), nil
 }
