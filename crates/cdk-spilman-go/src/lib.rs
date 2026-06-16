@@ -973,12 +973,14 @@ pub struct SpilmanClientHostCallbacks {
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
         opening_json: *const c_char, // JSON-serialized ClientChannelOpeningFromSwap
-    ),
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     pub mark_channel_open: extern "C" fn(
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
         funding_proofs_json: *const c_char,
-    ),
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     pub get_channel_funding:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
     pub get_channel_opening_from_swap:
@@ -990,15 +992,27 @@ pub struct SpilmanClientHostCallbacks {
         user_data: *mut libc::c_void,
         channel_id: *const c_char,
         state_json: *const c_char, // JSON-serialized ClientPaymentState
-    ),
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     // Lifecycle
     pub get_channel_state:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "opening_from_swap", "open", "closing", or "closed"
-    pub mark_channel_closing:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
-    pub mark_channel_closed: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
+    pub mark_channel_closing: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int,
+    pub mark_channel_closed: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     pub list_channel_ids: extern "C" fn(user_data: *mut libc::c_void) -> *mut c_char, // JSON array string
-    pub delete_channel: extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char),
+    pub delete_channel: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     // Time
     pub now_seconds: extern "C" fn(user_data: *mut libc::c_void) -> u64,
     // Crypto
@@ -1049,6 +1063,21 @@ struct CGoSpilmanClientHost {
 unsafe impl Send for CGoSpilmanClientHost {}
 unsafe impl Sync for CGoSpilmanClientHost {}
 
+fn callback_result(ok: c_int, response_ptr: *mut c_char, default_ok: &str) -> Result<(), String> {
+    if ok != 0 {
+        if !response_ptr.is_null() {
+            unsafe {
+                let _ = CString::from_raw(response_ptr);
+            }
+        }
+        Ok(())
+    } else if response_ptr.is_null() {
+        Err(default_ok.to_string())
+    } else {
+        unsafe { Err(CString::from_raw(response_ptr).into_string().unwrap()) }
+    }
+}
+
 impl SpilmanClientHost for CGoSpilmanClientHost {
     // ========================================================================
     // Channel Opening (two-phase)
@@ -1058,26 +1087,32 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         &self,
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
-    ) {
+    ) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
         let opening_json = serde_json::to_string(&opening)
             .expect("ClientChannelOpeningFromSwap serialization failed");
         let opening_c = CString::new(opening_json).unwrap();
-        (self.callbacks.save_opening_from_swap_channel)(
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.save_opening_from_swap_channel)(
             self.callbacks.user_data,
             id_c.as_ptr(),
             opening_c.as_ptr(),
+            &mut response_ptr,
         );
+        callback_result(ok, response_ptr, "save_opening_from_swap_channel failed")
     }
 
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
         let proofs_c = CString::new(funding_proofs_json).unwrap();
-        (self.callbacks.mark_channel_open)(
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.mark_channel_open)(
             self.callbacks.user_data,
             id_c.as_ptr(),
             proofs_c.as_ptr(),
+            &mut response_ptr,
         );
+        callback_result(ok, response_ptr, "mark_channel_open failed")
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1124,12 +1159,19 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         }
     }
 
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
         let state_json =
             serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
         let state_c = CString::new(state_json).unwrap();
-        (self.callbacks.record_payment)(self.callbacks.user_data, id_c.as_ptr(), state_c.as_ptr());
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.record_payment)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            state_c.as_ptr(),
+            &mut response_ptr,
+        );
+        callback_result(ok, response_ptr, "record_payment failed")
     }
 
     // ========================================================================
@@ -1152,14 +1194,26 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         }
     }
 
-    fn mark_channel_closing(&self, channel_id: &str) {
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
-        (self.callbacks.mark_channel_closing)(self.callbacks.user_data, id_c.as_ptr());
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.mark_channel_closing)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+        callback_result(ok, response_ptr, "mark_channel_closing failed")
     }
 
-    fn mark_channel_closed(&self, channel_id: &str) {
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
-        (self.callbacks.mark_channel_closed)(self.callbacks.user_data, id_c.as_ptr());
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.mark_channel_closed)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+        callback_result(ok, response_ptr, "mark_channel_closed failed")
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -1173,9 +1227,15 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
         }
     }
 
-    fn delete_channel(&self, channel_id: &str) {
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
         let id_c = CString::new(channel_id).unwrap();
-        (self.callbacks.delete_channel)(self.callbacks.user_data, id_c.as_ptr());
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.delete_channel)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+        callback_result(ok, response_ptr, "delete_channel failed")
     }
 
     // ========================================================================
@@ -1536,10 +1596,13 @@ pub unsafe extern "C" fn spilman_client_bridge_list_channels(
 pub unsafe extern "C" fn spilman_client_bridge_close_channel(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
-) {
+) -> CResult {
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
-    instance.bridge.close_channel(id);
+    match instance.bridge.close_channel(id) {
+        Ok(_) => CResult::success("ok".to_string()),
+        Err(e) => CResult::error(e),
+    }
 }
 
 /// Mark a channel as unusable while retaining it in storage.
@@ -1547,10 +1610,13 @@ pub unsafe extern "C" fn spilman_client_bridge_close_channel(
 pub unsafe extern "C" fn spilman_client_bridge_mark_channel_unusable(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
-) {
+) -> CResult {
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
-    instance.bridge.mark_channel_unusable(id);
+    match instance.bridge.mark_channel_unusable(id) {
+        Ok(_) => CResult::success("ok".to_string()),
+        Err(e) => CResult::error(e),
+    }
 }
 
 #[no_mangle]
@@ -1593,10 +1659,13 @@ pub unsafe extern "C" fn spilman_client_bridge_process_cooperative_close_respons
 pub unsafe extern "C" fn spilman_client_bridge_delete_channel(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
-) {
+) -> CResult {
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
-    instance.bridge.delete_channel(id);
+    match instance.bridge.delete_channel(id) {
+        Ok(_) => CResult::success("ok".to_string()),
+        Err(e) => CResult::error(e),
+    }
 }
 
 /// Utility function for signing with a tweaked key.

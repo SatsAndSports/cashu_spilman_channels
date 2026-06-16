@@ -1148,26 +1148,28 @@ impl SpilmanClientHost for PySpilmanClientHost {
         &self,
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
-    ) {
+    ) -> Result<(), String> {
         Python::with_gil(|py| {
             let opening_json = serde_json::to_string(&opening)
                 .expect("ClientChannelOpeningFromSwap serialization failed");
-            let _ = self.py_host.call_method1(
-                py,
-                "save_opening_from_swap_channel",
-                (channel_id, opening_json),
-            );
-        });
+            self.py_host
+                .call_method1(
+                    py,
+                    "save_opening_from_swap_channel",
+                    (channel_id, opening_json),
+                )
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         Python::with_gil(|py| {
-            let _ = self.py_host.call_method1(
-                py,
-                "mark_channel_open",
-                (channel_id, funding_proofs_json),
-            );
-        });
+            self.py_host
+                .call_method1(py, "mark_channel_open", (channel_id, funding_proofs_json))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1225,14 +1227,15 @@ impl SpilmanClientHost for PySpilmanClientHost {
         })
     }
 
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {
         Python::with_gil(|py| {
             let state_json =
                 serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
-            let _ = self
-                .py_host
-                .call_method1(py, "record_payment", (channel_id, state_json));
-        });
+            self.py_host
+                .call_method1(py, "record_payment", (channel_id, state_json))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
     // ========================================================================
@@ -1260,20 +1263,22 @@ impl SpilmanClientHost for PySpilmanClientHost {
         })
     }
 
-    fn mark_channel_closing(&self, channel_id: &str) {
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
         Python::with_gil(|py| {
-            let _ = self
-                .py_host
-                .call_method1(py, "mark_channel_closing", (channel_id,));
-        });
+            self.py_host
+                .call_method1(py, "mark_channel_closing", (channel_id,))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
-    fn mark_channel_closed(&self, channel_id: &str) {
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
         Python::with_gil(|py| {
-            let _ = self
-                .py_host
-                .call_method1(py, "mark_channel_closed", (channel_id,));
-        });
+            self.py_host
+                .call_method1(py, "mark_channel_closed", (channel_id,))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -1285,12 +1290,13 @@ impl SpilmanClientHost for PySpilmanClientHost {
         })
     }
 
-    fn delete_channel(&self, channel_id: &str) {
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
         Python::with_gil(|py| {
-            let _ = self
-                .py_host
-                .call_method1(py, "delete_channel", (channel_id,));
-        });
+            self.py_host
+                .call_method1(py, "delete_channel", (channel_id,))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
     }
 
     // ========================================================================
@@ -1590,14 +1596,18 @@ impl ClientBridge {
     /// Args:
     ///     channel_id: The channel ID
     #[pyo3(signature = (channel_id))]
-    fn close_channel(&self, channel_id: &str) {
-        self.inner.close_channel(channel_id);
+    fn close_channel(&self, channel_id: &str) -> PyResult<()> {
+        self.inner
+            .close_channel(channel_id)
+            .map_err(PyRuntimeError::new_err)
     }
 
     /// Mark a channel as unusable while retaining it in storage.
     #[pyo3(signature = (channel_id))]
-    fn mark_channel_unusable(&self, channel_id: &str) {
-        self.inner.mark_channel_unusable(channel_id);
+    fn mark_channel_unusable(&self, channel_id: &str) -> PyResult<()> {
+        self.inner
+            .mark_channel_unusable(channel_id)
+            .map_err(PyRuntimeError::new_err)
     }
 
     /// Get information about a stored channel.
@@ -1637,8 +1647,10 @@ impl ClientBridge {
     ///
     /// Removes all data associated with the channel.
     #[pyo3(signature = (channel_id))]
-    fn delete_channel(&self, channel_id: &str) {
-        self.inner.delete_channel(channel_id);
+    fn delete_channel(&self, channel_id: &str) -> PyResult<()> {
+        self.inner
+            .delete_channel(channel_id)
+            .map_err(PyRuntimeError::new_err)
     }
 }
 

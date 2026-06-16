@@ -114,13 +114,17 @@ pub trait ClientStorage {
     // === Channel Opening (two-phase) ===
 
     /// Save opening data for a channel entering OpeningFromSwap state.
-    fn save_opening_from_swap(&mut self, channel_id: &str, opening: ClientChannelOpeningFromSwap);
+    fn save_opening_from_swap(
+        &mut self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) -> Result<(), String>;
 
     /// Mark a channel as Open by supplying the funding proofs.
     ///
     /// Reads the opening data, constructs funding data with the proofs,
     /// stores the funding, and removes the opening record.
-    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str);
+    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String>;
 
     /// Get opening data for a channel in OpeningFromSwap state.
     fn get_opening_from_swap(&self, channel_id: &str) -> Option<&ClientChannelOpeningFromSwap>;
@@ -137,7 +141,11 @@ pub trait ClientStorage {
     fn get_payment_state(&self, channel_id: &str) -> Option<&ClientPaymentState>;
 
     /// Save/update payment state for a channel
-    fn save_payment_state(&mut self, channel_id: &str, state: ClientPaymentState);
+    fn save_payment_state(
+        &mut self,
+        channel_id: &str,
+        state: ClientPaymentState,
+    ) -> Result<(), String>;
 
     // === Lifecycle ===
 
@@ -147,13 +155,13 @@ pub trait ClientStorage {
     fn get_state(&self, channel_id: &str) -> Option<ClientChannelState>;
 
     /// Mark a channel as closed
-    fn set_closed(&mut self, channel_id: &str);
+    fn set_closed(&mut self, channel_id: &str) -> Result<(), String>;
 
     /// Mark a channel as closing / unusable.
     ///
     /// By convention this is used for channels that were previously `Open` and
     /// should no longer be selected for new payments.
-    fn set_closing(&mut self, channel_id: &str);
+    fn set_closing(&mut self, channel_id: &str) -> Result<(), String>;
 
     // === Management ===
 
@@ -161,7 +169,7 @@ pub trait ClientStorage {
     fn list_channel_ids(&self) -> Vec<String>;
 
     /// Delete a channel and all its data
-    fn delete(&mut self, channel_id: &str);
+    fn delete(&mut self, channel_id: &str) -> Result<(), String>;
 }
 
 // ============================================================================
@@ -196,13 +204,18 @@ impl MemoryClientStorage {
 }
 
 impl ClientStorage for MemoryClientStorage {
-    fn save_opening_from_swap(&mut self, channel_id: &str, opening: ClientChannelOpeningFromSwap) {
+    fn save_opening_from_swap(
+        &mut self,
+        channel_id: &str,
+        opening: ClientChannelOpeningFromSwap,
+    ) -> Result<(), String> {
         self.opening.insert(channel_id.to_string(), opening);
         self.states
             .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
+        Ok(())
     }
 
-    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) {
+    fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         // Read opening data and construct funding record
         if let Some(opening) = self.opening.remove(channel_id) {
             let funding = ClientChannelFunding {
@@ -220,6 +233,7 @@ impl ClientStorage for MemoryClientStorage {
         }
         self.states
             .insert(channel_id.to_string(), ClientChannelState::Open);
+        Ok(())
     }
 
     fn get_opening_from_swap(&self, channel_id: &str) -> Option<&ClientChannelOpeningFromSwap> {
@@ -234,22 +248,29 @@ impl ClientStorage for MemoryClientStorage {
         self.payments.get(channel_id)
     }
 
-    fn save_payment_state(&mut self, channel_id: &str, state: ClientPaymentState) {
+    fn save_payment_state(
+        &mut self,
+        channel_id: &str,
+        state: ClientPaymentState,
+    ) -> Result<(), String> {
         self.payments.insert(channel_id.to_string(), state);
+        Ok(())
     }
 
     fn get_state(&self, channel_id: &str) -> Option<ClientChannelState> {
         self.states.get(channel_id).copied()
     }
 
-    fn set_closed(&mut self, channel_id: &str) {
+    fn set_closed(&mut self, channel_id: &str) -> Result<(), String> {
         self.states
             .insert(channel_id.to_string(), ClientChannelState::Closed);
+        Ok(())
     }
 
-    fn set_closing(&mut self, channel_id: &str) {
+    fn set_closing(&mut self, channel_id: &str) -> Result<(), String> {
         self.states
             .insert(channel_id.to_string(), ClientChannelState::Closing);
+        Ok(())
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -258,11 +279,12 @@ impl ClientStorage for MemoryClientStorage {
         ids.into_iter().collect()
     }
 
-    fn delete(&mut self, channel_id: &str) {
+    fn delete(&mut self, channel_id: &str) -> Result<(), String> {
         self.opening.remove(channel_id);
         self.funding.remove(channel_id);
         self.payments.remove(channel_id);
         self.states.remove(channel_id);
+        Ok(())
     }
 }
 
@@ -308,7 +330,9 @@ mod tests {
         assert_eq!(storage.channel_count(), 0);
 
         // Save as opening
-        storage.save_opening_from_swap(channel_id, make_test_opening());
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .unwrap();
 
         // Opening data retrievable
         let o = storage.get_opening_from_swap(channel_id).unwrap();
@@ -326,7 +350,9 @@ mod tests {
         assert!(storage.get_funding(channel_id).is_none());
 
         // Mark open with funding proofs
-        storage.set_open(channel_id, r#"[{"proof": true}]"#);
+        storage
+            .set_open(channel_id, r#"[{"proof": true}]"#)
+            .unwrap();
 
         // State should be Open
         assert_eq!(
@@ -349,21 +375,27 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
-        storage.save_opening_from_swap(channel_id, make_test_opening());
-        storage.set_open(channel_id, "[]");
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .unwrap();
+        storage.set_open(channel_id, "[]").unwrap();
 
         // Initially no payment state
         assert!(storage.get_payment_state(channel_id).is_none());
 
         // Save payment state
-        storage.save_payment_state(channel_id, make_test_payment_state(100));
+        storage
+            .save_payment_state(channel_id, make_test_payment_state(100))
+            .unwrap();
 
         let state = storage.get_payment_state(channel_id).unwrap();
         assert_eq!(state.balance, 100);
         assert_eq!(state.payment_count, 1);
 
         // Update payment state
-        storage.save_payment_state(channel_id, make_test_payment_state(200));
+        storage
+            .save_payment_state(channel_id, make_test_payment_state(200))
+            .unwrap();
 
         let state = storage.get_payment_state(channel_id).unwrap();
         assert_eq!(state.balance, 200);
@@ -378,28 +410,30 @@ mod tests {
         assert_eq!(storage.get_state(channel_id), None);
 
         // After save_opening_from_swap, it's OpeningFromSwap
-        storage.save_opening_from_swap(channel_id, make_test_opening());
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .unwrap();
         assert_eq!(
             storage.get_state(channel_id),
             Some(ClientChannelState::OpeningFromSwap)
         );
 
         // After set_open, it's Open
-        storage.set_open(channel_id, "[]");
+        storage.set_open(channel_id, "[]").unwrap();
         assert_eq!(
             storage.get_state(channel_id),
             Some(ClientChannelState::Open)
         );
 
         // After set_closing, it's Closing
-        storage.set_closing(channel_id);
+        storage.set_closing(channel_id).unwrap();
         assert_eq!(
             storage.get_state(channel_id),
             Some(ClientChannelState::Closing)
         );
 
         // Mark closed
-        storage.set_closed(channel_id);
+        storage.set_closed(channel_id).unwrap();
         assert_eq!(
             storage.get_state(channel_id),
             Some(ClientChannelState::Closed)
@@ -411,15 +445,19 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_1";
 
-        storage.save_opening_from_swap(channel_id, make_test_opening());
-        storage.set_open(channel_id, "[]");
-        storage.save_payment_state(channel_id, make_test_payment_state(100));
-        storage.set_closed(channel_id);
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .unwrap();
+        storage.set_open(channel_id, "[]").unwrap();
+        storage
+            .save_payment_state(channel_id, make_test_payment_state(100))
+            .unwrap();
+        storage.set_closed(channel_id).unwrap();
 
         assert_eq!(storage.channel_count(), 1);
 
         // Delete
-        storage.delete(channel_id);
+        storage.delete(channel_id).unwrap();
 
         assert_eq!(storage.channel_count(), 0);
         assert!(storage.get_funding(channel_id).is_none());
@@ -432,10 +470,16 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
 
         // Mix of opening and open channels
-        storage.save_opening_from_swap("channel_1", make_test_opening());
-        storage.save_opening_from_swap("channel_2", make_test_opening());
-        storage.set_open("channel_2", "[]");
-        storage.save_opening_from_swap("channel_3", make_test_opening());
+        storage
+            .save_opening_from_swap("channel_1", make_test_opening())
+            .unwrap();
+        storage
+            .save_opening_from_swap("channel_2", make_test_opening())
+            .unwrap();
+        storage.set_open("channel_2", "[]").unwrap();
+        storage
+            .save_opening_from_swap("channel_3", make_test_opening())
+            .unwrap();
 
         let mut ids = storage.list_channel_ids();
         ids.sort();
@@ -448,10 +492,16 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         let channel_id = "test_channel_closing";
 
-        storage.save_opening_from_swap(channel_id, make_test_opening());
-        storage.set_open(channel_id, r#"[{"proof": true}]"#);
-        storage.save_payment_state(channel_id, make_test_payment_state(42));
-        storage.set_closing(channel_id);
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .unwrap();
+        storage
+            .set_open(channel_id, r#"[{"proof": true}]"#)
+            .unwrap();
+        storage
+            .save_payment_state(channel_id, make_test_payment_state(42))
+            .unwrap();
+        storage.set_closing(channel_id).unwrap();
 
         assert_eq!(
             storage.get_state(channel_id),

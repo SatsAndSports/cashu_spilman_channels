@@ -1120,7 +1120,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             &self,
             channel_id: &str,
             opening: ClientChannelOpeningFromSwap,
-        ) {
+        ) -> Result<(), String> {
             self.opening
                 .lock()
                 .unwrap()
@@ -1129,9 +1129,14 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
+            Ok(())
         }
 
-        fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+        fn mark_channel_open(
+            &self,
+            channel_id: &str,
+            funding_proofs_json: &str,
+        ) -> Result<(), String> {
             if let Some(opening) = self.opening.lock().unwrap().remove(channel_id) {
                 let funding = ClientChannelFunding {
                     params_json: opening.params_json,
@@ -1153,6 +1158,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::Open);
+            Ok(())
         }
 
         fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1170,39 +1176,47 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             self.payments.lock().unwrap().get(channel_id).cloned()
         }
 
-        fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+        fn record_payment(
+            &self,
+            channel_id: &str,
+            state: ClientPaymentState,
+        ) -> Result<(), String> {
             self.payments
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), state);
+            Ok(())
         }
 
         fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
             self.states.lock().unwrap().get(channel_id).copied()
         }
 
-        fn mark_channel_closed(&self, channel_id: &str) {
+        fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
             self.states
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::Closed);
+            Ok(())
         }
 
-        fn mark_channel_closing(&self, channel_id: &str) {
+        fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
             self.states
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::Closing);
+            Ok(())
         }
 
         fn list_channel_ids(&self) -> Vec<String> {
             self.funding.lock().unwrap().keys().cloned().collect()
         }
 
-        fn delete_channel(&self, channel_id: &str) {
+        fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
             self.funding.lock().unwrap().remove(channel_id);
             self.payments.lock().unwrap().remove(channel_id);
             self.states.lock().unwrap().remove(channel_id);
+            Ok(())
         }
 
         fn now_seconds(&self) -> u64 {
@@ -1622,7 +1636,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     }
 
     // Marking a channel unusable keeps it in storage but blocks new payments.
-    client_bridge.mark_channel_unusable(&open_result.channel_id);
+    client_bridge
+        .mark_channel_unusable(&open_result.channel_id)
+        .expect("mark channel unusable");
     let info = client_bridge
         .get_channel_info(&open_result.channel_id)
         .ok_or_else(|| anyhow::anyhow!("missing channel info after mark_channel_unusable"))?;
@@ -1636,7 +1652,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // Delete channel
     // ====================================================================
 
-    client_bridge.delete_channel(&open_result.channel_id);
+    client_bridge
+        .delete_channel(&open_result.channel_id)
+        .expect("delete channel");
     assert!(client_bridge
         .get_channel_info(&open_result.channel_id)
         .is_none());
@@ -1693,9 +1711,17 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientHost for FailingClientHost {
-        fn save_opening_from_swap_channel(&self, _: &str, _: ClientChannelOpeningFromSwap) {}
+        fn save_opening_from_swap_channel(
+            &self,
+            _: &str,
+            _: ClientChannelOpeningFromSwap,
+        ) -> Result<(), String> {
+            Ok(())
+        }
 
-        fn mark_channel_open(&self, _: &str, _: &str) {}
+        fn mark_channel_open(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
             None
@@ -1709,21 +1735,29 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
             None
         }
 
-        fn record_payment(&self, _: &str, _: ClientPaymentState) {}
+        fn record_payment(&self, _: &str, _: ClientPaymentState) -> Result<(), String> {
+            Ok(())
+        }
 
         fn get_channel_state(&self, _: &str) -> Option<ClientChannelState> {
             Some(ClientChannelState::Open)
         }
 
-        fn mark_channel_closed(&self, _: &str) {}
+        fn mark_channel_closed(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
-        fn mark_channel_closing(&self, _: &str) {}
+        fn mark_channel_closing(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
         fn list_channel_ids(&self) -> Vec<String> {
             Vec::new()
         }
 
-        fn delete_channel(&self, _: &str) {}
+        fn delete_channel(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
 
         fn now_seconds(&self) -> u64 {
             SystemTime::now()

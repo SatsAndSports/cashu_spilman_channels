@@ -158,16 +158,16 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         &self,
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
-    ) {
+    ) -> Result<(), String> {
         self.storage
             .borrow_mut()
-            .save_opening_from_swap(channel_id, opening);
+            .save_opening_from_swap(channel_id, opening)
     }
 
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         self.storage
             .borrow_mut()
-            .set_open(channel_id, funding_proofs_json);
+            .set_open(channel_id, funding_proofs_json)
     }
 
     fn get_channel_opening_from_swap(
@@ -192,10 +192,10 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         self.storage.borrow().get_payment_state(channel_id).cloned()
     }
 
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {
         self.storage
             .borrow_mut()
-            .save_payment_state(channel_id, state);
+            .save_payment_state(channel_id, state)
     }
 
     // ========================================================================
@@ -206,20 +206,20 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         self.storage.borrow().get_state(channel_id)
     }
 
-    fn mark_channel_closed(&self, channel_id: &str) {
-        self.storage.borrow_mut().set_closed(channel_id);
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
+        self.storage.borrow_mut().set_closed(channel_id)
     }
 
-    fn mark_channel_closing(&self, channel_id: &str) {
-        self.storage.borrow_mut().set_closing(channel_id);
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
+        self.storage.borrow_mut().set_closing(channel_id)
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
         self.storage.borrow().list_channel_ids()
     }
 
-    fn delete_channel(&self, channel_id: &str) {
-        self.storage.borrow_mut().delete(channel_id);
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
+        self.storage.borrow_mut().delete(channel_id)
     }
 
     // ========================================================================
@@ -328,7 +328,8 @@ mod tests {
             created_at: 12345,
         };
 
-        host.save_opening_from_swap_channel(channel_id, opening);
+        host.save_opening_from_swap_channel(channel_id, opening)
+            .expect("save opening");
 
         // Should be in OpeningFromSwap state
         assert_eq!(
@@ -344,7 +345,8 @@ mod tests {
         assert!(host.get_channel_funding(channel_id).is_none());
 
         // Mark open with proofs
-        host.mark_channel_open(channel_id, "[]");
+        host.mark_channel_open(channel_id, "[]")
+            .expect("mark channel open");
 
         // Opening data gone, funding now available
         assert!(host.get_channel_opening_from_swap(channel_id).is_none());
@@ -365,20 +367,23 @@ mod tests {
             last_payment_at: 12346,
         };
 
-        host.record_payment(channel_id, payment);
+        host.record_payment(channel_id, payment)
+            .expect("record payment");
 
         let state = host.get_payment_state(channel_id).unwrap();
         assert_eq!(state.balance, 100);
 
         // Mark unusable / closing
-        host.mark_channel_closing(channel_id);
+        host.mark_channel_closing(channel_id)
+            .expect("mark channel closing");
         assert_eq!(
             host.get_channel_state(channel_id),
             Some(ClientChannelState::Closing)
         );
 
         // Close channel
-        host.mark_channel_closed(channel_id);
+        host.mark_channel_closed(channel_id)
+            .expect("mark channel closed");
         assert_eq!(
             host.get_channel_state(channel_id),
             Some(ClientChannelState::Closed)
@@ -388,7 +393,7 @@ mod tests {
         assert_eq!(host.list_channel_ids(), vec![channel_id]);
 
         // Delete channel
-        host.delete_channel(channel_id);
+        host.delete_channel(channel_id).expect("delete channel");
         assert!(host.get_channel_funding(channel_id).is_none());
     }
 

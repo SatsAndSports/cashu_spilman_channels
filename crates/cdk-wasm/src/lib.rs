@@ -119,14 +119,18 @@ extern "C" {
 
     pub type JsSpilmanClientHost;
     // Channel opening (two-phase)
-    #[wasm_bindgen(method, js_name = saveOpeningFromSwapChannel)]
+    #[wasm_bindgen(method, catch, js_name = saveOpeningFromSwapChannel)]
     fn save_opening_from_swap_channel(
         this: &JsSpilmanClientHost,
         channel_id: &str,
         opening_json: &str,
-    );
-    #[wasm_bindgen(method, js_name = markChannelOpen)]
-    fn mark_channel_open(this: &JsSpilmanClientHost, channel_id: &str, funding_proofs_json: &str);
+    ) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, catch, js_name = markChannelOpen)]
+    fn mark_channel_open(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+        funding_proofs_json: &str,
+    ) -> Result<(), JsValue>;
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
     #[wasm_bindgen(method, js_name = getChannelOpeningFromSwap)]
@@ -134,19 +138,29 @@ extern "C" {
     // Payment state (mutable)
     #[wasm_bindgen(method, js_name = getPaymentState)]
     fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
-    #[wasm_bindgen(method, js_name = recordPayment)]
-    fn client_record_payment(this: &JsSpilmanClientHost, channel_id: &str, state_json: &str);
+    #[wasm_bindgen(method, catch, js_name = recordPayment)]
+    fn client_record_payment(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+        state_json: &str,
+    ) -> Result<(), JsValue>;
     // Lifecycle
     #[wasm_bindgen(method, js_name = getChannelState)]
     fn client_get_channel_state(this: &JsSpilmanClientHost, channel_id: &str) -> String;
-    #[wasm_bindgen(method, js_name = markChannelClosing)]
-    fn client_mark_channel_closing(this: &JsSpilmanClientHost, channel_id: &str);
-    #[wasm_bindgen(method, js_name = markChannelClosed)]
-    fn client_mark_channel_closed(this: &JsSpilmanClientHost, channel_id: &str);
+    #[wasm_bindgen(method, catch, js_name = markChannelClosing)]
+    fn client_mark_channel_closing(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+    ) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, catch, js_name = markChannelClosed)]
+    fn client_mark_channel_closed(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+    ) -> Result<(), JsValue>;
     #[wasm_bindgen(method, js_name = listChannelIds)]
     fn list_channel_ids(this: &JsSpilmanClientHost) -> JsValue;
-    #[wasm_bindgen(method, js_name = deleteChannel)]
-    fn delete_channel(this: &JsSpilmanClientHost, channel_id: &str);
+    #[wasm_bindgen(method, catch, js_name = deleteChannel)]
+    fn delete_channel(this: &JsSpilmanClientHost, channel_id: &str) -> Result<(), JsValue>;
     // Time
     #[wasm_bindgen(method, js_name = nowSeconds)]
     fn client_now_seconds(this: &JsSpilmanClientHost) -> u64;
@@ -445,16 +459,18 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
         &self,
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
-    ) {
+    ) -> Result<(), String> {
         let opening_json = serde_json::to_string(&opening)
             .expect("ClientChannelOpeningFromSwap serialization failed");
         self.js_host
-            .save_opening_from_swap_channel(channel_id, &opening_json);
+            .save_opening_from_swap_channel(channel_id, &opening_json)
+            .map_err(js_error_to_string)
     }
 
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) {
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         self.js_host
-            .mark_channel_open(channel_id, funding_proofs_json);
+            .mark_channel_open(channel_id, funding_proofs_json)
+            .map_err(js_error_to_string)
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -491,10 +507,12 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
         serde_json::from_str(&json_str).ok()
     }
 
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) {
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {
         let state_json =
             serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
-        self.js_host.client_record_payment(channel_id, &state_json);
+        self.js_host
+            .client_record_payment(channel_id, &state_json)
+            .map_err(js_error_to_string)
     }
 
     // ========================================================================
@@ -511,12 +529,16 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
         }
     }
 
-    fn mark_channel_closing(&self, channel_id: &str) {
-        self.js_host.client_mark_channel_closing(channel_id);
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
+        self.js_host
+            .client_mark_channel_closing(channel_id)
+            .map_err(js_error_to_string)
     }
 
-    fn mark_channel_closed(&self, channel_id: &str) {
-        self.js_host.client_mark_channel_closed(channel_id);
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
+        self.js_host
+            .client_mark_channel_closed(channel_id)
+            .map_err(js_error_to_string)
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
@@ -526,8 +548,10 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
             .collect()
     }
 
-    fn delete_channel(&self, channel_id: &str) {
-        self.js_host.delete_channel(channel_id);
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
+        self.js_host
+            .delete_channel(channel_id)
+            .map_err(js_error_to_string)
     }
 
     // ========================================================================
@@ -898,19 +922,25 @@ impl WasmSpilmanClientBridge {
 
     /// Mark a channel as closed locally.
     #[wasm_bindgen(js_name = closeChannel)]
-    pub fn close_channel(&self, channel_id: &str) {
-        self.bridge.close_channel(channel_id);
+    pub fn close_channel(&self, channel_id: &str) -> Result<(), JsValue> {
+        self.bridge
+            .close_channel(channel_id)
+            .map_err(|e| JsValue::from_str(&e))
     }
 
     /// Mark a channel as unusable while retaining it in storage.
     #[wasm_bindgen(js_name = markChannelUnusable)]
-    pub fn mark_channel_unusable(&self, channel_id: &str) {
-        self.bridge.mark_channel_unusable(channel_id);
+    pub fn mark_channel_unusable(&self, channel_id: &str) -> Result<(), JsValue> {
+        self.bridge
+            .mark_channel_unusable(channel_id)
+            .map_err(|e| JsValue::from_str(&e))
     }
 
     #[wasm_bindgen(js_name = deleteChannel)]
-    pub fn delete_channel(&self, channel_id: &str) {
-        self.bridge.delete_channel(channel_id);
+    pub fn delete_channel(&self, channel_id: &str) -> Result<(), JsValue> {
+        self.bridge
+            .delete_channel(channel_id)
+            .map_err(|e| JsValue::from_str(&e))
     }
 }
 

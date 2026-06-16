@@ -66,14 +66,14 @@ pub trait SpilmanClientHost {
         &self,
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
-    );
+    ) -> Result<(), String>;
 
     /// Transition a channel from OpeningFromSwap to Open.
     ///
     /// Called after the funding swap succeeds and proofs are unblinded.
     /// The host reads the opening data, constructs funding data with
     /// the proofs, stores it, and removes the opening record.
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str);
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String>;
 
     /// Get opening data for a channel in OpeningFromSwap state.
     ///
@@ -101,7 +101,7 @@ pub trait SpilmanClientHost {
     ///
     /// Called after each successful payment signing. Updates the stored
     /// balance, signature, payment count, and timestamp.
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState);
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String>;
 
     // ========================================================================
     // Channel Lifecycle
@@ -115,19 +115,19 @@ pub trait SpilmanClientHost {
     /// Mark a channel as closed.
     ///
     /// After this, the channel cannot accept new payments.
-    fn mark_channel_closed(&self, channel_id: &str);
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String>;
 
     /// Mark a channel as closing / unusable.
     ///
     /// After this, the channel remains in storage but must not be used for new
     /// payments.
-    fn mark_channel_closing(&self, channel_id: &str);
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String>;
 
     /// List all stored channel IDs.
     fn list_channel_ids(&self) -> Vec<String>;
 
     /// Delete a channel and all its data.
-    fn delete_channel(&self, channel_id: &str);
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String>;
 
     // ========================================================================
     // Time
@@ -579,7 +579,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         };
 
         self.host
-            .save_opening_from_swap_channel(&channel_id, opening);
+            .save_opening_from_swap_channel(&channel_id, opening)?;
 
         // Step 5: Submit swap to mint
         let swap_response_json = self
@@ -624,7 +624,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
         // Step 7: Transition to Open
         self.host
-            .mark_channel_open(&channel_id, funding_proofs_json);
+            .mark_channel_open(&channel_id, funding_proofs_json)?;
 
         Ok(OpenChannelResult {
             channel_id,
@@ -729,7 +729,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         };
 
         self.host
-            .save_opening_from_swap_channel(&channel_id, opening);
+            .save_opening_from_swap_channel(&channel_id, opening)?;
 
         // Step 5: Submit swap to mint (async)
         let swap_response_json = async_networking
@@ -774,7 +774,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
         // Step 7: Transition to Open
         self.host
-            .mark_channel_open(&channel_id, funding_proofs_json);
+            .mark_channel_open(&channel_id, funding_proofs_json)?;
 
         Ok(OpenChannelResult {
             channel_id,
@@ -944,7 +944,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 payment_count,
                 last_payment_at: self.host.now_seconds(),
             },
-        );
+        )?;
 
         // Build the Payment struct
         if include_funding {
@@ -1012,23 +1012,23 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     ///
     /// Marks the channel as closed so no more payments can be made.
     /// Does not communicate with the server.
-    pub fn close_channel(&self, channel_id: &str) {
-        self.host.mark_channel_closed(channel_id);
+    pub fn close_channel(&self, channel_id: &str) -> Result<(), String> {
+        self.host.mark_channel_closed(channel_id)
     }
 
     /// Mark a channel as unusable while retaining it in storage.
     ///
     /// This moves the channel into the `Closing` state so it will no longer be
     /// selected for new payments.
-    pub fn mark_channel_unusable(&self, channel_id: &str) {
-        self.host.mark_channel_closing(channel_id);
+    pub fn mark_channel_unusable(&self, channel_id: &str) -> Result<(), String> {
+        self.host.mark_channel_closing(channel_id)
     }
 
     /// Delete a channel from storage.
     ///
     /// Removes all data associated with the channel.
-    pub fn delete_channel(&self, channel_id: &str) {
-        self.host.delete_channel(channel_id);
+    pub fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
+        self.host.delete_channel(channel_id)
     }
 
     /// Create a cooperative close request for a channel.
@@ -1055,7 +1055,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .ok_or("Missing 'channel_id' in close response")?;
 
-        self.host.mark_channel_closed(channel_id);
+        self.host.mark_channel_closed(channel_id)?;
 
         Ok(())
     }
@@ -1111,4 +1111,123 @@ pub fn base64_decode(input: &str) -> Result<String, String> {
         .map_err(|e| format!("Base64 decode failed: {}", e))?;
 
     String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8 in base64 decode: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopNetworking;
+
+    impl SpilmanClientNetworking for NoopNetworking {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+    }
+
+    struct FailingLifecycleHost;
+
+    impl SpilmanClientHost for FailingLifecycleHost {
+        fn save_opening_from_swap_channel(
+            &self,
+            _: &str,
+            _: ClientChannelOpeningFromSwap,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn mark_channel_open(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {
+            None
+        }
+
+        fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
+            None
+        }
+
+        fn get_payment_state(&self, _: &str) -> Option<ClientPaymentState> {
+            None
+        }
+
+        fn record_payment(&self, _: &str, _: ClientPaymentState) -> Result<(), String> {
+            Err("record_payment failed".to_string())
+        }
+
+        fn get_channel_state(&self, _: &str) -> Option<ClientChannelState> {
+            Some(ClientChannelState::Open)
+        }
+
+        fn mark_channel_closed(&self, _: &str) -> Result<(), String> {
+            Err("mark_channel_closed failed".to_string())
+        }
+
+        fn mark_channel_closing(&self, _: &str) -> Result<(), String> {
+            Err("mark_channel_closing failed".to_string())
+        }
+
+        fn list_channel_ids(&self) -> Vec<String> {
+            vec!["ch1".to_string()]
+        }
+
+        fn delete_channel(&self, _: &str) -> Result<(), String> {
+            Err("delete_channel failed".to_string())
+        }
+
+        fn now_seconds(&self) -> u64 {
+            0
+        }
+
+        fn compute_channel_secret(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn sign_with_tweaked_key(&self, _: &str, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+    }
+
+    #[test]
+    fn close_channel_surfaces_host_error() {
+        let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
+        let err = bridge.close_channel("ch1").unwrap_err();
+        assert!(err.contains("mark_channel_closed failed"));
+    }
+
+    #[test]
+    fn mark_channel_unusable_surfaces_host_error() {
+        let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
+        let err = bridge.mark_channel_unusable("ch1").unwrap_err();
+        assert!(err.contains("mark_channel_closing failed"));
+    }
+
+    #[test]
+    fn delete_channel_surfaces_host_error() {
+        let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
+        let err = bridge.delete_channel("ch1").unwrap_err();
+        assert!(err.contains("delete_channel failed"));
+    }
+
+    #[test]
+    fn cooperative_close_response_surfaces_host_error() {
+        let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
+        let err = bridge
+            .process_cooperative_close_response(r#"{"channel_id":"ch1"}"#)
+            .unwrap_err();
+        assert!(err.contains("mark_channel_closed failed"));
+    }
 }
