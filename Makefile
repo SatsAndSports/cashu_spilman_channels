@@ -153,6 +153,10 @@ WASM_SOURCES := $(shell find $(WASM_CRATE)/src crates/cdk-spilman/src -name '*.r
 # Build WASM bindings
 build-wasm: .wasm-built $(TS_KIT_WASM)
 
+web/wasm-nodejs/cdk_wasm_bg.wasm: $(WASM_SOURCES) $(WASM_CRATE)/Cargo.toml crates/cdk-spilman/Cargo.toml Cargo.toml Cargo.lock
+	@rm -f .wasm-built
+	@$(MAKE) .wasm-built
+
 # Build WASM and copy to TS integration kit
 $(TS_KIT_WASM): web/wasm-nodejs/cdk_wasm_bg.wasm
 	@mkdir -p integration-kits/ts/wasm
