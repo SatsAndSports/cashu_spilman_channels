@@ -511,6 +511,48 @@ impl ClientStorage for SqliteClientStorage {
         })
         .unwrap_or_default()
     }
+
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)> {
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return Vec::new(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT keyset_id, active, info_json FROM spilman_client_keysets
+             WHERE mint_url = ?1 AND unit = ?2
+             ORDER BY fetched_at ASC, rowid ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![mint, unit.to_string()], |row| {
+            let keyset_id: String = row.get(0)?;
+            let active: i64 = row.get(1)?;
+            let info_json: String = row.get(2)?;
+            Ok((keyset_id, active, info_json))
+        })
+        .ok()
+        .map(|rows| {
+            rows.filter_map(|row| row.ok())
+                .filter_map(|(id, active, info_json)| {
+                    let id = id.parse::<Id>().ok()?;
+                    Some((
+                        id,
+                        ClientKeysetCacheEntry {
+                            info_json,
+                            active: active != 0,
+                            unit: unit.clone(),
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

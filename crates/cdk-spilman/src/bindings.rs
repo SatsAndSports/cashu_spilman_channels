@@ -1565,6 +1565,12 @@ mod tests {
         }
     }
 
+    fn proofs(count: usize, amount: u64, keyset_id: Id, secret_prefix: &str) -> Vec<Proof> {
+        (0..count)
+            .map(|index| proof(amount, keyset_id, &format!("{secret_prefix}-{index}")))
+            .collect()
+    }
+
     fn nut02_keyset_info(keyset_info: &KeysetInfo, active: bool) -> cashu::nuts::KeySetInfo {
         cashu::nuts::KeySetInfo {
             id: keyset_info.keyset_id,
@@ -1650,6 +1656,94 @@ mod tests {
         assert_eq!(result["input_fee"].as_u64(), Some(2));
         assert_eq!(result["funding_token_amount"].as_u64(), Some(12));
         assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
+    }
+
+    #[test]
+    fn compute_channel_from_proofs_with_many_low_fee_and_three_medium_fee_inputs() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let low_fee_keyset = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 1);
+        let medium_fee_keyset = crate::params::mock_keyset_info(vec![1, 5, 25], 400);
+        assert_ne!(low_fee_keyset.keyset_id, output_keyset_info.keyset_id);
+        assert_ne!(medium_fee_keyset.keyset_id, output_keyset_info.keyset_id);
+
+        let mut input_proofs = proofs(100, 1, low_fee_keyset.keyset_id, "low-fee");
+        input_proofs.extend(proofs(3, 1, medium_fee_keyset.keyset_id, "medium-fee"));
+        let input_keysets_json = serde_json::to_string(&vec![
+            nut02_keyset_info(&low_fee_keyset, false),
+            nut02_keyset_info(&medium_fee_keyset, false),
+        ])
+        .unwrap();
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+        )
+        .expect("compute channel from many low-fee mixed inputs");
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["input_value"].as_u64(), Some(103));
+        assert_eq!(result["input_fee"].as_u64(), Some(2));
+        assert_eq!(result["funding_token_amount"].as_u64(), Some(101));
+    }
+
+    #[test]
+    fn compute_channel_from_proofs_with_many_medium_fee_and_few_low_fee_inputs() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let medium_fee_keyset = crate::params::mock_keyset_info(vec![1, 5, 25], 400);
+        let low_fee_keyset = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 1);
+        assert_ne!(medium_fee_keyset.keyset_id, output_keyset_info.keyset_id);
+        assert_ne!(low_fee_keyset.keyset_id, output_keyset_info.keyset_id);
+
+        let mut input_proofs = proofs(5, 1, medium_fee_keyset.keyset_id, "medium-fee");
+        input_proofs.extend(proofs(3, 1, low_fee_keyset.keyset_id, "low-fee"));
+        let input_keysets_json = serde_json::to_string(&vec![
+            nut02_keyset_info(&medium_fee_keyset, false),
+            nut02_keyset_info(&low_fee_keyset, false),
+        ])
+        .unwrap();
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+        )
+        .expect("compute channel from many medium-fee mixed inputs");
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["input_value"].as_u64(), Some(8));
+        assert_eq!(result["input_fee"].as_u64(), Some(3));
+        assert_eq!(result["funding_token_amount"].as_u64(), Some(5));
     }
 
     #[test]

@@ -272,6 +272,14 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         self.storage.borrow().get_active_keyset_ids(mint, unit)
     }
 
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)> {
+        self.storage.borrow().list_keysets_for_unit(mint, unit)
+    }
+
     // ========================================================================
     // Time
     // ========================================================================

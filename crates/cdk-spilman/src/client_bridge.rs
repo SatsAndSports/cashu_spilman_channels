@@ -163,6 +163,15 @@ pub trait SpilmanClientHost {
         Vec::new()
     }
 
+    /// List cached keyset metadata for a mint and unit, including inactive keysets.
+    fn list_keysets_for_unit(
+        &self,
+        _mint: &str,
+        _unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)> {
+        Vec::new()
+    }
+
     // ========================================================================
     // Time
     // ========================================================================
@@ -650,6 +659,19 @@ fn keyset_summary_from_cache_entry(
 }
 
 #[cfg(feature = "wallet")]
+fn input_keysets_from_cache_entries(
+    entries: Vec<(Id, ClientKeysetCacheEntry)>,
+    unit: &CurrencyUnit,
+) -> Result<String, String> {
+    let summaries = entries
+        .iter()
+        .map(|(keyset_id, entry)| keyset_summary_from_cache_entry(*keyset_id, entry, unit))
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_string(&summaries)
+        .map_err(|e| format!("Failed to serialize cached input keysets: {e}"))
+}
+
+#[cfg(feature = "wallet")]
 fn proof_keyset_ids(input_proofs_json: &str) -> Result<Vec<Id>, String> {
     let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
         .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
@@ -832,8 +854,16 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
     #[cfg(feature = "wallet")]
     fn fetch_token_input_keysets(&self, mint_url: &str, unit: &str) -> Result<String, String> {
+        let unit = unit
+            .parse::<CurrencyUnit>()
+            .map_err(|e| format!("Invalid token unit: {e}"))?;
+        let cached = self.host.list_keysets_for_unit(mint_url, &unit);
+        if !cached.is_empty() {
+            return input_keysets_from_cache_entries(cached, &unit);
+        }
+
         let keysets_json = self.networking.call_mint_keysets(mint_url)?;
-        token_input_keysets_from_response(&keysets_json, unit)
+        token_input_keysets_from_response(&keysets_json, &unit.to_string())
     }
 
     #[cfg(feature = "wallet")]
@@ -2350,6 +2380,67 @@ mod tests {
         assert_eq!(input_keysets[0].id, input_keyset.keyset_id);
         assert_eq!(input_keysets[0].input_fee_ppk, 900);
         assert!(!input_keysets[0].active);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn token_input_keysets_use_cache_without_network() {
+        let input_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8], 500);
+        let host = crate::ConfigurableClientHost::new_in_memory();
+        host.set_keyset(
+            "https://mint.example",
+            input_keyset.keyset_id,
+            ClientKeysetCacheEntry {
+                info_json: serde_json::to_string(&input_keyset).unwrap(),
+                active: false,
+                unit: CurrencyUnit::Sat,
+            },
+        )
+        .unwrap();
+        let bridge = SpilmanClientBridge::new(host, NoopNetworking);
+
+        let input_keysets = bridge
+            .fetch_token_input_keysets("https://mint.example", "sat")
+            .unwrap();
+        let input_keysets: Vec<cashu::nuts::KeySetInfo> =
+            serde_json::from_str(&input_keysets).unwrap();
+
+        assert_eq!(input_keysets.len(), 1);
+        assert_eq!(input_keysets[0].id, input_keyset.keyset_id);
+        assert_eq!(input_keysets[0].input_fee_ppk, 500);
+        assert!(!input_keysets[0].active);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn token_input_keysets_fetch_when_cache_empty() {
+        let input_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8], 600);
+        let keysets_calls = Rc::new(Cell::new(0));
+        let networking = KeysetsNetworking {
+            keysets_json: serde_json::json!({
+                "keysets": [{
+                    "id": input_keyset.keyset_id.to_string(),
+                    "unit": "sat",
+                    "active": false,
+                    "input_fee_ppk": 600,
+                }]
+            })
+            .to_string(),
+            keysets_calls: Rc::clone(&keysets_calls),
+        };
+        let bridge =
+            SpilmanClientBridge::new(crate::ConfigurableClientHost::new_in_memory(), networking);
+
+        let input_keysets = bridge
+            .fetch_token_input_keysets("https://mint.example", "sat")
+            .unwrap();
+        let input_keysets: Vec<cashu::nuts::KeySetInfo> =
+            serde_json::from_str(&input_keysets).unwrap();
+
+        assert_eq!(keysets_calls.get(), 1);
+        assert_eq!(input_keysets.len(), 1);
+        assert_eq!(input_keysets[0].id, input_keyset.keyset_id);
+        assert_eq!(input_keysets[0].input_fee_ppk, 600);
     }
 
     #[cfg(feature = "wallet")]

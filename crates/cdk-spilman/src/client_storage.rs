@@ -226,6 +226,13 @@ pub trait ClientStorage {
 
     /// Get cached active keyset IDs for a mint and unit.
     fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
+
+    /// List cached keyset metadata for a mint and unit, including inactive keysets.
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)>;
 }
 
 // ============================================================================
@@ -393,6 +400,19 @@ impl ClientStorage for MemoryClientStorage {
             .iter()
             .filter_map(|((entry_mint, id), entry)| {
                 (entry_mint == mint && entry.active && &entry.unit == unit).then_some(*id)
+            })
+            .collect()
+    }
+
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)> {
+        self.keysets
+            .iter()
+            .filter_map(|((entry_mint, id), entry)| {
+                (entry_mint == mint && &entry.unit == unit).then_some((*id, entry.clone()))
             })
             .collect()
     }
@@ -628,8 +648,17 @@ pub(crate) mod fixtures {
             storage.get_active_keyset_ids("https://mint.example", &CurrencyUnit::Sat),
             vec![active_id]
         );
+        let mut sat_entries =
+            storage.list_keysets_for_unit("https://mint.example", &CurrencyUnit::Sat);
+        sat_entries.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(sat_entries.len(), 2);
+        assert_eq!(sat_entries[0].0.to_string(), active_id.to_string());
+        assert_eq!(sat_entries[1].0.to_string(), inactive_id.to_string());
         assert!(storage
             .get_active_keyset_ids("https://mint.example", &CurrencyUnit::Msat)
+            .is_empty());
+        assert!(storage
+            .list_keysets_for_unit("https://mint.example", &CurrencyUnit::Msat)
             .is_empty());
     }
 
