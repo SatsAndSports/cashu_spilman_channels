@@ -9,11 +9,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cashu::nuts::{CurrencyUnit, Id};
 use rusqlite::{params, OptionalExtension};
 
 use super::client_storage::{
-    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
-    ClientStorage,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
+    ClientPaymentState, ClientStorage,
 };
 
 /// SQLite-backed implementation of [`ClientStorage`].
@@ -99,6 +100,15 @@ impl SqliteClientStorage {
                 opening_json TEXT,
                 funding_json TEXT,
                 payment_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS spilman_client_keysets (
+                mint_url   TEXT NOT NULL,
+                keyset_id  TEXT NOT NULL,
+                unit       TEXT NOT NULL,
+                active     INTEGER NOT NULL,
+                info_json  TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL,
+                PRIMARY KEY (mint_url, keyset_id)
             );",
         )
         .map_err(|e| format!("failed to initialize SQLite client storage schema: {e}"))
@@ -372,6 +382,78 @@ impl ClientStorage for SqliteClientStorage {
         .map_err(|e| format!("delete: {e}"))?;
         Ok(())
     }
+
+    fn get_keyset(&self, mint: &str, keyset_id: &Id) -> Option<ClientKeysetCacheEntry> {
+        let conn = self.conn.lock().ok()?;
+        let row: Option<(String, i64, String)> = conn
+            .query_row(
+                "SELECT unit, active, info_json FROM spilman_client_keysets
+                 WHERE mint_url = ?1 AND keyset_id = ?2",
+                params![mint, keyset_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .ok()?;
+        row.and_then(|(unit, active, info_json)| {
+            let unit = unit.parse::<CurrencyUnit>().ok()?;
+            Some(ClientKeysetCacheEntry {
+                info_json,
+                active: active != 0,
+                unit,
+            })
+        })
+    }
+
+    fn set_keyset(
+        &mut self,
+        mint: &str,
+        keyset_id: Id,
+        entry: ClientKeysetCacheEntry,
+    ) -> Result<(), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("sqlite lock poisoned: {e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO spilman_client_keysets
+             (mint_url, keyset_id, unit, active, info_json, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, CAST(strftime('%s', 'now') AS INTEGER))",
+            params![
+                mint,
+                keyset_id.to_string(),
+                entry.unit.to_string(),
+                i64::from(entry.active),
+                entry.info_json
+            ],
+        )
+        .map_err(|e| format!("set_keyset: {e}"))?;
+        Ok(())
+    }
+
+    fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id> {
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return Vec::new(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT keyset_id FROM spilman_client_keysets
+             WHERE mint_url = ?1 AND unit = ?2 AND active != 0
+             ORDER BY fetched_at ASC, rowid ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![mint, unit.to_string()], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()
+        .map(|rows| {
+            rows.filter_map(|row| row.ok())
+                .filter_map(|id| id.parse::<Id>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -484,5 +566,11 @@ mod tests {
     fn test_sqlite_storage_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SqliteClientStorage>();
+    }
+
+    #[test]
+    fn test_sqlite_storage_keyset_cache() {
+        let mut storage = SqliteClientStorage::open_in_memory().unwrap();
+        assert_storage_keyset_cache(&mut storage);
     }
 }

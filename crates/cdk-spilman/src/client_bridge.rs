@@ -22,7 +22,7 @@
 //! ```
 
 use base64::Engine;
-use cashu::nuts::Proof;
+use cashu::nuts::{CurrencyUnit, Id, Proof};
 use serde::{Deserialize, Serialize};
 
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
@@ -34,7 +34,8 @@ use super::bindings::{
 };
 use super::bridge::Payment;
 use super::client_storage::{
-    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
+    ClientPaymentState,
 };
 
 // ============================================================================
@@ -129,6 +130,30 @@ pub trait SpilmanClientHost {
 
     /// Delete a channel and all its data.
     fn delete_channel(&self, channel_id: &str) -> Result<(), String>;
+
+    // ========================================================================
+    // Keyset Cache
+    // ========================================================================
+
+    /// Get cached keyset metadata.
+    fn get_keyset(&self, _mint: &str, _keyset_id: &Id) -> Option<ClientKeysetCacheEntry> {
+        None
+    }
+
+    /// Insert or update cached keyset metadata.
+    fn set_keyset(
+        &self,
+        _mint: &str,
+        _keyset_id: Id,
+        _entry: ClientKeysetCacheEntry,
+    ) -> Result<(), String> {
+        Err("client host does not support keyset caching".to_string())
+    }
+
+    /// Get cached active keyset IDs for a mint and unit.
+    fn get_active_keyset_ids(&self, _mint: &str, _unit: &CurrencyUnit) -> Vec<Id> {
+        Vec::new()
+    }
 
     // ========================================================================
     // Time
@@ -453,6 +478,7 @@ fn build_keyset_info_from_responses(
         .get("input_fee_ppk")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let final_expiry = keyset_entry.get("final_expiry").cloned();
 
     // Extract the keys from /v1/keys/{id} response
     let keys = keys_resp
@@ -463,13 +489,16 @@ fn build_keyset_info_from_responses(
         .cloned()
         .ok_or("Invalid /v1/keys response: missing keys")?;
 
-    let json_string = serde_json::json!({
+    let mut value = serde_json::json!({
         "keysetId": keyset_id,
         "unit": unit,
         "keys": keys,
         "inputFeePpk": input_fee_ppk,
-    })
-    .to_string();
+    });
+    if let Some(final_expiry) = final_expiry {
+        value["finalExpiry"] = final_expiry;
+    }
+    let json_string = value.to_string();
 
     // Verify the keyset ID is consistent with the keys and metadata.
     // This prevents a malicious mint (or MITM) from serving keys that don't
@@ -540,6 +569,33 @@ fn token_input_keysets_from_response(keysets_json: &str, unit: &str) -> Result<S
     serde_json::to_string(&out).map_err(|e| format!("Failed to serialize input keysets: {e}"))
 }
 
+#[cfg(feature = "wallet")]
+fn first_active_keyset_id_from_response(
+    keysets_json: &str,
+    unit: &CurrencyUnit,
+) -> Result<Id, String> {
+    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
+        .map_err(|e| format!("Failed to parse /v1/keysets response: {e}"))?;
+    let keysets = keysets_resp
+        .get("keysets")
+        .and_then(|k| k.as_array())
+        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
+
+    keysets
+        .iter()
+        .find(|keyset| {
+            keyset.get("unit").and_then(|v| v.as_str()) == Some(&unit.to_string())
+                && keyset
+                    .get("active")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+        .and_then(|keyset| keyset.get("id").and_then(|v| v.as_str()))
+        .ok_or_else(|| format!("no active keyset found for unit '{unit}'"))?
+        .parse::<Id>()
+        .map_err(|e| format!("Invalid active keyset id: {e}"))
+}
+
 impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N> {
     /// Create a new client bridge.
     ///
@@ -561,18 +617,130 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         build_keyset_info_from_responses(&keysets_json, &keys_json, keyset_id)
     }
 
+    /// Refresh and persist all keysets for a mint in the client host cache.
+    #[cfg(feature = "wallet")]
+    pub fn refresh_keysets(&self, mint_url: &str) -> Result<(), OpenChannelError> {
+        self.refresh_keysets_inner(mint_url).map(|_| ())
+    }
+
+    #[cfg(feature = "wallet")]
+    fn refresh_keysets_inner(&self, mint_url: &str) -> Result<String, OpenChannelError> {
+        let keysets_json = self.networking.call_mint_keysets(mint_url).map_err(|e| {
+            OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+        })?;
+        let keysets_resp: serde_json::Value = serde_json::from_str(&keysets_json).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse /v1/keysets response: {e}"),
+            )
+        })?;
+        let keysets = keysets_resp
+            .get("keysets")
+            .and_then(|k| k.as_array())
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Invalid /v1/keysets response: missing 'keysets' array",
+                )
+            })?;
+
+        for keyset in keysets {
+            let id_str = keyset.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'id' in keyset entry",
+                )
+            })?;
+            let id = id_str.parse::<Id>().map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("Invalid keyset id: {e}"),
+                )
+            })?;
+            let unit = keyset
+                .get("unit")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::BeforeOpeningSaved,
+                        None,
+                        "Missing 'unit' in keyset entry",
+                    )
+                })?
+                .parse::<CurrencyUnit>()
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::BeforeOpeningSaved,
+                        None,
+                        format!("Invalid keyset unit: {e}"),
+                    )
+                })?;
+            let active = keyset
+                .get("active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let keys_json = self
+                .networking
+                .call_mint_keys(mint_url, id_str)
+                .map_err(|e| {
+                    OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+                })?;
+            let info_json = build_keyset_info_from_responses(&keysets_json, &keys_json, id_str)
+                .map_err(|e| {
+                    OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+                })?;
+            self.host
+                .set_keyset(
+                    mint_url,
+                    id,
+                    ClientKeysetCacheEntry {
+                        info_json,
+                        active,
+                        unit,
+                    },
+                )
+                .map_err(|e| {
+                    OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+                })?;
+        }
+
+        Ok(keysets_json)
+    }
+
+    /// Fetch full keyset info for the first active keyset the mint reports for a unit.
+    #[cfg(feature = "wallet")]
+    pub fn fetch_active_keyset_info(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+    ) -> Result<String, OpenChannelError> {
+        let keysets_json = self.refresh_keysets_inner(mint_url)?;
+        let keyset_id = first_active_keyset_id_from_response(&keysets_json, unit).map_err(|e| {
+            OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+        })?;
+        self.host
+            .get_keyset(mint_url, &keyset_id)
+            .map(|entry| entry.info_json)
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("active keyset {keyset_id} was not cached"),
+                )
+            })
+    }
+
     #[cfg(feature = "wallet")]
     fn fetch_token_input_keysets(&self, mint_url: &str, unit: &str) -> Result<String, String> {
         let keysets_json = self.networking.call_mint_keysets(mint_url)?;
         token_input_keysets_from_response(&keysets_json, unit)
     }
 
-    /// Open a new channel from a Cashu token, fetching keyset info automatically.
-    ///
-    /// This is a convenience wrapper around [`fetch_keyset_info`](Self::fetch_keyset_info)
-    /// and [`open_channel_from_token`](Self::open_channel_from_token). The keyset info
-    /// is fetched from the mint via the networking layer instead of being provided
-    /// by the caller.
+    /// Open a new channel from a Cashu token using the first active output keyset.
     ///
     /// # Arguments
     /// * `token_string` - Cashu token (cashuA... or cashuB...)
@@ -580,11 +748,47 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// * `sender_pubkey_hex` - Sender's public key
     /// * `expiry_timestamp` - Unix timestamp for channel expiry
     /// * `mint_url` - URL of the mint to fetch keyset info from
-    /// * `keyset_id` - Keyset ID to use (from server's advertised keysets)
     /// * `max_amount` - Maximum amount per output (0 = no limit)
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_token_auto(
+        &self,
+        token_string: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        mint_url: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse token: {e}"),
+            )
+        })?;
+        let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
+        let keyset_info = self.fetch_active_keyset_info(mint_url, &unit)?;
+        let input_keysets = self
+            .fetch_token_input_keysets(mint_url, &unit.to_string())
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        self.open_channel_from_token_with_input_keysets(
+            token_string,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            &keyset_info,
+            &input_keysets,
+            max_amount,
+        )
+    }
+
+    /// Open a new channel from a Cashu token using a specific output keyset id.
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_channel_from_token_with_keyset_id(
         &self,
         token_string: &str,
         receiver_pubkey_hex: &str,
@@ -719,10 +923,39 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         )
     }
 
-    /// Open a new channel from input proofs and an explicit output keyset.
+    /// Open a new channel from input proofs using the first active output keyset.
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_proofs_auto(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let unit = unit
+            .parse::<CurrencyUnit>()
+            .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+        let keyset_info = self.fetch_active_keyset_info(mint_url, &unit)?;
+        self.open_channel_from_proofs(
+            mint_url,
+            &unit.to_string(),
+            input_proofs_json,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            &keyset_info,
+            max_amount,
+        )
+    }
+
+    /// Open a new channel from input proofs using a specific output keyset id.
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_channel_from_proofs_with_keyset_id(
         &self,
         mint_url: &str,
         unit: &str,

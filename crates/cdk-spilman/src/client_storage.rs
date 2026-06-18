@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use cashu::nuts::{CurrencyUnit, Id};
+
 // ============================================================================
 // Data Structures
 // ============================================================================
@@ -78,6 +80,17 @@ pub struct ClientPaymentState {
     pub payment_count: u64,
     /// Unix timestamp of the last payment
     pub last_payment_at: u64,
+}
+
+/// Cached mint keyset metadata for client-side channel opening.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientKeysetCacheEntry {
+    /// Serialized `KeysetInfo` JSON for this cached mint keyset.
+    pub info_json: String,
+    /// Whether the mint reports this keyset as active.
+    pub active: bool,
+    /// Currency unit associated with the keyset.
+    pub unit: CurrencyUnit,
 }
 
 /// Channel lifecycle state
@@ -170,6 +183,22 @@ pub trait ClientStorage {
 
     /// Delete a channel and all its data
     fn delete(&mut self, channel_id: &str) -> Result<(), String>;
+
+    // === Keyset Cache ===
+
+    /// Get cached keyset metadata.
+    fn get_keyset(&self, mint: &str, keyset_id: &Id) -> Option<ClientKeysetCacheEntry>;
+
+    /// Insert or update cached keyset metadata.
+    fn set_keyset(
+        &mut self,
+        mint: &str,
+        keyset_id: Id,
+        entry: ClientKeysetCacheEntry,
+    ) -> Result<(), String>;
+
+    /// Get cached active keyset IDs for a mint and unit.
+    fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
 }
 
 // ============================================================================
@@ -186,6 +215,7 @@ pub struct MemoryClientStorage {
     funding: HashMap<String, ClientChannelFunding>,
     payments: HashMap<String, ClientPaymentState>,
     states: HashMap<String, ClientChannelState>,
+    keysets: HashMap<(String, Id), ClientKeysetCacheEntry>,
 }
 
 impl MemoryClientStorage {
@@ -285,6 +315,29 @@ impl ClientStorage for MemoryClientStorage {
         self.payments.remove(channel_id);
         self.states.remove(channel_id);
         Ok(())
+    }
+
+    fn get_keyset(&self, mint: &str, keyset_id: &Id) -> Option<ClientKeysetCacheEntry> {
+        self.keysets.get(&(mint.to_string(), *keyset_id)).cloned()
+    }
+
+    fn set_keyset(
+        &mut self,
+        mint: &str,
+        keyset_id: Id,
+        entry: ClientKeysetCacheEntry,
+    ) -> Result<(), String> {
+        self.keysets.insert((mint.to_string(), keyset_id), entry);
+        Ok(())
+    }
+
+    fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id> {
+        self.keysets
+            .iter()
+            .filter_map(|((entry_mint, id), entry)| {
+                (entry_mint == mint && entry.active && &entry.unit == unit).then_some(*id)
+            })
+            .collect()
     }
 }
 
@@ -481,6 +534,45 @@ pub(crate) mod fixtures {
             .expect("update payment state");
         assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 200);
     }
+
+    /// Assert that keyset cache entries can be stored and queried by active unit.
+    pub fn assert_storage_keyset_cache<S: ClientStorage>(storage: &mut S) {
+        let active_id: Id = "001b6c716bf42c7e".parse().unwrap();
+        let inactive_id: Id = "00ffedc2dbb87212".parse().unwrap();
+        assert_ne!(active_id, inactive_id);
+        let active = ClientKeysetCacheEntry {
+            info_json: r#"{"keysetId":"active"}"#.to_string(),
+            active: true,
+            unit: CurrencyUnit::Sat,
+        };
+        let inactive = ClientKeysetCacheEntry {
+            info_json: r#"{"keysetId":"inactive"}"#.to_string(),
+            active: false,
+            unit: CurrencyUnit::Sat,
+        };
+
+        storage
+            .set_keyset("https://mint.example", active_id, active.clone())
+            .expect("set active keyset");
+        storage
+            .set_keyset("https://mint.example", inactive_id, inactive)
+            .expect("set inactive keyset");
+
+        assert_eq!(
+            storage
+                .get_keyset("https://mint.example", &active_id)
+                .unwrap()
+                .info_json,
+            active.info_json
+        );
+        assert_eq!(
+            storage.get_active_keyset_ids("https://mint.example", &CurrencyUnit::Sat),
+            vec![active_id]
+        );
+        assert!(storage
+            .get_active_keyset_ids("https://mint.example", &CurrencyUnit::Msat)
+            .is_empty());
+    }
 }
 
 // ============================================================================
@@ -515,5 +607,11 @@ mod tests {
         let mut storage = MemoryClientStorage::new();
         assert_storage_delete(&mut storage);
         assert_eq!(storage.channel_count(), 0);
+    }
+
+    #[test]
+    fn test_memory_storage_keyset_cache() {
+        let mut storage = MemoryClientStorage::new();
+        assert_storage_keyset_cache(&mut storage);
     }
 }

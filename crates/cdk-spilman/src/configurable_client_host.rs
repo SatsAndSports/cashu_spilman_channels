@@ -23,13 +23,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cashu::nuts::SecretKey;
+use cashu::nuts::{CurrencyUnit, Id, SecretKey};
 
 use super::bindings::{compute_channel_secret_from_hex, sign_with_tweaked_key_util};
 use super::client_bridge::SpilmanClientHost;
 use super::client_storage::{
-    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
-    ClientStorage, MemoryClientStorage,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
+    ClientPaymentState, ClientStorage, MemoryClientStorage,
 };
 
 // ============================================================================
@@ -239,6 +239,27 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
 
     fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
         self.storage.borrow_mut().delete(channel_id)
+    }
+
+    // ========================================================================
+    // Keyset Cache
+    // ========================================================================
+
+    fn get_keyset(&self, mint: &str, keyset_id: &Id) -> Option<ClientKeysetCacheEntry> {
+        self.storage.borrow().get_keyset(mint, keyset_id)
+    }
+
+    fn set_keyset(
+        &self,
+        mint: &str,
+        keyset_id: Id,
+        entry: ClientKeysetCacheEntry,
+    ) -> Result<(), String> {
+        self.storage.borrow_mut().set_keyset(mint, keyset_id, entry)
+    }
+
+    fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id> {
+        self.storage.borrow().get_active_keyset_ids(mint, unit)
     }
 
     // ========================================================================

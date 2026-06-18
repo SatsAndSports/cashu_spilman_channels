@@ -355,7 +355,6 @@ async fn test_open_channel_from_token_auto() {
     .expect("build token");
 
     // === Client opens channel using _auto (fetches keyset info from mint) ===
-    let keyset_id_str = mint_helper.keyset_id().to_string();
     let open_result = client_bridge
         .open_channel_from_token_auto(
             &token,
@@ -363,7 +362,6 @@ async fn test_open_channel_from_token_auto() {
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             "https://test-mint",
-            &keyset_id_str,
             64,
         )
         .expect("open_channel_from_token_auto should succeed");
@@ -425,7 +423,6 @@ async fn test_open_channel_from_proofs_auto() {
 
     let proofs = mint_helper.mint_proofs(1000).await.unwrap();
     let proofs_json = serde_json::to_string(&proofs).unwrap();
-    let keyset_id_str = mint_helper.keyset_id().to_string();
     let open_result = client_bridge
         .open_channel_from_proofs_auto(
             "https://test-mint",
@@ -434,7 +431,6 @@ async fn test_open_channel_from_proofs_auto() {
             &receiver_secret.public_key().to_hex(),
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
-            &keyset_id_str,
             64,
         )
         .expect("open_channel_from_proofs_auto should succeed");
@@ -452,6 +448,61 @@ async fn test_open_channel_from_proofs_auto() {
             &(),
         )
         .expect("server should accept proof-opened channel payment");
+
+    assert_eq!(result.balance, 10);
+    assert_eq!(result.capacity, open_result.capacity);
+}
+
+/// Test proof-input channel opening when the caller explicitly chooses an output keyset id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_with_keyset_id() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        mint_helper.keyset_id(),
+        keyset_info_json,
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_networking = InMemoryMintNetworking::new(mint_helper.mint());
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+    let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    let proofs_json = serde_json::to_string(&proofs).unwrap();
+    let keyset_id = mint_helper.keyset_id().to_string();
+    let open_result = client_bridge
+        .open_channel_from_proofs_with_keyset_id(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &keyset_id,
+            64,
+        )
+        .expect("open_channel_from_proofs_with_keyset_id should succeed");
+
+    let payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
+        .expect("create payment");
+    let result = server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server should accept explicitly-keyed proof-opened payment");
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -527,7 +578,6 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
             &receiver_secret.public_key().to_hex(),
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
-            &output_keyset_id,
             64,
         )
         .expect("open_channel_from_proofs_auto should accept mixed input keysets");
@@ -686,7 +736,6 @@ async fn test_reqwest_client_networking_http_round_trip() {
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             &mint_url,
-            &keyset_id_str,
             64,
         )
         .expect("open_channel_from_token_auto over HTTP should succeed");
