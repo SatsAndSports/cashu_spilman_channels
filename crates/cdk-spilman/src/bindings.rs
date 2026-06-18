@@ -508,14 +508,122 @@ pub fn compute_channel_from_token(
         .proofs(&[nut02_keyset_info])
         .map_err(|e| format!("Failed to parse proofs: {}", e))?;
 
-    // Assert all proofs are from the same keyset
-    for proof in &proofs {
-        if proof.keyset_id != keyset_info.keyset_id {
-            return Err(format!(
-                "All proofs must be from the same keyset. Expected {}, got {}",
-                keyset_info.keyset_id, proof.keyset_id
-            ));
-        }
+    compute_channel_from_proofs_inner(
+        &proofs,
+        input_value,
+        &mint_url.to_string(),
+        unit,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info,
+        maximum_amount_for_one_output,
+    )
+}
+
+/// Compute channel parameters from a token while supplying all possible input keysets.
+///
+/// `keyset_info_json` is the output keyset for newly-created channel funding
+/// proofs. `input_keysets_json` is a JSON array of NUT-02 keyset summaries used
+/// only to expand compact token proof keyset IDs.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_token_with_input_keysets(
+    token_string: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    keyset_info_json: &str,
+    input_keysets_json: &str,
+    maximum_amount_for_one_output: u64,
+) -> Result<String, String> {
+    let token: Token = token_string
+        .parse()
+        .map_err(|e| format!("Failed to parse token: {e}"))?;
+    let input_value: u64 = token
+        .value()
+        .map_err(|e| format!("Failed to get token value: {e}"))?
+        .into();
+    let mint_url = token
+        .mint_url()
+        .map_err(|e| format!("Failed to get mint URL: {e}"))?;
+    let unit = token.unit().unwrap_or(CurrencyUnit::Sat);
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let input_keysets: Vec<cashu::nuts::KeySetInfo> = serde_json::from_str(input_keysets_json)
+        .map_err(|e| format!("Failed to parse input keysets: {e}"))?;
+    let proofs = token
+        .proofs(&input_keysets)
+        .map_err(|e| format!("Failed to parse proofs: {e}"))?;
+
+    compute_channel_from_proofs_inner(
+        &proofs,
+        input_value,
+        &mint_url.to_string(),
+        unit,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info,
+        maximum_amount_for_one_output,
+    )
+}
+
+/// Compute channel parameters from input proofs and an explicit output keyset.
+///
+/// Input proofs may be from any keyset accepted by the mint. The provided
+/// `keyset_info_json` is used only for the newly-created channel funding outputs.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_proofs(
+    mint_url: &str,
+    unit: &str,
+    input_proofs_json: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    keyset_info_json: &str,
+    maximum_amount_for_one_output: u64,
+) -> Result<String, String> {
+    let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
+        .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
+    let input_value = proofs.iter().map(|proof| u64::from(proof.amount)).sum();
+    let unit = CurrencyUnit::from_str(unit).unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+
+    compute_channel_from_proofs_inner(
+        &proofs,
+        input_value,
+        mint_url,
+        unit,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info,
+        maximum_amount_for_one_output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_channel_from_proofs_inner(
+    proofs: &[Proof],
+    input_value: u64,
+    mint_url: &str,
+    unit: CurrencyUnit,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    keyset_info: KeysetInfo,
+    maximum_amount_for_one_output: u64,
+) -> Result<String, String> {
+    if keyset_info.unit != unit {
+        return Err(format!(
+            "output keyset unit mismatch: expected {unit}, got {}",
+            keyset_info.unit
+        ));
     }
 
     let max_amt = maximum_amount_for_one_output;
@@ -574,7 +682,7 @@ pub fn compute_channel_from_token(
 
     // Serialize proofs
     let proofs_json =
-        serde_json::to_string(&proofs).map_err(|e| format!("Failed to serialize proofs: {}", e))?;
+        serde_json::to_string(proofs).map_err(|e| format!("Failed to serialize proofs: {}", e))?;
 
     // Serialize params
     let params_json = params.get_channel_id_params_json();
@@ -584,7 +692,7 @@ pub fn compute_channel_from_token(
         "capacity": capacity,
         "funding_token_amount": funding_token_amount,
         "input_value": input_value,
-        "mint_url": mint_url.to_string(),
+        "mint_url": mint_url,
         "params_json": params_json,
         "proofs_json": proofs_json
     });
@@ -1322,4 +1430,112 @@ pub fn attach_signature_to_balance_update(
     });
 
     Ok(result.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cashu::secret::Secret;
+
+    #[test]
+    fn compute_channel_from_proofs_allows_input_keyset_different_from_output_keyset() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let input_keyset_id = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 0).keyset_id;
+        assert_ne!(input_keyset_id, output_keyset_info.keyset_id);
+
+        let input_proofs = vec![Proof {
+            amount: Amount::from(8),
+            keyset_id: input_keyset_id,
+            secret: Secret::new("input-secret".to_string()),
+            c: PublicKey::from_str(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }];
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let result = compute_channel_from_proofs(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+        )
+        .expect("compute channel from mismatched input/output keysets");
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["input_value"].as_u64(), Some(8));
+        assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
+    }
+
+    #[test]
+    fn compute_channel_from_token_with_input_keysets_allows_distinct_output_keyset() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let input_keyset_info = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 0);
+        assert_ne!(input_keyset_info.keyset_id, output_keyset_info.keyset_id);
+
+        let input_proofs = vec![Proof {
+            amount: Amount::from(9),
+            keyset_id: input_keyset_info.keyset_id,
+            secret: Secret::new("input-token-secret".to_string()),
+            c: PublicKey::from_str(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }];
+        let token = build_cashu_b_token(
+            "https://mint.example",
+            "sat",
+            &serde_json::to_string(&input_proofs).unwrap(),
+        )
+        .unwrap();
+        let input_keysets_json = serde_json::to_string(&vec![cashu::nuts::KeySetInfo {
+            id: input_keyset_info.keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            input_fee_ppk: input_keyset_info.input_fee_ppk,
+            final_expiry: None,
+        }])
+        .unwrap();
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let result = compute_channel_from_token_with_input_keysets(
+            &token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            &input_keysets_json,
+            0,
+        )
+        .expect("compute channel from token with distinct input/output keysets");
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["input_value"].as_u64(), Some(9));
+        assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
+    }
 }

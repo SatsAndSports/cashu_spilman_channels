@@ -6,6 +6,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nuts::SecretKey;
+use cdk::nuts::CurrencyUnit;
 use cdk_spilman::{
     build_cashu_b_token, parse_keyset_info_from_json, ConfigurableClientHost, Payment,
     ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge, SpilmanClientNetworking,
@@ -399,6 +400,154 @@ async fn test_open_channel_from_token_auto() {
         "Server verified payment from auto-opened channel: balance={}",
         result.balance
     );
+}
+
+/// Test the proof-input channel open flow used by MONAD loose-proof reservations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_auto() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        mint_helper.keyset_id(),
+        keyset_info_json,
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_networking = InMemoryMintNetworking::new(mint_helper.mint());
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+    let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    let proofs_json = serde_json::to_string(&proofs).unwrap();
+    let keyset_id_str = mint_helper.keyset_id().to_string();
+    let open_result = client_bridge
+        .open_channel_from_proofs_auto(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &keyset_id_str,
+            64,
+        )
+        .expect("open_channel_from_proofs_auto should succeed");
+
+    let payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
+        .expect("create payment");
+    let result = server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server should accept proof-opened channel payment");
+
+    assert_eq!(result.balance, 10);
+    assert_eq!(result.capacity, open_result.capacity);
+}
+
+/// Test that proof-input channel opening can spend mixed old input keysets
+/// while funding the channel with the current active output keyset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let mint = mint_helper.mint();
+    let keyset_amounts: Vec<u64> = (0..12).map(|i| 1u64 << i).collect();
+
+    let first_keyset_proofs = mint_helper.mint_proofs(200).await.unwrap();
+    let first_input_keyset = first_keyset_proofs
+        .first()
+        .expect("first keyset proofs")
+        .keyset_id;
+
+    mint.rotate_keyset(CurrencyUnit::Sat, keyset_amounts.clone(), 0, true, None)
+        .await
+        .expect("rotate to second input keyset");
+    let second_keyset_proofs = mint_helper.mint_proofs(300).await.unwrap();
+    let second_input_keyset = second_keyset_proofs
+        .first()
+        .expect("second keyset proofs")
+        .keyset_id;
+
+    mint.rotate_keyset(CurrencyUnit::Sat, keyset_amounts, 0, true, None)
+        .await
+        .expect("rotate to active output keyset");
+    let output_keyset = *mint
+        .get_active_keysets()
+        .get(&CurrencyUnit::Sat)
+        .expect("active output keyset");
+
+    assert_ne!(first_input_keyset, second_input_keyset);
+    assert_ne!(first_input_keyset, output_keyset);
+    assert_ne!(second_input_keyset, output_keyset);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_networking = InMemoryMintNetworking::new(mint.clone());
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+    let output_keyset_id = output_keyset.to_string();
+    let output_keyset_info_json = client_bridge
+        .fetch_keyset_info("https://test-mint", &output_keyset_id)
+        .expect("fetch active output keyset info");
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset("https://test-mint", output_keyset, output_keyset_info_json);
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let mut input_proofs = first_keyset_proofs;
+    input_proofs.extend(second_keyset_proofs);
+    let mut input_keysets: Vec<String> = input_proofs
+        .iter()
+        .map(|proof| proof.keyset_id.to_string())
+        .collect();
+    input_keysets.sort();
+    input_keysets.dedup();
+    assert_eq!(input_keysets.len(), 2);
+
+    let proofs_json = serde_json::to_string(&input_proofs).unwrap();
+    let open_result = client_bridge
+        .open_channel_from_proofs_auto(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &output_keyset_id,
+            64,
+        )
+        .expect("open_channel_from_proofs_auto should accept mixed input keysets");
+
+    let payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
+        .expect("create payment");
+    let result = server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server should accept channel funded with active output keyset");
+
+    assert_eq!(result.balance, 10);
+    assert_eq!(result.capacity, open_result.capacity);
 }
 
 /// Test that fetch_keyset_info rejects keys that don't match the claimed keyset ID.

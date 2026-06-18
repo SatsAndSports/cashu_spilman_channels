@@ -1485,7 +1485,7 @@ impl ClientBridge {
                 keyset_info_json,
                 max_amount,
             )
-            .map_err(PyRuntimeError::new_err)?;
+            .map_err(|e| PyRuntimeError::new_err(e.message))?;
 
         Ok(ClientOpenChannelResult {
             channel_id: result.channel_id,

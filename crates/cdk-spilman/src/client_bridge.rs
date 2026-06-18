@@ -28,7 +28,8 @@ use serde::{Deserialize, Serialize};
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{
-    complete_funding_restore, complete_funding_swap, compute_channel_from_token,
+    complete_funding_restore, complete_funding_swap, compute_channel_from_proofs,
+    compute_channel_from_token, compute_channel_from_token_with_input_keysets,
     create_funding_restore_request, create_funding_swap,
 };
 use super::bridge::Payment;
@@ -293,6 +294,85 @@ pub struct OpenChannelResult {
     pub sender_pubkey_hex: String,
 }
 
+/// Stage where channel opening failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenChannelFailureStage {
+    /// Failure happened before any opening record was persisted.
+    BeforeOpeningSaved,
+    /// Opening record was persisted, but failure happened before swap submit.
+    OpeningSavedBeforeSwapSubmit,
+    /// Swap may have been submitted to the mint.
+    SwapSubmitted,
+    /// Funding proofs were received/unblinded, but later verification failed.
+    FundingProofsReceived,
+    /// Restore verification failed after swap submission.
+    RestoreVerification,
+    /// Funding proofs could not be persisted as an open channel.
+    MarkOpen,
+}
+
+impl OpenChannelFailureStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeOpeningSaved => "before_opening_saved",
+            Self::OpeningSavedBeforeSwapSubmit => "opening_saved_before_swap_submit",
+            Self::SwapSubmitted => "swap_submitted",
+            Self::FundingProofsReceived => "funding_proofs_received",
+            Self::RestoreVerification => "restore_verification",
+            Self::MarkOpen => "mark_open",
+        }
+    }
+}
+
+/// Structured channel-open error for safe input proof reservation handling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenChannelError {
+    /// Stage where the failure occurred.
+    pub stage: OpenChannelFailureStage,
+    /// Channel ID when one had already been computed.
+    pub channel_id: Option<String>,
+    /// Whether the input proofs may already have been consumed by the mint.
+    pub input_may_be_spent: bool,
+    /// Human-readable failure details.
+    pub message: String,
+}
+
+#[cfg(feature = "wallet")]
+impl OpenChannelError {
+    fn new(
+        stage: OpenChannelFailureStage,
+        channel_id: Option<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        let input_may_be_spent = matches!(
+            stage,
+            OpenChannelFailureStage::SwapSubmitted
+                | OpenChannelFailureStage::FundingProofsReceived
+                | OpenChannelFailureStage::RestoreVerification
+                | OpenChannelFailureStage::MarkOpen
+        );
+        Self {
+            stage,
+            channel_id,
+            input_may_be_spent,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for OpenChannelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "channel open failed at {}: {}",
+            self.stage.as_str(),
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for OpenChannelError {}
+
 /// Information about a stored channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientChannelInfo {
@@ -416,6 +496,50 @@ fn build_keyset_info_from_responses(
     Ok(json_string)
 }
 
+#[cfg(feature = "wallet")]
+fn token_input_keysets_from_response(keysets_json: &str, unit: &str) -> Result<String, String> {
+    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
+        .map_err(|e| format!("Failed to parse /v1/keysets response: {e}"))?;
+    let keysets = keysets_resp
+        .get("keysets")
+        .and_then(|k| k.as_array())
+        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
+
+    let mut out = Vec::new();
+    for keyset in keysets {
+        if keyset.get("unit").and_then(|v| v.as_str()) != Some(unit) {
+            continue;
+        }
+        let id = keyset
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'id' in keyset entry")?;
+        let active = keyset
+            .get("active")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let input_fee_ppk = keyset
+            .get("input_fee_ppk")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let mut value = serde_json::json!({
+            "id": id,
+            "unit": unit,
+            "active": active,
+            "input_fee_ppk": input_fee_ppk,
+        });
+        if let Some(final_expiry) = keyset.get("final_expiry") {
+            value["final_expiry"] = final_expiry.clone();
+        }
+        out.push(value);
+    }
+
+    if out.is_empty() {
+        return Err(format!("no keysets found for unit '{unit}'"));
+    }
+    serde_json::to_string(&out).map_err(|e| format!("Failed to serialize input keysets: {e}"))
+}
+
 impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N> {
     /// Create a new client bridge.
     ///
@@ -435,6 +559,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let keysets_json = self.networking.call_mint_keysets(mint_url)?;
         let keys_json = self.networking.call_mint_keys(mint_url, keyset_id)?;
         build_keyset_info_from_responses(&keysets_json, &keys_json, keyset_id)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn fetch_token_input_keysets(&self, mint_url: &str, unit: &str) -> Result<String, String> {
+        let keysets_json = self.networking.call_mint_keysets(mint_url)?;
+        token_input_keysets_from_response(&keysets_json, unit)
     }
 
     /// Open a new channel from a Cashu token, fetching keyset info automatically.
@@ -463,15 +593,71 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         keyset_id: &str,
         max_amount: u64,
-    ) -> Result<OpenChannelResult, String> {
-        let keyset_info = self.fetch_keyset_info(mint_url, keyset_id)?;
-        self.open_channel_from_token(
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let keyset_info = self.fetch_keyset_info(mint_url, keyset_id).map_err(|e| {
+            OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+        })?;
+        let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse token: {e}"),
+            )
+        })?;
+        let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
+        let input_keysets = self
+            .fetch_token_input_keysets(mint_url, &unit.to_string())
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        self.open_channel_from_token_with_input_keysets(
             token_string,
             receiver_pubkey_hex,
             sender_pubkey_hex,
             expiry_timestamp,
             &keyset_info,
+            &input_keysets,
             max_amount,
+        )
+    }
+
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    fn open_channel_from_token_with_input_keysets(
+        &self,
+        token_string: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        keyset_info_json: &str,
+        input_keysets_json: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let channel_secret_hex = self
+            .host
+            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+
+        let compute_result = compute_channel_from_token_with_input_keysets(
+            token_string,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            &channel_secret_hex,
+            expiry_timestamp,
+            keyset_info_json,
+            input_keysets_json,
+            max_amount,
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
+
+        self.open_channel_from_compute_result(
+            &compute_result,
+            &channel_secret_hex,
+            keyset_info_json,
+            token_string,
+            sender_pubkey_hex,
         )
     }
 
@@ -503,11 +689,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         keyset_info_json: &str,
         max_amount: u64,
-    ) -> Result<OpenChannelResult, String> {
+    ) -> Result<OpenChannelResult, OpenChannelError> {
         // Step 1: Compute channel secret via host (ECDH delegation)
         let channel_secret_hex = self
             .host
-            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)?;
+            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
 
         // Step 2: Parse token and compute channel parameters
         let compute_result = compute_channel_from_token(
@@ -518,113 +707,312 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             keyset_info_json,
             max_amount,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
-        let compute_json: serde_json::Value = serde_json::from_str(&compute_result)
-            .map_err(|e| format!("Failed to parse compute result: {}", e))?;
+        self.open_channel_from_compute_result(
+            &compute_result,
+            &channel_secret_hex,
+            keyset_info_json,
+            token_string,
+            sender_pubkey_hex,
+        )
+    }
 
-        let capacity = compute_json["capacity"]
-            .as_u64()
-            .ok_or("Missing 'capacity' in compute result")?;
-        let funding_token_amount = compute_json["funding_token_amount"]
-            .as_u64()
-            .ok_or("Missing 'funding_token_amount' in compute result")?;
+    /// Open a new channel from input proofs and an explicit output keyset.
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_channel_from_proofs_auto(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        output_keyset_id: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let keyset_info = self
+            .fetch_keyset_info(mint_url, output_keyset_id)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        self.open_channel_from_proofs(
+            mint_url,
+            unit,
+            input_proofs_json,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            &keyset_info,
+            max_amount,
+        )
+    }
+
+    /// Open a new channel from input proofs and provided output keyset info.
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_channel_from_proofs(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        output_keyset_info_json: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let channel_secret_hex = self
+            .host
+            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        let compute_result = compute_channel_from_proofs(
+            mint_url,
+            unit,
+            input_proofs_json,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            &channel_secret_hex,
+            expiry_timestamp,
+            output_keyset_info_json,
+            max_amount,
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
+
+        self.open_channel_from_compute_result(
+            &compute_result,
+            &channel_secret_hex,
+            output_keyset_info_json,
+            input_proofs_json,
+            sender_pubkey_hex,
+        )
+    }
+
+    #[cfg(feature = "wallet")]
+    fn open_channel_from_compute_result(
+        &self,
+        compute_result: &str,
+        channel_secret_hex: &str,
+        keyset_info_json: &str,
+        input_token: &str,
+        sender_pubkey_hex: &str,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let compute_json: serde_json::Value =
+            serde_json::from_str(compute_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("Failed to parse compute result: {e}"),
+                )
+            })?;
+
+        let capacity = compute_json["capacity"].as_u64().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'capacity' in compute result",
+            )
+        })?;
+        let funding_token_amount =
+            compute_json["funding_token_amount"]
+                .as_u64()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::BeforeOpeningSaved,
+                        None,
+                        "Missing 'funding_token_amount' in compute result",
+                    )
+                })?;
         let mint_url = compute_json["mint_url"]
             .as_str()
-            .ok_or("Missing 'mint_url' in compute result")?
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'mint_url' in compute result",
+                )
+            })?
             .to_string();
-        let params_json = compute_json["params_json"]
-            .as_str()
-            .ok_or("Missing 'params_json' in compute result")?;
-        let proofs_json = compute_json["proofs_json"]
-            .as_str()
-            .ok_or("Missing 'proofs_json' in compute result")?;
+        let params_json = compute_json["params_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'params_json' in compute result",
+            )
+        })?;
+        let proofs_json = compute_json["proofs_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'proofs_json' in compute result",
+            )
+        })?;
 
-        // Step 3: Create funding swap request
         let swap_result = create_funding_swap(
             params_json,
-            &channel_secret_hex,
+            channel_secret_hex,
             keyset_info_json,
             proofs_json,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
+        let swap_json: serde_json::Value = serde_json::from_str(&swap_result).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse swap result: {e}"),
+            )
+        })?;
+        let swap_request_json = swap_json["swap_request_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'swap_request_json' in swap result",
+            )
+        })?;
+        let funding_secrets_json = swap_json["funding_secrets_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'funding_secrets_json' in swap result",
+            )
+        })?;
 
-        let swap_json: serde_json::Value = serde_json::from_str(&swap_result)
-            .map_err(|e| format!("Failed to parse swap result: {}", e))?;
-
-        let swap_request_json = swap_json["swap_request_json"]
-            .as_str()
-            .ok_or("Missing 'swap_request_json' in swap result")?;
-        let funding_secrets_json = swap_json["funding_secrets_json"]
-            .as_str()
-            .ok_or("Missing 'funding_secrets_json' in swap result")?;
-
-        // Compute channel ID
         let channel_id = super::bindings::channel_parameters_get_channel_id(
             params_json,
-            &channel_secret_hex,
+            channel_secret_hex,
             keyset_info_json,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
-        // Step 4: Save channel in OpeningFromSwap state (before the swap)
         let opening = ClientChannelOpeningFromSwap {
             params_json: params_json.to_string(),
-            channel_secret_hex: channel_secret_hex.clone(),
+            channel_secret_hex: channel_secret_hex.to_string(),
             keyset_info_json: keyset_info_json.to_string(),
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
-            input_token: token_string.to_string(),
+            input_token: input_token.to_string(),
             created_at: self.host.now_seconds(),
         };
 
         self.host
-            .save_opening_from_swap_channel(&channel_id, opening)?;
+            .save_opening_from_swap_channel(&channel_id, opening)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
 
-        // Step 5: Submit swap to mint
         let swap_response_json = self
             .networking
             .call_mint_swap(&mint_url, swap_request_json)
-            .map_err(normalize_mint_error_string)?;
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::SwapSubmitted,
+                    Some(channel_id.clone()),
+                    normalize_mint_error_string(e),
+                )
+            })?;
 
-        // Step 6: Unblind signatures and verify DLEQ
         let complete_result =
-            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)?;
+            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::SwapSubmitted,
+                        Some(channel_id.clone()),
+                        e,
+                    )
+                })?;
+        let complete_json: serde_json::Value =
+            serde_json::from_str(&complete_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::FundingProofsReceived,
+                    Some(channel_id.clone()),
+                    format!("Failed to parse complete result: {e}"),
+                )
+            })?;
+        let funding_proofs_json =
+            complete_json["funding_proofs_json"]
+                .as_str()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::FundingProofsReceived,
+                        Some(channel_id.clone()),
+                        "Missing 'funding_proofs_json' in complete result",
+                    )
+                })?;
 
-        let complete_json: serde_json::Value = serde_json::from_str(&complete_result)
-            .map_err(|e| format!("Failed to parse complete result: {}", e))?;
-
-        let funding_proofs_json = complete_json["funding_proofs_json"]
-            .as_str()
-            .ok_or("Missing 'funding_proofs_json' in complete result")?;
-
-        // Step 6b: Verify restore path produces identical proofs
         let restore_request =
-            create_funding_restore_request(params_json, &channel_secret_hex, keyset_info_json)?;
+            create_funding_restore_request(params_json, channel_secret_hex, keyset_info_json)
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::FundingProofsReceived,
+                        Some(channel_id.clone()),
+                        e,
+                    )
+                })?;
         let restore_response = self
             .networking
-            .call_mint_restore(&mint_url, &restore_request)?;
+            .call_mint_restore(&mint_url, &restore_request)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(channel_id.clone()),
+                    e,
+                )
+            })?;
         let restore_result = complete_funding_restore(
             &restore_response,
             params_json,
-            &channel_secret_hex,
+            channel_secret_hex,
             keyset_info_json,
-        )?;
-        let restore_json: serde_json::Value = serde_json::from_str(&restore_result)
-            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
-        let restored_proofs_json = restore_json["funding_proofs_json"]
-            .as_str()
-            .ok_or("Missing 'funding_proofs_json' in restore result")?;
+        )
+        .map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.clone()),
+                e,
+            )
+        })?;
+        let restore_json: serde_json::Value =
+            serde_json::from_str(&restore_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(channel_id.clone()),
+                    format!("Failed to parse restore result: {e}"),
+                )
+            })?;
+        let restored_proofs_json =
+            restore_json["funding_proofs_json"]
+                .as_str()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::RestoreVerification,
+                        Some(channel_id.clone()),
+                        "Missing 'funding_proofs_json' in restore result",
+                    )
+                })?;
 
         if funding_proofs_json != restored_proofs_json {
-            return Err(
-                "Restore verification failed: swap proofs differ from restored proofs".to_string(),
-            );
+            return Err(OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.clone()),
+                "Restore verification failed: swap proofs differ from restored proofs",
+            ));
         }
 
-        // Step 7: Transition to Open
         self.host
-            .mark_channel_open(&channel_id, funding_proofs_json)?;
+            .mark_channel_open(&channel_id, funding_proofs_json)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::MarkOpen,
+                    Some(channel_id.clone()),
+                    e,
+                )
+            })?;
 
         Ok(OpenChannelResult {
             channel_id,
@@ -653,11 +1041,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         keyset_info_json: &str,
         max_amount: u64,
         async_networking: &AN,
-    ) -> Result<OpenChannelResult, String> {
+    ) -> Result<OpenChannelResult, OpenChannelError> {
         // Step 1: Compute channel secret via host (ECDH delegation)
         let channel_secret_hex = self
             .host
-            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)?;
+            .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
 
         // Step 2: Parse token and compute channel parameters
         let compute_result = compute_channel_from_token(
@@ -668,27 +1059,59 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             keyset_info_json,
             max_amount,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
-        let compute_json: serde_json::Value = serde_json::from_str(&compute_result)
-            .map_err(|e| format!("Failed to parse compute result: {}", e))?;
+        let compute_json: serde_json::Value =
+            serde_json::from_str(&compute_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("Failed to parse compute result: {e}"),
+                )
+            })?;
 
-        let capacity = compute_json["capacity"]
-            .as_u64()
-            .ok_or("Missing 'capacity' in compute result")?;
-        let funding_token_amount = compute_json["funding_token_amount"]
-            .as_u64()
-            .ok_or("Missing 'funding_token_amount' in compute result")?;
+        let capacity = compute_json["capacity"].as_u64().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'capacity' in compute result",
+            )
+        })?;
+        let funding_token_amount =
+            compute_json["funding_token_amount"]
+                .as_u64()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::BeforeOpeningSaved,
+                        None,
+                        "Missing 'funding_token_amount' in compute result",
+                    )
+                })?;
         let mint_url = compute_json["mint_url"]
             .as_str()
-            .ok_or("Missing 'mint_url' in compute result")?
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'mint_url' in compute result",
+                )
+            })?
             .to_string();
-        let params_json = compute_json["params_json"]
-            .as_str()
-            .ok_or("Missing 'params_json' in compute result")?;
-        let proofs_json = compute_json["proofs_json"]
-            .as_str()
-            .ok_or("Missing 'proofs_json' in compute result")?;
+        let params_json = compute_json["params_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'params_json' in compute result",
+            )
+        })?;
+        let proofs_json = compute_json["proofs_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'proofs_json' in compute result",
+            )
+        })?;
 
         // Step 3: Create funding swap request
         let swap_result = create_funding_swap(
@@ -696,24 +1119,39 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             &channel_secret_hex,
             keyset_info_json,
             proofs_json,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
-        let swap_json: serde_json::Value = serde_json::from_str(&swap_result)
-            .map_err(|e| format!("Failed to parse swap result: {}", e))?;
+        let swap_json: serde_json::Value = serde_json::from_str(&swap_result).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse swap result: {e}"),
+            )
+        })?;
 
-        let swap_request_json = swap_json["swap_request_json"]
-            .as_str()
-            .ok_or("Missing 'swap_request_json' in swap result")?;
-        let funding_secrets_json = swap_json["funding_secrets_json"]
-            .as_str()
-            .ok_or("Missing 'funding_secrets_json' in swap result")?;
+        let swap_request_json = swap_json["swap_request_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'swap_request_json' in swap result",
+            )
+        })?;
+        let funding_secrets_json = swap_json["funding_secrets_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'funding_secrets_json' in swap result",
+            )
+        })?;
 
         // Compute channel ID
         let channel_id = super::bindings::channel_parameters_get_channel_id(
             params_json,
             &channel_secret_hex,
             keyset_info_json,
-        )?;
+        )
+        .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
         // Step 4: Save channel in OpeningFromSwap state (before the swap)
         let opening = ClientChannelOpeningFromSwap {
@@ -729,52 +1167,124 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         };
 
         self.host
-            .save_opening_from_swap_channel(&channel_id, opening)?;
+            .save_opening_from_swap_channel(&channel_id, opening)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
 
         // Step 5: Submit swap to mint (async)
         let swap_response_json = async_networking
             .call_mint_swap(&mint_url, swap_request_json)
             .await
-            .map_err(normalize_mint_error_string)?;
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::SwapSubmitted,
+                    Some(channel_id.clone()),
+                    normalize_mint_error_string(e),
+                )
+            })?;
 
         // Step 6: Unblind signatures and verify DLEQ
         let complete_result =
-            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)?;
+            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::SwapSubmitted,
+                        Some(channel_id.clone()),
+                        e,
+                    )
+                })?;
 
-        let complete_json: serde_json::Value = serde_json::from_str(&complete_result)
-            .map_err(|e| format!("Failed to parse complete result: {}", e))?;
+        let complete_json: serde_json::Value =
+            serde_json::from_str(&complete_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::FundingProofsReceived,
+                    Some(channel_id.clone()),
+                    format!("Failed to parse complete result: {e}"),
+                )
+            })?;
 
-        let funding_proofs_json = complete_json["funding_proofs_json"]
-            .as_str()
-            .ok_or("Missing 'funding_proofs_json' in complete result")?;
+        let funding_proofs_json =
+            complete_json["funding_proofs_json"]
+                .as_str()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::FundingProofsReceived,
+                        Some(channel_id.clone()),
+                        "Missing 'funding_proofs_json' in complete result",
+                    )
+                })?;
 
         // Step 6b: Verify restore path produces identical proofs
         let restore_request =
-            create_funding_restore_request(params_json, &channel_secret_hex, keyset_info_json)?;
+            create_funding_restore_request(params_json, &channel_secret_hex, keyset_info_json)
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::FundingProofsReceived,
+                        Some(channel_id.clone()),
+                        e,
+                    )
+                })?;
         let restore_response = async_networking
             .call_mint_restore(&mint_url, &restore_request)
-            .await?;
+            .await
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(channel_id.clone()),
+                    e,
+                )
+            })?;
         let restore_result = complete_funding_restore(
             &restore_response,
             params_json,
             &channel_secret_hex,
             keyset_info_json,
-        )?;
-        let restore_json: serde_json::Value = serde_json::from_str(&restore_result)
-            .map_err(|e| format!("Failed to parse restore result: {}", e))?;
-        let restored_proofs_json = restore_json["funding_proofs_json"]
-            .as_str()
-            .ok_or("Missing 'funding_proofs_json' in restore result")?;
+        )
+        .map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.clone()),
+                e,
+            )
+        })?;
+        let restore_json: serde_json::Value =
+            serde_json::from_str(&restore_result).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(channel_id.clone()),
+                    format!("Failed to parse restore result: {e}"),
+                )
+            })?;
+        let restored_proofs_json =
+            restore_json["funding_proofs_json"]
+                .as_str()
+                .ok_or_else(|| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::RestoreVerification,
+                        Some(channel_id.clone()),
+                        "Missing 'funding_proofs_json' in restore result",
+                    )
+                })?;
 
         if funding_proofs_json != restored_proofs_json {
-            return Err(
-                "Restore verification failed: swap proofs differ from restored proofs".to_string(),
-            );
+            return Err(OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.clone()),
+                "Restore verification failed: swap proofs differ from restored proofs",
+            ));
         }
 
         // Step 7: Transition to Open
         self.host
-            .mark_channel_open(&channel_id, funding_proofs_json)?;
+            .mark_channel_open(&channel_id, funding_proofs_json)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::MarkOpen,
+                    Some(channel_id.clone()),
+                    e,
+                )
+            })?;
 
         Ok(OpenChannelResult {
             channel_id,
@@ -825,6 +1335,47 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| "Missing 'funding_proofs_json' in restore result".to_string())
+    }
+
+    /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
+    #[cfg(feature = "wallet")]
+    pub fn recover_open_channel_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let opening = self
+            .host
+            .get_channel_opening_from_swap(channel_id)
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    Some(channel_id.to_string()),
+                    format!("Channel not found in OpeningFromSwap state: {channel_id}"),
+                )
+            })?;
+        let funding_proofs_json = self.restore_funding_proofs(channel_id).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.to_string()),
+                e,
+            )
+        })?;
+        self.host
+            .mark_channel_open(channel_id, &funding_proofs_json)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::MarkOpen,
+                    Some(channel_id.to_string()),
+                    e,
+                )
+            })?;
+        Ok(OpenChannelResult {
+            channel_id: channel_id.to_string(),
+            capacity: opening.capacity,
+            funding_token_amount: opening.funding_token_amount,
+            mint_url: opening.mint_url,
+            sender_pubkey_hex: opening.sender_pubkey_hex,
+        })
     }
 
     /// Restore funding proofs for a channel using NUT-09 (async version).

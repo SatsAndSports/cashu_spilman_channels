@@ -848,7 +848,7 @@ impl WasmSpilmanClientBridge {
             )
             .await
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
-            .map_err(|e| JsValue::from_str(&e))
+            .map_err(|e| JsValue::from_str(&e.message))
     }
 
     /// Create a payment for a channel (without funding data).

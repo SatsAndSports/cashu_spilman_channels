@@ -807,7 +807,7 @@ pub unsafe extern "C" fn spilman_compute_funding_token_amount(
 
     match cdk_spilman::compute_funding_token_amount(capacity, k, maximum_amount) {
         Ok(amount) => CResult::success(amount.to_string()),
-        Err(e) => CResult::error(e),
+        Err(e) => CResult::error(e.to_string()),
     }
 }
 
@@ -1503,7 +1503,7 @@ pub unsafe extern "C" fn spilman_client_bridge_open_channel_from_token(
             let json = serde_json::to_string(&result).unwrap();
             CResult::success(json)
         }
-        Err(e) => CResult::error(e),
+        Err(e) => CResult::error(e.message),
     }
 }
 

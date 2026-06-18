@@ -1854,7 +1854,8 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
         )
         .expect_err("open_channel_from_token should return the mint error");
 
-    let err_json: serde_json::Value = serde_json::from_str(&err)?;
+    assert!(err.input_may_be_spent);
+    let err_json: serde_json::Value = serde_json::from_str(&err.message)?;
     assert_eq!(err_json["code"], serde_json::json!(12001));
     assert_eq!(err_json["detail"], serde_json::json!("Unknown Keyset"));
 
