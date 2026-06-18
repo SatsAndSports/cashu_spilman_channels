@@ -22,7 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use bip39::Mnemonic;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, MintVersion, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, Id, MintVersion, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk_common::common::QuoteTTL;
 use cdk_fake_wallet::FakeWallet;
@@ -229,6 +229,19 @@ pub async fn serve_mint_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let mint = Arc::new(build_test_mint(&config).await?);
+    serve_existing_mint_with_shutdown(mint, config, shutdown_signal).await
+}
+
+/// Serve an already-built test mint until a shutdown signal is received.
+///
+/// This is useful for tests that need to mutate the mint, such as rotating
+/// keysets, before exposing it through the HTTP API.
+#[cfg(feature = "http")]
+pub async fn serve_existing_mint_with_shutdown(
+    mint: Arc<Mint>,
+    config: TestMintConfig,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let router = build_router(Arc::clone(&mint)).await?;
 
     let socket_addr = std::net::SocketAddr::new(
@@ -251,6 +264,15 @@ pub async fn serve_mint_with_shutdown(
 
     mint.stop().await?;
     Ok(())
+}
+
+/// Rotate the SAT keyset on a test mint and return the new active keyset id.
+pub async fn rotate_sat_keyset(mint: &Mint, input_fee_ppk: u64) -> Result<Id> {
+    let amounts: Vec<u64> = (0..32).map(|i| 2_u64.pow(i)).collect();
+    let keyset = mint
+        .rotate_keyset(CurrencyUnit::Sat, amounts, input_fee_ppk, true, None)
+        .await?;
+    Ok(keyset.id)
 }
 
 /// Serve the standalone test mint until interrupted.

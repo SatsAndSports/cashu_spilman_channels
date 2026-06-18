@@ -701,6 +701,7 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
             64,
         )
         .expect("open_channel_from_proofs_auto should accept mixed input keysets");
+    assert_eq!(open_result.keyset_id, output_keyset.to_string());
     assert_proofs_state(&mint, &input_proofs, State::Spent).await;
 
     let payment = client_bridge
