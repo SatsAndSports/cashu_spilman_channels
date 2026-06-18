@@ -12,9 +12,10 @@ use cdk_spilman::{
     compute_funding_token_amount as rust_compute_funding_token_amount, BalanceUpdateMessage,
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
     ChannelState, ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
-    ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof, SpilmanAsyncNetworking,
-    SpilmanBridge, SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
-    SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
+    ClientOpeningFailure, ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof,
+    SpilmanAsyncNetworking, SpilmanBridge, SpilmanClientAsyncNetworking,
+    SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost as RustSpilmanClientHost,
+    SpilmanClientNetworking, SpilmanHost,
 };
 
 #[wasm_bindgen(start)]
@@ -130,6 +131,12 @@ extern "C" {
         this: &JsSpilmanClientHost,
         channel_id: &str,
         funding_proofs_json: &str,
+    ) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, catch, js_name = markChannelOpeningFailed)]
+    fn mark_channel_opening_failed(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+        failure_json: &str,
     ) -> Result<(), JsValue>;
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
@@ -470,6 +477,18 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
         self.js_host
             .mark_channel_open(channel_id, funding_proofs_json)
+            .map_err(js_error_to_string)
+    }
+
+    fn mark_channel_opening_failed(
+        &self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        let failure_json =
+            serde_json::to_string(&failure).expect("ClientOpeningFailure serialization failed");
+        self.js_host
+            .mark_channel_opening_failed(channel_id, &failure_json)
             .map_err(js_error_to_string)
     }
 

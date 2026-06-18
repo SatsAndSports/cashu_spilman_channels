@@ -9,9 +9,9 @@
 use cashu::nuts::SecretKey;
 use cdk_spilman::{
     self, BridgeError, BridgeErrorResponse, ChannelFunding, ChannelPolicy, ChannelState,
-    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
-    ClosingData, PaymentProof, SpilmanBridge, SpilmanClientBridge, SpilmanClientHost,
-    SpilmanClientNetworking, SpilmanHost, SpilmanNetworking,
+    ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientOpeningFailure,
+    ClientPaymentState, ClosingData, PaymentProof, SpilmanBridge, SpilmanClientBridge,
+    SpilmanClientHost, SpilmanClientNetworking, SpilmanHost, SpilmanNetworking,
 };
 pub use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -981,6 +981,12 @@ pub struct SpilmanClientHostCallbacks {
         funding_proofs_json: *const c_char,
         response_out: *mut *mut c_char,
     ) -> c_int,
+    pub mark_channel_opening_failed: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        failure_json: *const c_char, // JSON-serialized ClientOpeningFailure
+        response_out: *mut *mut c_char,
+    ) -> c_int,
     pub get_channel_funding:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
     pub get_channel_opening_from_swap:
@@ -1113,6 +1119,25 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
             &mut response_ptr,
         );
         callback_result(ok, response_ptr, "mark_channel_open failed")
+    }
+
+    fn mark_channel_opening_failed(
+        &self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        let id_c = CString::new(channel_id).unwrap();
+        let failure_json =
+            serde_json::to_string(&failure).expect("ClientOpeningFailure serialization failed");
+        let failure_c = CString::new(failure_json).unwrap();
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.mark_channel_opening_failed)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            failure_c.as_ptr(),
+            &mut response_ptr,
+        );
+        callback_result(ok, response_ptr, "mark_channel_opening_failed failed")
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -1421,6 +1446,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         user_data: callbacks.user_data,
         save_opening_from_swap_channel: callbacks.save_opening_from_swap_channel,
         mark_channel_open: callbacks.mark_channel_open,
+        mark_channel_opening_failed: callbacks.mark_channel_opening_failed,
         get_channel_funding: callbacks.get_channel_funding,
         get_channel_opening_from_swap: callbacks.get_channel_opening_from_swap,
         get_payment_state: callbacks.get_payment_state,
@@ -1442,6 +1468,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
         user_data: callbacks.user_data,
         save_opening_from_swap_channel: callbacks.save_opening_from_swap_channel,
         mark_channel_open: callbacks.mark_channel_open,
+        mark_channel_opening_failed: callbacks.mark_channel_opening_failed,
         get_channel_funding: callbacks.get_channel_funding,
         get_channel_opening_from_swap: callbacks.get_channel_opening_from_swap,
         get_payment_state: callbacks.get_payment_state,

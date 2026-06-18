@@ -21,7 +21,8 @@ type InMemoryClientHost struct {
 	opening      map[string]string // channelID -> openingJSON (ClientChannelOpeningFromSwap)
 	funding      map[string]string // channelID -> fundingJSON (ClientChannelFunding)
 	paymentState map[string]string // channelID -> paymentStateJSON
-	channelState map[string]string // channelID -> "open" or "closed"
+	failures     map[string]string // channelID -> failureJSON (ClientOpeningFailure)
+	channelState map[string]string // channelID -> lifecycle state
 }
 
 // NewInMemoryClientHost creates a new in-memory client host.
@@ -33,6 +34,7 @@ func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 		opening:      make(map[string]string),
 		funding:      make(map[string]string),
 		paymentState: make(map[string]string),
+		failures:     make(map[string]string),
 		channelState: make(map[string]string),
 	}
 }
@@ -45,6 +47,7 @@ func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON s
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.opening[channelID] = openingJSON
+	delete(h.failures, channelID)
 	h.channelState[channelID] = "opening_from_swap"
 	return nil
 }
@@ -73,7 +76,16 @@ func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string
 		}
 		delete(h.opening, channelID)
 	}
+	delete(h.failures, channelID)
 	h.channelState[channelID] = "open"
+	return nil
+}
+
+func (h *InMemoryClientHost) MarkChannelOpeningFailed(channelID, failureJSON string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.failures[channelID] = failureJSON
+	h.channelState[channelID] = "opening_failed"
 	return nil
 }
 
@@ -86,6 +98,9 @@ func (h *InMemoryClientHost) GetChannelFunding(channelID string) string {
 func (h *InMemoryClientHost) GetChannelOpeningFromSwap(channelID string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.channelState[channelID] != "opening_from_swap" {
+		return ""
+	}
 	return h.opening[channelID]
 }
 
@@ -140,6 +155,9 @@ func (h *InMemoryClientHost) ListChannelIDs() []string {
 	for id := range h.opening {
 		seen[id] = true
 	}
+	for id := range h.failures {
+		seen[id] = true
+	}
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
 		ids = append(ids, id)
@@ -153,6 +171,7 @@ func (h *InMemoryClientHost) DeleteChannel(channelID string) error {
 	delete(h.opening, channelID)
 	delete(h.funding, channelID)
 	delete(h.paymentState, channelID)
+	delete(h.failures, channelID)
 	delete(h.channelState, channelID)
 	return nil
 }

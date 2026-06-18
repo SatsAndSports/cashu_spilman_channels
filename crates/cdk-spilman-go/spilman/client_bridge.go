@@ -177,6 +177,13 @@ func go_client_mark_channel_open(userData unsafe.Pointer, channelID *C.char, fun
 	return callbackError(responseOut, host.MarkChannelOpen(C.GoString(channelID), C.GoString(fundingProofsJSON)))
 }
 
+//export go_client_mark_channel_opening_failed
+func go_client_mark_channel_opening_failed(userData unsafe.Pointer, channelID *C.char, failureJSON *C.char, responseOut **C.char) C.int {
+	h := cgo.Handle(userData)
+	host := h.Value().(SpilmanClientHost)
+	return callbackError(responseOut, host.MarkChannelOpeningFailed(C.GoString(channelID), C.GoString(failureJSON)))
+}
+
 //export go_client_get_channel_funding
 func go_client_get_channel_funding(userData unsafe.Pointer, channelID *C.char) *C.char {
 	h := cgo.Handle(userData)

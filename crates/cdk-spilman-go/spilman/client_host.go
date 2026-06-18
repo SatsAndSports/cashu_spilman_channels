@@ -22,6 +22,11 @@ type SpilmanClientHost interface {
 	// (copying fields + adding proofs), stores funding, and removes the opening record.
 	MarkChannelOpen(channelID, fundingProofsJSON string) error
 
+	// MarkChannelOpeningFailed transitions a channel from OpeningFromSwap to OpeningFailed.
+	// Called when the mint explicitly rejects the funding swap. failureJSON is a
+	// JSON-serialized ClientOpeningFailure struct.
+	MarkChannelOpeningFailed(channelID, failureJSON string) error
+
 	// GetChannelFunding retrieves channel funding data.
 	// Returns empty string if the channel doesn't exist.
 	GetChannelFunding(channelID string) string

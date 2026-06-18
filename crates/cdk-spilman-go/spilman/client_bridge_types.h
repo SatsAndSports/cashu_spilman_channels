@@ -8,6 +8,7 @@ typedef struct {
     // Channel Opening (two-phase)
     int (*save_opening_from_swap_channel)(void*, const char*, const char*, char**);  // (channel_id, opening_json)
     int (*mark_channel_open)(void*, const char*, const char*, char**);               // (channel_id, funding_proofs_json)
+    int (*mark_channel_opening_failed)(void*, const char*, const char*, char**);     // (channel_id, failure_json)
     char* (*get_channel_funding)(void*, const char*);                         // Returns JSON or NULL
     char* (*get_channel_opening_from_swap)(void*, const char*);               // Returns JSON or NULL
     // Payment State (mutable)

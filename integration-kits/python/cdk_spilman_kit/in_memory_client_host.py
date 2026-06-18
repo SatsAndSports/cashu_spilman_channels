@@ -25,6 +25,7 @@ class InMemorySpilmanClientHost:
         self._opening: Dict[str, str] = {}  # channel_id -> opening_json
         self._funding: Dict[str, str] = {}  # channel_id -> funding_json
         self._payment_state: Dict[str, str] = {}  # channel_id -> payment_state_json
+        self._failures: Dict[str, str] = {}  # channel_id -> failure_json
         self._channel_state: Dict[str, str] = {}  # channel_id -> state string
 
     # ========================================================================
@@ -67,6 +68,7 @@ class InMemorySpilmanClientHost:
         The channel enters 'opening_from_swap' state.
         """
         self._opening[channel_id] = opening_json
+        self._failures.pop(channel_id, None)
         self._channel_state[channel_id] = "opening_from_swap"
 
     def mark_channel_open(self, channel_id: str, funding_proofs_json: str) -> None:
@@ -89,7 +91,13 @@ class InMemorySpilmanClientHost:
             except (json.JSONDecodeError, TypeError):
                 pass
             del self._opening[channel_id]
+        self._failures.pop(channel_id, None)
         self._channel_state[channel_id] = "open"
+
+    def mark_channel_opening_failed(self, channel_id: str, failure_json: str) -> None:
+        """Transition channel from opening_from_swap to opening_failed."""
+        self._failures[channel_id] = failure_json
+        self._channel_state[channel_id] = "opening_failed"
 
     def get_channel_funding(self, channel_id: str) -> Optional[str]:
         """Get channel funding data, or None if not found."""
@@ -97,6 +105,8 @@ class InMemorySpilmanClientHost:
 
     def get_channel_opening_from_swap(self, channel_id: str) -> Optional[str]:
         """Get channel opening data, or None if not in opening_from_swap state."""
+        if self._channel_state.get(channel_id) != "opening_from_swap":
+            return None
         return self._opening.get(channel_id)
 
     # ========================================================================
@@ -125,13 +135,18 @@ class InMemorySpilmanClientHost:
 
     def list_channel_ids(self) -> List[str]:
         """List all channel IDs."""
-        return list(self._funding.keys() | self._opening.keys())
+        return list(
+            self._funding.keys()
+            | self._opening.keys()
+            | self._failures.keys()
+        )
 
     def delete_channel(self, channel_id: str) -> None:
         """Delete all data for a channel."""
         self._opening.pop(channel_id, None)
         self._funding.pop(channel_id, None)
         self._payment_state.pop(channel_id, None)
+        self._failures.pop(channel_id, None)
         self._channel_state.pop(channel_id, None)
 
     # ========================================================================

@@ -51,6 +51,30 @@ class TestInMemorySpilmanClientHost:
 
         assert host.get_channel_state(channel_id) == "open"
 
+    def test_mark_channel_opening_failed(self, host):
+        """Test that marking opening failed transitions to opening_failed state."""
+        channel_id = "channel-123"
+        opening_json = '{"capacity": 1000}'
+        failure_json = '{"stage": "mint_rejected", "message": "inactive keyset", "failed_at": 1234567890}'
+
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+        assert host.get_channel_opening_from_swap(channel_id) == opening_json
+
+        host.mark_channel_opening_failed(channel_id, failure_json)
+        assert host.get_channel_state(channel_id) == "opening_failed"
+        assert host.get_channel_opening_from_swap(channel_id) is None
+
+        # Re-saving should allow recovery of opening data.
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+        assert host.get_channel_opening_from_swap(channel_id) == opening_json
+        assert host.get_channel_state(channel_id) == "opening_from_swap"
+
+        # Marking open should clear the failure.
+        host.mark_channel_opening_failed(channel_id, failure_json)
+        host.mark_channel_open(channel_id, "[]")
+        assert host.get_channel_state(channel_id) == "open"
+        assert channel_id in host.list_channel_ids()
+
     # ========================================================================
     # Payment State
     # ========================================================================

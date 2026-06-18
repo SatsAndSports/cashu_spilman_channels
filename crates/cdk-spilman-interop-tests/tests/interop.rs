@@ -1019,8 +1019,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     use cdk::nuts::PublicKey;
     use cdk_spilman::{
         base64_decode, BridgeError, ClientChannelFunding, ClientChannelOpeningFromSwap,
-        ClientChannelState, ClientPaymentState, SpilmanClientBridge, SpilmanClientHost,
-        SpilmanClientNetworking,
+        ClientChannelState, ClientOpeningFailure, ClientPaymentState, SpilmanClientBridge,
+        SpilmanClientHost, SpilmanClientNetworking,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -1103,6 +1103,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         funding: Mutex<HashMap<String, ClientChannelFunding>>,
         payments: Mutex<HashMap<String, ClientPaymentState>>,
         states: Mutex<HashMap<String, ClientChannelState>>,
+        failures: Mutex<HashMap<String, ClientOpeningFailure>>,
         keys: Mutex<HashMap<String, String>>,
     }
 
@@ -1154,10 +1155,27 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                     .unwrap()
                     .insert(channel_id.to_string(), funding);
             }
+            self.failures.lock().unwrap().remove(channel_id);
             self.states
                 .lock()
                 .unwrap()
                 .insert(channel_id.to_string(), ClientChannelState::Open);
+            Ok(())
+        }
+
+        fn mark_channel_opening_failed(
+            &self,
+            channel_id: &str,
+            failure: ClientOpeningFailure,
+        ) -> Result<(), String> {
+            self.failures
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), failure);
+            self.states
+                .lock()
+                .unwrap()
+                .insert(channel_id.to_string(), ClientChannelState::OpeningFailed);
             Ok(())
         }
 
@@ -1209,12 +1227,18 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         }
 
         fn list_channel_ids(&self) -> Vec<String> {
-            self.funding.lock().unwrap().keys().cloned().collect()
+            let mut ids: std::collections::HashSet<String> =
+                self.funding.lock().unwrap().keys().cloned().collect();
+            ids.extend(self.opening.lock().unwrap().keys().cloned());
+            ids.extend(self.failures.lock().unwrap().keys().cloned());
+            ids.into_iter().collect()
         }
 
         fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
+            self.opening.lock().unwrap().remove(channel_id);
             self.funding.lock().unwrap().remove(channel_id);
             self.payments.lock().unwrap().remove(channel_id);
+            self.failures.lock().unwrap().remove(channel_id);
             self.states.lock().unwrap().remove(channel_id);
             Ok(())
         }
@@ -1461,6 +1485,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         funding: Mutex::new(HashMap::new()),
         payments: Mutex::new(HashMap::new()),
         states: Mutex::new(HashMap::new()),
+        failures: Mutex::new(HashMap::new()),
         keys: Mutex::new(HashMap::new()),
     };
     client_host.register_key(&alice_secret.to_secret_hex(), &sender_pubkey_hex);
@@ -1667,9 +1692,11 @@ async fn test_client_bridge() -> anyhow::Result<()> {
 async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<()> {
     use cdk::nuts::nut00::token::Token;
     use cdk_spilman::{
-        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState,
-        SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+        ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
+        ClientOpeningFailure, ClientPaymentState, OpenChannelFailureStage, SpilmanClientBridge,
+        SpilmanClientHost, SpilmanClientNetworking,
     };
+
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1721,6 +1748,14 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
 
         fn mark_channel_open(&self, _: &str, _: &str) -> Result<(), String> {
             Ok(())
+        }
+
+        fn mark_channel_opening_failed(
+            &self,
+            _: &str,
+            _: ClientOpeningFailure,
+        ) -> Result<(), String> {
+            Err("mark_channel_opening_failed failed".to_string())
         }
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
@@ -1854,10 +1889,12 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
         )
         .expect_err("open_channel_from_token should return the mint error");
 
+    // The host cannot persist the opening failure, so the bridge falls back to
+    // a conservative MarkOpen error that reports the input may have been spent.
     assert!(err.input_may_be_spent);
-    let err_json: serde_json::Value = serde_json::from_str(&err.message)?;
-    assert_eq!(err_json["code"], serde_json::json!(12001));
-    assert_eq!(err_json["detail"], serde_json::json!("Unknown Keyset"));
+    assert_eq!(err.stage, OpenChannelFailureStage::MarkOpen);
+    assert!(err.message.contains("12001"));
+    assert!(err.message.contains("Unknown Keyset"));
 
     Ok(())
 }

@@ -90,10 +90,7 @@ pub trait SpilmanClientHost {
         &self,
         channel_id: &str,
         failure: ClientOpeningFailure,
-    ) -> Result<(), String> {
-        let _ = (channel_id, failure);
-        Ok(())
-    }
+    ) -> Result<(), String>;
 
     /// Get funding data for an open channel.
     ///
@@ -2091,6 +2088,14 @@ mod tests {
 
         fn mark_channel_open(&self, _: &str, _: &str) -> Result<(), String> {
             Ok(())
+        }
+
+        fn mark_channel_opening_failed(
+            &self,
+            _: &str,
+            _: ClientOpeningFailure,
+        ) -> Result<(), String> {
+            Err("mark_channel_opening_failed failed".to_string())
         }
 
         fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {

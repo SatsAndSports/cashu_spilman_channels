@@ -42,6 +42,63 @@ func TestInMemoryClientHost_FundingStorage(t *testing.T) {
 	}
 }
 
+func TestInMemoryClientHost_OpeningFailed(t *testing.T) {
+	secret, _, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair failed: %v", err)
+	}
+	host := NewInMemoryClientHost(secret)
+
+	channelID := "test-channel-failed"
+	openingJSON := `{"params_json":"{}"}`
+	failureJSON := `{"stage":"mint_rejected","message":"inactive keyset","failed_at":1234567890}`
+
+	host.SaveOpeningFromSwapChannel(channelID, openingJSON)
+	if got := host.GetChannelOpeningFromSwap(channelID); got != openingJSON {
+		t.Errorf("GetChannelOpeningFromSwap() = %q, want %q", got, openingJSON)
+	}
+
+	host.MarkChannelOpeningFailed(channelID, failureJSON)
+	if got := host.GetChannelState(channelID); got != "opening_failed" {
+		t.Errorf("GetChannelState() after MarkChannelOpeningFailed = %q, want %q", got, "opening_failed")
+	}
+	if got := host.GetChannelOpeningFromSwap(channelID); got != "" {
+		t.Errorf("GetChannelOpeningFromSwap() after failure = %q, want empty", got)
+	}
+
+	// Re-saving the same channel should clear the failure and allow recovery of opening data.
+	host.SaveOpeningFromSwapChannel(channelID, openingJSON)
+	if got := host.GetChannelOpeningFromSwap(channelID); got != openingJSON {
+		t.Errorf("GetChannelOpeningFromSwap() after re-save = %q, want %q", got, openingJSON)
+	}
+	if got := host.GetChannelState(channelID); got != "opening_from_swap" {
+		t.Errorf("GetChannelState() after re-save = %q, want %q", got, "opening_from_swap")
+	}
+
+	// MarkChannelOpen should also clear the failure.
+	host.MarkChannelOpeningFailed(channelID, failureJSON)
+	host.MarkChannelOpen(channelID, "[]")
+	if got := host.GetChannelState(channelID); got != "open" {
+		t.Errorf("GetChannelState() after MarkChannelOpen = %q, want %q", got, "open")
+	}
+
+	ids := host.ListChannelIDs()
+	found := false
+	for _, id := range ids {
+		if id == channelID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListChannelIDs() = %v, want to contain %q", ids, channelID)
+	}
+
+	host.DeleteChannel(channelID)
+	if got := host.GetChannelState(channelID); got != "" {
+		t.Errorf("GetChannelState() after delete = %q, want empty", got)
+	}
+}
+
 func TestInMemoryClientHost_PaymentState(t *testing.T) {
 	secret, _, err := GenerateKeypair()
 	if err != nil {

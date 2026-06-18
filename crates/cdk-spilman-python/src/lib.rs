@@ -15,9 +15,10 @@ use std::str::FromStr;
 use cashu::nuts::{Id, PublicKey, SecretKey};
 use spilman_core::{
     self, BridgeError, BridgeErrorResponse, ChannelPolicy, ChannelState, ClientChannelFunding,
-    ClientChannelOpeningFromSwap, ClientChannelState, ClientPaymentState, ClosingData,
-    SpilmanBridge as RustSpilmanBridge, SpilmanClientBridge as RustSpilmanClientBridge,
-    SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
+    ClientChannelOpeningFromSwap, ClientChannelState, ClientOpeningFailure, ClientPaymentState,
+    ClosingData, SpilmanBridge as RustSpilmanBridge,
+    SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+    SpilmanHost,
 };
 
 // ============================================================================
@@ -1100,6 +1101,7 @@ pub struct ClientChannelInfo {
 /// Channel opening (two-phase):
 /// - save_opening_from_swap_channel(channel_id: str, opening_json: str)
 /// - mark_channel_open(channel_id: str, funding_proofs_json: str)
+/// - mark_channel_opening_failed(channel_id: str, failure_json: str)
 /// - get_channel_funding(channel_id: str) -> Optional[str]  # Returns funding JSON or None
 /// - get_channel_opening_from_swap(channel_id: str) -> Optional[str]  # Returns opening JSON or None
 ///
@@ -1167,6 +1169,25 @@ impl SpilmanClientHost for PySpilmanClientHost {
         Python::with_gil(|py| {
             self.py_host
                 .call_method1(py, "mark_channel_open", (channel_id, funding_proofs_json))
+                .map(|_| ())
+                .map_err(|e| python_error_message(py, e))
+        })
+    }
+
+    fn mark_channel_opening_failed(
+        &self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        Python::with_gil(|py| {
+            let failure_json =
+                serde_json::to_string(&failure).expect("ClientOpeningFailure serialization failed");
+            self.py_host
+                .call_method1(
+                    py,
+                    "mark_channel_opening_failed",
+                    (channel_id, failure_json),
+                )
                 .map(|_| ())
                 .map_err(|e| python_error_message(py, e))
         })

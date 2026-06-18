@@ -4,6 +4,7 @@
 // Channel Opening (two-phase)
 extern int go_client_save_opening_from_swap_channel(void*, const char*, const char*, char**);
 extern int go_client_mark_channel_open(void*, const char*, const char*, char**);
+extern int go_client_mark_channel_opening_failed(void*, const char*, const char*, char**);
 extern char* go_client_get_channel_funding(void*, const char*);
 extern char* go_client_get_channel_opening_from_swap(void*, const char*);
 // Payment State
@@ -32,6 +33,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data) {
     // Channel Opening (two-phase)
     cb.save_opening_from_swap_channel = go_client_save_opening_from_swap_channel;
     cb.mark_channel_open = go_client_mark_channel_open;
+    cb.mark_channel_opening_failed = go_client_mark_channel_opening_failed;
     cb.get_channel_funding = go_client_get_channel_funding;
     cb.get_channel_opening_from_swap = go_client_get_channel_opening_from_swap;
     // Payment State

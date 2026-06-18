@@ -213,7 +213,8 @@ class MockClientHost:
         self.opening: dict[str, str] = {}  # channel_id -> opening_json
         self.funding: dict[str, str] = {}  # channel_id -> funding_json
         self.payment_state: dict[str, str] = {}  # channel_id -> payment_state_json
-        self.channel_state: dict[str, str] = {}  # channel_id -> "open" or "closed"
+        self.failures: dict[str, str] = {}  # channel_id -> failure_json
+        self.channel_state: dict[str, str] = {}  # channel_id -> lifecycle state
         self.keys: dict[str, str] = {}  # pubkey_hex -> secret_hex
 
     def register_key(self, secret_hex: str, pubkey_hex: str):
@@ -250,6 +251,7 @@ class MockClientHost:
 
     def save_opening_from_swap_channel(self, channel_id: str, opening_json: str):
         self.opening[channel_id] = opening_json
+        self.failures.pop(channel_id, None)
         self.channel_state[channel_id] = "opening_from_swap"
 
     def mark_channel_open(self, channel_id: str, funding_proofs_json: str):
@@ -272,12 +274,19 @@ class MockClientHost:
             except (json.JSONDecodeError, TypeError):
                 pass
             del self.opening[channel_id]
+        self.failures.pop(channel_id, None)
         self.channel_state[channel_id] = "open"
+
+    def mark_channel_opening_failed(self, channel_id: str, failure_json: str):
+        self.failures[channel_id] = failure_json
+        self.channel_state[channel_id] = "opening_failed"
 
     def get_channel_funding(self, channel_id: str) -> str | None:
         return self.funding.get(channel_id)
 
     def get_channel_opening_from_swap(self, channel_id: str) -> str | None:
+        if self.channel_state.get(channel_id) != "opening_from_swap":
+            return None
         return self.opening.get(channel_id)
 
     # ========================================================================
@@ -301,12 +310,17 @@ class MockClientHost:
         self.channel_state[channel_id] = "closed"
 
     def list_channel_ids(self) -> list[str]:
-        return list(set(list(self.funding.keys()) + list(self.opening.keys())))
+        return list(set(
+            list(self.funding.keys())
+            + list(self.opening.keys())
+            + list(self.failures.keys())
+        ))
 
     def delete_channel(self, channel_id: str):
         self.opening.pop(channel_id, None)
         self.funding.pop(channel_id, None)
         self.payment_state.pop(channel_id, None)
+        self.failures.pop(channel_id, None)
         self.channel_state.pop(channel_id, None)
 
     # ========================================================================

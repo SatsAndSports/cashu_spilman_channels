@@ -19,6 +19,10 @@ class SpilmanClientHost(Protocol):
         """Transitions a channel from OpeningFromSwap to Open."""
         ...
 
+    def mark_channel_opening_failed(self, channel_id: str, failure_json: str) -> None:
+        """Transitions a channel from OpeningFromSwap to OpeningFailed."""
+        ...
+
     def get_channel_funding(self, channel_id: str) -> Optional[str]:
         """Retrieves channel funding data as a JSON string."""
         ...

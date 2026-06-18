@@ -140,6 +140,7 @@ type testClientHost struct {
 	opening      map[string]string // channelID -> openingJSON
 	funding      map[string]string // channelID -> fundingJSON
 	paymentState map[string]string // channelID -> paymentStateJSON
+	failures     map[string]string // channelID -> failureJSON
 	channelState map[string]string // channelID -> "open" or "closed"
 	keys         map[string]string // pubkey_hex -> secret_hex
 }
@@ -150,6 +151,7 @@ func newTestClientHost(mintURL string) *testClientHost {
 		opening:      make(map[string]string),
 		funding:      make(map[string]string),
 		paymentState: make(map[string]string),
+		failures:     make(map[string]string),
 		channelState: make(map[string]string),
 		keys:         make(map[string]string),
 	}
@@ -271,7 +273,16 @@ func (h *testClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) er
 		}
 		delete(h.opening, channelID)
 	}
+	delete(h.failures, channelID)
 	h.channelState[channelID] = "open"
+	return nil
+}
+
+func (h *testClientHost) MarkChannelOpeningFailed(channelID, failureJSON string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.failures[channelID] = failureJSON
+	h.channelState[channelID] = "opening_failed"
 	return nil
 }
 
