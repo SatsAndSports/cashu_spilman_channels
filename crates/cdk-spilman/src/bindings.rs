@@ -497,7 +497,10 @@ pub fn create_signed_balance_update(
 /// * `channel_secret_hex` - Pre-computed ECDH channel secret (32 bytes, hex)
 /// * `expiry_timestamp` - Unix timestamp for channel expiry (refund becomes available)
 /// * `keyset_info_json` - Keyset info from mint (JSON)
+/// * `keyset_info_json` - Keyset info from mint (JSON)
 /// * `maximum_amount_for_one_output` - Max amount per output from server policy
+/// * `requested_capacity` - Exact channel capacity to request. Use `None` to
+///   derive the maximum capacity supported by the input token.
 ///
 /// # Returns
 /// JSON with:
@@ -510,6 +513,7 @@ pub fn create_signed_balance_update(
 /// - `receiver_pubkey_hex`: Receiver public key used for this channel
 /// - `params_json`: Serialized channel params for use in later functions
 /// - `proofs_json`: The parsed proofs from the token (for create_funding_swap)
+#[allow(clippy::too_many_arguments)]
 pub fn compute_channel_from_token(
     token_string: &str,
     receiver_pubkey_hex: &str,
@@ -518,6 +522,7 @@ pub fn compute_channel_from_token(
     expiry_timestamp: u64,
     keyset_info_json: &str,
     maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
 ) -> Result<String, String> {
     // Parse the token
     let token: Token = token_string
@@ -569,6 +574,7 @@ pub fn compute_channel_from_token(
         expiry_timestamp,
         keyset_info,
         maximum_amount_for_one_output,
+        requested_capacity,
     )
 }
 
@@ -577,6 +583,9 @@ pub fn compute_channel_from_token(
 /// `keyset_info_json` is the output keyset for newly-created channel funding
 /// proofs. `input_keysets_json` is a JSON array of NUT-02 keyset summaries used
 /// only to expand compact token proof keyset IDs.
+///
+/// * `requested_capacity` - Exact channel capacity to request. Use `None` to
+///   derive the maximum capacity supported by the input token.
 ///
 /// # Returns
 /// JSON with:
@@ -599,6 +608,7 @@ pub fn compute_channel_from_token_with_input_keysets(
     keyset_info_json: &str,
     input_keysets_json: &str,
     maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
 ) -> Result<String, String> {
     let token: Token = token_string
         .parse()
@@ -628,6 +638,7 @@ pub fn compute_channel_from_token_with_input_keysets(
         expiry_timestamp,
         keyset_info,
         maximum_amount_for_one_output,
+        requested_capacity,
     )
 }
 
@@ -680,6 +691,9 @@ pub fn compute_channel_from_proofs(
 /// be computed from the actual input proof keysets. The provided
 /// `output_keyset_info_json` is used only for newly-created channel funding
 /// outputs and the later close/refund fee stages.
+///
+/// * `requested_capacity` - Exact channel capacity to request. Use `None` to
+///   derive the maximum capacity supported by the input proofs.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_channel_from_proofs_with_input_keysets(
     mint_url: &str,
@@ -692,6 +706,7 @@ pub fn compute_channel_from_proofs_with_input_keysets(
     expiry_timestamp: u64,
     output_keyset_info_json: &str,
     maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
 ) -> Result<String, String> {
     let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
         .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
@@ -714,6 +729,7 @@ pub fn compute_channel_from_proofs_with_input_keysets(
         expiry_timestamp,
         keyset_info,
         maximum_amount_for_one_output,
+        requested_capacity,
     )
 }
 
@@ -731,6 +747,7 @@ fn compute_channel_from_proofs_inner(
     expiry_timestamp: u64,
     keyset_info: KeysetInfo,
     maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
 ) -> Result<String, String> {
     if keyset_info.unit != unit {
         return Err(format!(
@@ -744,12 +761,22 @@ fn compute_channel_from_proofs_inner(
     // The funding token amount is the post-swap value of the mixed input proofs.
     // The two following fee passes use the output keyset because they apply to
     // the deterministic channel close/refund stages.
-    let v2 = keyset_info
-        .deterministic_value_after_fees(funding_token_amount, max_amt)
-        .map_err(|e| format!("Failed to compute v2: {}", e))?;
-    let capacity = keyset_info
-        .deterministic_value_after_fees(v2, max_amt)
-        .map_err(|e| format!("Failed to compute capacity: {}", e))?;
+    let max_capacity = {
+        let v2 = keyset_info
+            .deterministic_value_after_fees(funding_token_amount, max_amt)
+            .map_err(|e| format!("Failed to compute v2: {}", e))?;
+        keyset_info
+            .deterministic_value_after_fees(v2, max_amt)
+            .map_err(|e| format!("Failed to compute capacity: {}", e))?
+    };
+
+    let capacity = requested_capacity.unwrap_or(max_capacity);
+    if capacity > max_capacity {
+        return Err(format!(
+            "requested capacity {} exceeds maximum achievable capacity {} for funding_token_amount {}",
+            capacity, max_capacity, funding_token_amount
+        ));
+    }
 
     // Parse sender pubkey
     let sender_pubkey: PublicKey = sender_pubkey_hex
@@ -1649,6 +1676,7 @@ mod tests {
             unix_time() + 3600,
             &output_keyset_info_json,
             0,
+            None,
         )
         .expect("compute channel from mixed input keysets");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1694,6 +1722,7 @@ mod tests {
             unix_time() + 3600,
             &output_keyset_info_json,
             0,
+            None,
         )
         .expect("compute channel from many low-fee mixed inputs");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1738,6 +1767,7 @@ mod tests {
             unix_time() + 3600,
             &output_keyset_info_json,
             0,
+            None,
         )
         .expect("compute channel from many medium-fee mixed inputs");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1785,6 +1815,7 @@ mod tests {
             &output_keyset_info_json,
             &input_keysets_json,
             0,
+            None,
         )
         .expect("compute channel from token with distinct input/output keysets");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1792,5 +1823,109 @@ mod tests {
         assert_eq!(result["input_fee"].as_u64(), Some(1));
         assert_eq!(result["funding_token_amount"].as_u64(), Some(8));
         assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
+    }
+
+    #[test]
+    fn test_compute_channel_with_requested_capacity() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let input_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16], 0);
+        assert_ne!(input_keyset_info.keyset_id, output_keyset_info.keyset_id);
+
+        let input_proofs = proofs(1000, 1, input_keyset_info.keyset_id, "secret");
+        let input_keysets_json = serde_json::to_string(&vec![cashu::nuts::KeySetInfo {
+            id: input_keyset_info.keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            input_fee_ppk: input_keyset_info.input_fee_ppk,
+            final_expiry: None,
+        }])
+        .unwrap();
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let max_result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+            None,
+        )
+        .expect("compute max-capacity channel");
+        let max_result: serde_json::Value = serde_json::from_str(&max_result).unwrap();
+        let max_capacity = max_result["capacity"].as_u64().unwrap();
+        let funding_token_amount = max_result["funding_token_amount"].as_u64().unwrap();
+        assert!(max_capacity >= 900);
+        assert_eq!(funding_token_amount, 1000);
+
+        let exact_result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+            Some(500),
+        )
+        .expect("compute exact-capacity channel");
+        let exact_result: serde_json::Value = serde_json::from_str(&exact_result).unwrap();
+        assert_eq!(exact_result["capacity"].as_u64(), Some(500));
+        assert_eq!(
+            exact_result["funding_token_amount"].as_u64(),
+            Some(funding_token_amount)
+        );
+
+        let equal_result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+            Some(max_capacity),
+        )
+        .expect("compute equal-to-max-capacity channel");
+        let equal_result: serde_json::Value = serde_json::from_str(&equal_result).unwrap();
+        assert_eq!(equal_result["capacity"].as_u64(), Some(max_capacity));
+        assert_eq!(
+            equal_result["funding_token_amount"].as_u64(),
+            Some(funding_token_amount)
+        );
+
+        let too_large = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+            Some(max_capacity + 1),
+        );
+        assert!(too_large.is_err());
     }
 }

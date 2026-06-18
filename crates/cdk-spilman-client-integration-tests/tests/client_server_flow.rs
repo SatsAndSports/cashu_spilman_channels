@@ -605,6 +605,7 @@ async fn test_open_channel_from_proofs_with_keyset_id() {
             now_seconds() + 3600,
             &keyset_id,
             64,
+            None,
         )
         .expect("open_channel_from_proofs_with_keyset_id should succeed");
     assert_proofs_state(&mint, &proofs, State::Spent).await;
@@ -871,6 +872,7 @@ async fn test_open_channel_from_proofs_with_inactive_output_keyset_leaves_inputs
             now_seconds() + 3600,
             &stale_output_keyset.to_string(),
             64,
+            None,
         )
         .expect_err("inactive output keyset should be explicitly rejected");
 

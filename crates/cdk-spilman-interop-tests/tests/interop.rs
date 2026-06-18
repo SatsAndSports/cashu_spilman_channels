@@ -552,6 +552,7 @@ async fn test_swap_to_funding() -> anyhow::Result<()> {
         expiry_timestamp,
         &keyset_info_json,
         max_amount,
+        None,
     )
     .map_err(anyhow::Error::msg)?;
     let compute_json: serde_json::Value = serde_json::from_str(&compute_result)?;

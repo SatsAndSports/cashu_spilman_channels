@@ -1069,6 +1069,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_info_json,
             input_keysets_json,
             max_amount,
+            None,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1127,6 +1128,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             keyset_info_json,
             max_amount,
+            None,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1203,10 +1205,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             &keyset_info,
             max_amount,
+            None,
         )
     }
 
     /// Open a new channel from input proofs using a specific output keyset id.
+    ///
+    /// `requested_capacity` is in raw units of the channel. Use `None` to
+    /// request the maximum capacity supported by the input proofs.
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_proofs_with_keyset_id(
@@ -1219,6 +1225,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         output_keyset_id: &str,
         max_amount: u64,
+        requested_capacity: Option<u64>,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let keyset_info = self
             .fetch_keyset_info(mint_url, output_keyset_id)
@@ -1234,10 +1241,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             &keyset_info,
             max_amount,
+            requested_capacity,
         )
     }
 
     /// Open a new channel from input proofs and provided output keyset info.
+    ///
+    /// `requested_capacity` is in raw units of the channel. Use `None` to
+    /// request the maximum capacity supported by the input proofs.
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_proofs(
@@ -1250,6 +1261,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         output_keyset_info_json: &str,
         max_amount: u64,
+        requested_capacity: Option<u64>,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let channel_secret_hex = self
             .host
@@ -1273,6 +1285,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             output_keyset_info_json,
             max_amount,
+            requested_capacity,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1608,6 +1621,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             expiry_timestamp,
             keyset_info_json,
             max_amount,
+            None,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
