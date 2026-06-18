@@ -3,13 +3,19 @@
 //! Tests that payments created by `SpilmanClientBridge` are correctly
 //! processed by `SpilmanBridge`.
 
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashu::nuts::SecretKey;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
+use cdk::Mint;
 use cdk_spilman::{
-    build_cashu_b_token, parse_keyset_info_from_json, ConfigurableClientHost, Payment,
-    ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge, SpilmanClientNetworking,
+    build_cashu_b_token, parse_keyset_info_from_json, ClientChannelState, ClientStorage,
+    ConfigurableClientHost, Payment, ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge,
+    SpilmanClientNetworking, SqliteClientStorage,
 };
 use cdk_spilman_client_integration_tests::{
     InMemoryMintNetworking, TestMintHelper, TestServerHost,
@@ -20,6 +26,113 @@ fn now_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+async fn assert_proofs_state(mint: &Mint, proofs: &[Proof], expected: State) {
+    let ys = proofs
+        .iter()
+        .map(|proof| proof.y().expect("proof y"))
+        .collect();
+    let response = mint
+        .check_state(&CheckStateRequest { ys })
+        .await
+        .expect("check proof state");
+    assert_eq!(response.states.len(), proofs.len());
+    for proof_state in response.states {
+        assert_eq!(proof_state.state, expected);
+    }
+}
+
+#[derive(Debug)]
+struct StaleFirstKeysetNetworking {
+    inner: InMemoryMintNetworking,
+    stale_keysets_json: String,
+    keysets_calls: AtomicUsize,
+    swap_calls: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct AmbiguousSwapFailureNetworking {
+    inner: InMemoryMintNetworking,
+    swap_calls: Arc<AtomicUsize>,
+}
+
+impl AmbiguousSwapFailureNetworking {
+    fn new(inner: InMemoryMintNetworking, swap_calls: Arc<AtomicUsize>) -> Self {
+        Self { inner, swap_calls }
+    }
+}
+
+impl SpilmanClientNetworking for AmbiguousSwapFailureNetworking {
+    fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
+        self.swap_calls.fetch_add(1, Ordering::SeqCst);
+        Err("connection reset after request write".to_string())
+    }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        self.inner.call_mint_restore(mint_url, restore_request_json)
+    }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        self.inner.call_mint_keysets(mint_url)
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        self.inner.call_mint_keys(mint_url, keyset_id)
+    }
+}
+
+impl StaleFirstKeysetNetworking {
+    fn new(
+        inner: InMemoryMintNetworking,
+        stale_keysets_json: String,
+        swap_calls: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            inner,
+            stale_keysets_json,
+            keysets_calls: AtomicUsize::new(0),
+            swap_calls,
+        }
+    }
+}
+
+impl SpilmanClientNetworking for StaleFirstKeysetNetworking {
+    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+        let call = self.swap_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Err(serde_json::json!({
+                "code": 12001,
+                "detail": "Keyset is not active"
+            })
+            .to_string());
+        }
+        self.inner.call_mint_swap(mint_url, swap_request_json)
+    }
+
+    fn call_mint_restore(
+        &self,
+        mint_url: &str,
+        restore_request_json: &str,
+    ) -> Result<String, String> {
+        self.inner.call_mint_restore(mint_url, restore_request_json)
+    }
+
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+        let call = self.keysets_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Ok(self.stale_keysets_json.clone());
+        }
+        self.inner.call_mint_keysets(mint_url)
+    }
+
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        self.inner.call_mint_keys(mint_url, keyset_id)
+    }
 }
 
 /// Test the basic flow:
@@ -404,6 +517,7 @@ async fn test_open_channel_from_token_auto() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_open_channel_from_proofs_auto() {
     let mint_helper = TestMintHelper::new().await.unwrap();
+    let mint = mint_helper.mint();
     let keyset_info_json = mint_helper.keyset_info_json().unwrap();
 
     let receiver_secret = SecretKey::generate();
@@ -422,6 +536,7 @@ async fn test_open_channel_from_proofs_auto() {
     let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
 
     let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    assert_proofs_state(&mint, &proofs, State::Unspent).await;
     let proofs_json = serde_json::to_string(&proofs).unwrap();
     let open_result = client_bridge
         .open_channel_from_proofs_auto(
@@ -434,6 +549,7 @@ async fn test_open_channel_from_proofs_auto() {
             64,
         )
         .expect("open_channel_from_proofs_auto should succeed");
+    assert_proofs_state(&mint, &proofs, State::Spent).await;
 
     let payment = client_bridge
         .create_payment_with_funding(&open_result.channel_id, 10)
@@ -457,6 +573,7 @@ async fn test_open_channel_from_proofs_auto() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_open_channel_from_proofs_with_keyset_id() {
     let mint_helper = TestMintHelper::new().await.unwrap();
+    let mint = mint_helper.mint();
     let keyset_info_json = mint_helper.keyset_info_json().unwrap();
 
     let receiver_secret = SecretKey::generate();
@@ -475,6 +592,7 @@ async fn test_open_channel_from_proofs_with_keyset_id() {
     let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
 
     let proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    assert_proofs_state(&mint, &proofs, State::Unspent).await;
     let proofs_json = serde_json::to_string(&proofs).unwrap();
     let keyset_id = mint_helper.keyset_id().to_string();
     let open_result = client_bridge
@@ -489,6 +607,7 @@ async fn test_open_channel_from_proofs_with_keyset_id() {
             64,
         )
         .expect("open_channel_from_proofs_with_keyset_id should succeed");
+    assert_proofs_state(&mint, &proofs, State::Spent).await;
 
     let payment = client_bridge
         .create_payment_with_funding(&open_result.channel_id, 10)
@@ -561,6 +680,7 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
 
     let mut input_proofs = first_keyset_proofs;
     input_proofs.extend(second_keyset_proofs);
+    assert_proofs_state(&mint, &input_proofs, State::Unspent).await;
     let mut input_keysets: Vec<String> = input_proofs
         .iter()
         .map(|proof| proof.keyset_id.to_string())
@@ -581,6 +701,7 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
             64,
         )
         .expect("open_channel_from_proofs_auto should accept mixed input keysets");
+    assert_proofs_state(&mint, &input_proofs, State::Spent).await;
 
     let payment = client_bridge
         .create_payment_with_funding(&open_result.channel_id, 10)
@@ -598,6 +719,216 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
+}
+
+/// Test that auto proof opening retries once when a stale active output keyset
+/// causes an explicit mint keyset rejection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_auto_retries_after_inactive_output_keyset() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let mint = mint_helper.mint();
+    let stale_keysets_json = InMemoryMintNetworking::new(mint.clone())
+        .call_mint_keysets("https://test-mint")
+        .expect("stale keysets");
+    let stale_output_keyset = mint_helper.keyset_id();
+
+    let input_proofs = mint_helper.mint_proofs(500).await.unwrap();
+    assert_proofs_state(&mint, &input_proofs, State::Unspent).await;
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        (0..12).map(|i| 1u64 << i).collect(),
+        0,
+        true,
+        None,
+    )
+    .await
+    .expect("rotate to active output keyset");
+    let active_output_keyset = *mint
+        .get_active_keysets()
+        .get(&CurrencyUnit::Sat)
+        .expect("active output keyset");
+    assert_ne!(stale_output_keyset, active_output_keyset);
+
+    let keyset_id = active_output_keyset.to_string();
+    let temp_host = ConfigurableClientHost::new_in_memory();
+    let temp_bridge =
+        SpilmanClientBridge::new(temp_host, InMemoryMintNetworking::new(mint.clone()));
+    let active_keyset_info_json = temp_bridge
+        .fetch_keyset_info("https://test-mint", &keyset_id)
+        .expect("fetch active output keyset");
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        active_output_keyset,
+        active_keyset_info_json,
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let storage = SqliteClientStorage::open_in_memory().unwrap();
+    let storage_view = storage.clone();
+    let mut client_host = ConfigurableClientHost::new(storage);
+    client_host.add_key(sender_secret.clone());
+    let swap_calls = Arc::new(AtomicUsize::new(0));
+    let networking = StaleFirstKeysetNetworking::new(
+        InMemoryMintNetworking::new(mint.clone()),
+        stale_keysets_json,
+        swap_calls.clone(),
+    );
+    let client_bridge = SpilmanClientBridge::new(client_host, networking);
+
+    let proofs_json = serde_json::to_string(&input_proofs).unwrap();
+    let open_result = client_bridge
+        .open_channel_from_proofs_auto(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            64,
+        )
+        .expect("auto open should retry with refreshed active keyset");
+    assert_proofs_state(&mint, &input_proofs, State::Spent).await;
+
+    assert_eq!(swap_calls.load(Ordering::SeqCst), 2);
+    let channel_ids = storage_view.list_channel_ids();
+    assert_eq!(channel_ids.len(), 2);
+    assert!(channel_ids.iter().any(|id| {
+        storage_view.get_state(id) == Some(ClientChannelState::OpeningFailed)
+            && storage_view.get_opening_failure(id).is_some()
+    }));
+    assert_eq!(
+        storage_view.get_state(&open_result.channel_id),
+        Some(ClientChannelState::Open)
+    );
+
+    let payment = client_bridge
+        .create_payment_with_funding(&open_result.channel_id, 10)
+        .expect("create payment");
+    let result = server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server should accept retried channel payment");
+
+    assert_eq!(result.balance, 10);
+    assert_eq!(result.capacity, open_result.capacity);
+}
+
+/// Test that a real mint rejection for an inactive output keyset does not spend inputs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_with_inactive_output_keyset_leaves_inputs_unspent() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let mint = mint_helper.mint();
+    let stale_output_keyset = mint_helper.keyset_id();
+
+    let input_proofs = mint_helper.mint_proofs(500).await.unwrap();
+    assert_proofs_state(&mint, &input_proofs, State::Unspent).await;
+
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        (0..12).map(|i| 1u64 << i).collect(),
+        0,
+        true,
+        None,
+    )
+    .await
+    .expect("rotate active output keyset");
+    assert_ne!(
+        stale_output_keyset,
+        *mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Sat)
+            .expect("active output keyset")
+    );
+
+    let receiver_secret = SecretKey::generate();
+    let sender_secret = SecretKey::generate();
+    let storage = SqliteClientStorage::open_in_memory().unwrap();
+    let storage_view = storage.clone();
+    let mut client_host = ConfigurableClientHost::new(storage);
+    client_host.add_key(sender_secret.clone());
+    let client_bridge =
+        SpilmanClientBridge::new(client_host, InMemoryMintNetworking::new(mint.clone()));
+
+    let proofs_json = serde_json::to_string(&input_proofs).unwrap();
+    let err = client_bridge
+        .open_channel_from_proofs_with_keyset_id(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &stale_output_keyset.to_string(),
+            64,
+        )
+        .expect_err("inactive output keyset should be explicitly rejected");
+
+    assert!(!err.input_may_be_spent, "{err:?}");
+    assert_proofs_state(&mint, &input_proofs, State::Unspent).await;
+
+    let channel_ids = storage_view.list_channel_ids();
+    assert_eq!(channel_ids.len(), 1);
+    assert_eq!(
+        storage_view.get_state(&channel_ids[0]),
+        Some(ClientChannelState::OpeningFailed)
+    );
+    assert!(storage_view.get_opening_failure(&channel_ids[0]).is_some());
+}
+
+/// Test that ambiguous swap failures are not retried and remain recoverable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_channel_from_proofs_auto_keeps_ambiguous_swap_failure_opening() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let receiver_secret = SecretKey::generate();
+
+    let sender_secret = SecretKey::generate();
+    let storage = SqliteClientStorage::open_in_memory().unwrap();
+    let storage_view = storage.clone();
+    let mut client_host = ConfigurableClientHost::new(storage);
+    client_host.add_key(sender_secret.clone());
+    let swap_calls = Arc::new(AtomicUsize::new(0));
+    let networking = AmbiguousSwapFailureNetworking::new(
+        InMemoryMintNetworking::new(mint_helper.mint()),
+        swap_calls.clone(),
+    );
+    let client_bridge = SpilmanClientBridge::new(client_host, networking);
+
+    let proofs = mint_helper.mint_proofs(500).await.unwrap();
+    let proofs_json = serde_json::to_string(&proofs).unwrap();
+    let err = client_bridge
+        .open_channel_from_proofs_auto(
+            "https://test-mint",
+            "sat",
+            &proofs_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            64,
+        )
+        .expect_err("ambiguous swap failure should fail opening");
+
+    assert!(err.input_may_be_spent);
+    assert_eq!(swap_calls.load(Ordering::SeqCst), 1);
+    let channel_ids = storage_view.list_channel_ids();
+    assert_eq!(channel_ids.len(), 1);
+    assert_eq!(
+        storage_view.get_state(&channel_ids[0]),
+        Some(ClientChannelState::OpeningFromSwap)
+    );
+    assert!(storage_view
+        .get_opening_from_swap(&channel_ids[0])
+        .is_some());
+    assert!(storage_view.get_opening_failure(&channel_ids[0]).is_none());
 }
 
 /// Test that fetch_keyset_info rejects keys that don't match the claimed keyset ID.

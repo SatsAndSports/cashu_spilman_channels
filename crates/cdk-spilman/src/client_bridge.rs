@@ -35,7 +35,7 @@ use super::bindings::{
 use super::bridge::Payment;
 use super::client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
-    ClientPaymentState,
+    ClientOpeningFailure, ClientPaymentState,
 };
 
 // ============================================================================
@@ -84,6 +84,16 @@ pub trait SpilmanClientHost {
         &self,
         channel_id: &str,
     ) -> Option<ClientChannelOpeningFromSwap>;
+
+    /// Mark a channel opening attempt as explicitly failed.
+    fn mark_channel_opening_failed(
+        &self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        let _ = (channel_id, failure);
+        Ok(())
+    }
 
     /// Get funding data for an open channel.
     ///
@@ -326,6 +336,8 @@ pub enum OpenChannelFailureStage {
     BeforeOpeningSaved,
     /// Opening record was persisted, but failure happened before swap submit.
     OpeningSavedBeforeSwapSubmit,
+    /// Mint explicitly rejected the funding swap.
+    MintRejected,
     /// Swap may have been submitted to the mint.
     SwapSubmitted,
     /// Funding proofs were received/unblinded, but later verification failed.
@@ -341,6 +353,7 @@ impl OpenChannelFailureStage {
         match self {
             Self::BeforeOpeningSaved => "before_opening_saved",
             Self::OpeningSavedBeforeSwapSubmit => "opening_saved_before_swap_submit",
+            Self::MintRejected => "mint_rejected",
             Self::SwapSubmitted => "swap_submitted",
             Self::FundingProofsReceived => "funding_proofs_received",
             Self::RestoreVerification => "restore_verification",
@@ -382,6 +395,14 @@ impl OpenChannelError {
             input_may_be_spent,
             message: message.into(),
         }
+    }
+}
+
+#[cfg(feature = "wallet")]
+impl OpenChannelError {
+    fn is_retryable_keyset_rejection(&self) -> bool {
+        self.stage == OpenChannelFailureStage::MintRejected
+            && is_keyset_mint_rejection(&self.message)
     }
 }
 
@@ -441,6 +462,27 @@ fn normalize_mint_error_string(raw: String) -> String {
     serde_json::from_str::<serde_json::Value>(&raw)
         .map(|value| value.to_string())
         .unwrap_or(raw)
+}
+
+#[cfg(feature = "wallet")]
+fn extract_mint_error_code(raw: &str) -> Option<u32> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("code")?.as_u64())
+        .map(|code| code as u32)
+}
+
+#[cfg(feature = "wallet")]
+fn is_explicit_mint_rejection(raw: &str) -> bool {
+    extract_mint_error_code(raw).is_some()
+}
+
+#[cfg(feature = "wallet")]
+fn is_keyset_mint_rejection(raw: &str) -> bool {
+    matches!(
+        extract_mint_error_code(raw),
+        Some(12000..=12999) | Some(99999)
+    )
 }
 
 /// Build keyset info JSON from the responses of `/v1/keysets` and `/v1/keys/{id}`.
@@ -760,6 +802,41 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        let first = self.open_channel_from_token_auto_once(
+            token_string,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            mint_url,
+            max_amount,
+        );
+        if first
+            .as_ref()
+            .is_err_and(OpenChannelError::is_retryable_keyset_rejection)
+        {
+            return self.open_channel_from_token_auto_once(
+                token_string,
+                receiver_pubkey_hex,
+                sender_pubkey_hex,
+                expiry_timestamp,
+                mint_url,
+                max_amount,
+            );
+        }
+        first
+    }
+
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    fn open_channel_from_token_auto_once(
+        &self,
+        token_string: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        mint_url: &str,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
         let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::BeforeOpeningSaved,
@@ -927,6 +1004,44 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_proofs_auto(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        max_amount: u64,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let first = self.open_channel_from_proofs_auto_once(
+            mint_url,
+            unit,
+            input_proofs_json,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            max_amount,
+        );
+        if first
+            .as_ref()
+            .is_err_and(OpenChannelError::is_retryable_keyset_rejection)
+        {
+            return self.open_channel_from_proofs_auto_once(
+                mint_url,
+                unit,
+                input_proofs_json,
+                receiver_pubkey_hex,
+                sender_pubkey_hex,
+                expiry_timestamp,
+                max_amount,
+            );
+        }
+        first
+    }
+
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    fn open_channel_from_proofs_auto_once(
         &self,
         mint_url: &str,
         unit: &str,
@@ -1143,11 +1258,32 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .networking
             .call_mint_swap(&mint_url, swap_request_json)
             .map_err(|e| {
-                OpenChannelError::new(
-                    OpenChannelFailureStage::SwapSubmitted,
-                    Some(channel_id.clone()),
-                    normalize_mint_error_string(e),
-                )
+                let message = normalize_mint_error_string(e);
+                if is_explicit_mint_rejection(&message) {
+                    let failure = ClientOpeningFailure {
+                        stage: OpenChannelFailureStage::MintRejected.as_str().to_string(),
+                        message: message.clone(),
+                        failed_at: self.host.now_seconds(),
+                    };
+                    if let Err(mark_err) = self.host.mark_channel_opening_failed(&channel_id, failure) {
+                        return OpenChannelError::new(
+                            OpenChannelFailureStage::MarkOpen,
+                            Some(channel_id.clone()),
+                            format!("mint rejected swap, but failed to mark opening failed: {mark_err}; mint error: {message}"),
+                        );
+                    }
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::MintRejected,
+                        Some(channel_id.clone()),
+                        message,
+                    )
+                } else {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::SwapSubmitted,
+                        Some(channel_id.clone()),
+                        message,
+                    )
+                }
             })?;
 
         let complete_result =

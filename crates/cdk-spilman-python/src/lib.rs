@@ -1253,6 +1253,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
                         "closed" | "Closed" => Some(ClientChannelState::Closed),
                         "closing" | "Closing" => Some(ClientChannelState::Closing),
                         "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+                        "opening_failed" => Some(ClientChannelState::OpeningFailed),
                         "open" | "Open" => Some(ClientChannelState::Open),
                         _ => None,
                     },
@@ -1622,6 +1623,7 @@ impl ClientBridge {
         self.inner.get_channel_info(channel_id).map(|info| {
             let state_str = match info.state {
                 ClientChannelState::OpeningFromSwap => "opening_from_swap",
+                ClientChannelState::OpeningFailed => "opening_failed",
                 ClientChannelState::Open => "open",
                 ClientChannelState::Closing => "closing",
                 ClientChannelState::Closed => "closed",

@@ -29,7 +29,7 @@ use super::bindings::{compute_channel_secret_from_hex, sign_with_tweaked_key_uti
 use super::client_bridge::SpilmanClientHost;
 use super::client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
-    ClientPaymentState, ClientStorage, MemoryClientStorage,
+    ClientOpeningFailure, ClientPaymentState, ClientStorage, MemoryClientStorage,
 };
 
 // ============================================================================
@@ -197,6 +197,16 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
         channel_id: &str,
     ) -> Option<ClientChannelOpeningFromSwap> {
         self.storage.borrow().get_opening_from_swap(channel_id)
+    }
+
+    fn mark_channel_opening_failed(
+        &self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        self.storage
+            .borrow_mut()
+            .set_opening_failed(channel_id, failure)
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {

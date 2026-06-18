@@ -60,7 +60,7 @@ pub use client_bridge::{
 };
 pub use client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
-    ClientPaymentState, ClientStorage, MemoryClientStorage,
+    ClientOpeningFailure, ClientPaymentState, ClientStorage, MemoryClientStorage,
 };
 pub use configurable_client_host::ConfigurableClientHost;
 pub use deterministic::{

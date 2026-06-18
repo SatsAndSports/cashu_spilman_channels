@@ -93,12 +93,25 @@ pub struct ClientKeysetCacheEntry {
     pub unit: CurrencyUnit,
 }
 
+/// Failure metadata for an opening attempt that the mint explicitly rejected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientOpeningFailure {
+    /// Stage reported by the channel-open flow.
+    pub stage: String,
+    /// Human-readable failure details.
+    pub message: String,
+    /// Unix timestamp when failure was recorded.
+    pub failed_at: u64,
+}
+
 /// Channel lifecycle state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ClientChannelState {
     /// Funding swap submitted but not yet confirmed.
     /// The channel parameters and input token are saved for recovery.
     OpeningFromSwap,
+    /// Channel opening was explicitly rejected and should not be recovered.
+    OpeningFailed,
     /// Channel is open and can accept payments
     #[default]
     Open,
@@ -141,6 +154,16 @@ pub trait ClientStorage {
 
     /// Get opening data for a channel in OpeningFromSwap state.
     fn get_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap>;
+
+    /// Mark an opening attempt as failed while preserving opening metadata.
+    fn set_opening_failed(
+        &mut self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String>;
+
+    /// Get failure metadata for a failed opening attempt.
+    fn get_opening_failure(&self, channel_id: &str) -> Option<ClientOpeningFailure>;
 
     /// Get funding data for a channel with stored funding.
     ///
@@ -215,6 +238,7 @@ pub struct MemoryClientStorage {
     funding: HashMap<String, ClientChannelFunding>,
     payments: HashMap<String, ClientPaymentState>,
     states: HashMap<String, ClientChannelState>,
+    failures: HashMap<String, ClientOpeningFailure>,
     keysets: HashMap<(String, Id), ClientKeysetCacheEntry>,
 }
 
@@ -267,7 +291,30 @@ impl ClientStorage for MemoryClientStorage {
     }
 
     fn get_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap> {
+        if self.states.get(channel_id) != Some(&ClientChannelState::OpeningFromSwap) {
+            return None;
+        }
         self.opening.get(channel_id).cloned()
+    }
+
+    fn set_opening_failed(
+        &mut self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        if !self.opening.contains_key(channel_id) {
+            return Err(format!(
+                "channel {channel_id} is not in OpeningFromSwap state"
+            ));
+        }
+        self.failures.insert(channel_id.to_string(), failure);
+        self.states
+            .insert(channel_id.to_string(), ClientChannelState::OpeningFailed);
+        Ok(())
+    }
+
+    fn get_opening_failure(&self, channel_id: &str) -> Option<ClientOpeningFailure> {
+        self.failures.get(channel_id).cloned()
     }
 
     fn get_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -313,6 +360,7 @@ impl ClientStorage for MemoryClientStorage {
         self.opening.remove(channel_id);
         self.funding.remove(channel_id);
         self.payments.remove(channel_id);
+        self.failures.remove(channel_id);
         self.states.remove(channel_id);
         Ok(())
     }
@@ -573,6 +621,35 @@ pub(crate) mod fixtures {
             .get_active_keyset_ids("https://mint.example", &CurrencyUnit::Msat)
             .is_empty());
     }
+
+    /// Assert that explicit opening failures are retained separately from recoverable openings.
+    pub fn assert_storage_opening_failed<S: ClientStorage>(storage: &mut S) {
+        let channel_id = "failed_open_channel";
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .expect("save opening");
+        assert!(storage.get_opening_from_swap(channel_id).is_some());
+
+        let failure = ClientOpeningFailure {
+            stage: "mint_rejected".to_string(),
+            message: "unknown keyset".to_string(),
+            failed_at: 1234567891,
+        };
+        storage
+            .set_opening_failed(channel_id, failure.clone())
+            .expect("mark opening failed");
+
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::OpeningFailed)
+        );
+        assert!(storage.get_opening_from_swap(channel_id).is_none());
+        assert_eq!(
+            storage.get_opening_failure(channel_id).unwrap().message,
+            failure.message
+        );
+        assert!(storage.list_channel_ids().contains(&channel_id.to_string()));
+    }
 }
 
 // ============================================================================
@@ -613,5 +690,11 @@ mod tests {
     fn test_memory_storage_keyset_cache() {
         let mut storage = MemoryClientStorage::new();
         assert_storage_keyset_cache(&mut storage);
+    }
+
+    #[test]
+    fn test_memory_storage_opening_failed() {
+        let mut storage = MemoryClientStorage::new();
+        assert_storage_opening_failed(&mut storage);
     }
 }

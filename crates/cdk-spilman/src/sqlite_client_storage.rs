@@ -14,7 +14,7 @@ use rusqlite::{params, OptionalExtension};
 
 use super::client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
-    ClientPaymentState, ClientStorage,
+    ClientOpeningFailure, ClientPaymentState, ClientStorage,
 };
 
 /// SQLite-backed implementation of [`ClientStorage`].
@@ -99,7 +99,8 @@ impl SqliteClientStorage {
                 state        TEXT NOT NULL,
                 opening_json TEXT,
                 funding_json TEXT,
-                payment_json TEXT
+                payment_json TEXT,
+                failure_json TEXT
             );
             CREATE TABLE IF NOT EXISTS spilman_client_keysets (
                 mint_url   TEXT NOT NULL,
@@ -111,12 +112,18 @@ impl SqliteClientStorage {
                 PRIMARY KEY (mint_url, keyset_id)
             );",
         )
-        .map_err(|e| format!("failed to initialize SQLite client storage schema: {e}"))
+        .map_err(|e| format!("failed to initialize SQLite client storage schema: {e}"))?;
+        let _ = conn.execute(
+            "ALTER TABLE spilman_client_channels ADD COLUMN failure_json TEXT",
+            [],
+        );
+        Ok(())
     }
 
     fn state_to_string(state: ClientChannelState) -> &'static str {
         match state {
             ClientChannelState::OpeningFromSwap => "OpeningFromSwap",
+            ClientChannelState::OpeningFailed => "OpeningFailed",
             ClientChannelState::Open => "Open",
             ClientChannelState::Closing => "Closing",
             ClientChannelState::Closed => "Closed",
@@ -126,6 +133,7 @@ impl SqliteClientStorage {
     fn state_from_string(s: &str) -> Option<ClientChannelState> {
         match s {
             "OpeningFromSwap" => Some(ClientChannelState::OpeningFromSwap),
+            "OpeningFailed" => Some(ClientChannelState::OpeningFailed),
             "Open" => Some(ClientChannelState::Open),
             "Closing" => Some(ClientChannelState::Closing),
             "Closed" => Some(ClientChannelState::Closed),
@@ -148,8 +156,8 @@ impl ClientStorage for SqliteClientStorage {
             .map_err(|e| format!("sqlite lock poisoned: {e}"))?;
         conn.execute(
             "INSERT OR REPLACE INTO spilman_client_channels
-             (channel_id, state, opening_json, funding_json, payment_json)
-             VALUES (?1, ?2, ?3, NULL, NULL)",
+             (channel_id, state, opening_json, funding_json, payment_json, failure_json)
+             VALUES (?1, ?2, ?3, NULL, NULL, NULL)",
             params![
                 channel_id,
                 Self::state_to_string(ClientChannelState::OpeningFromSwap),
@@ -208,7 +216,7 @@ impl ClientStorage for SqliteClientStorage {
 
         tx.execute(
             "UPDATE spilman_client_channels
-             SET state = ?2, opening_json = NULL, funding_json = ?3, payment_json = NULL
+             SET state = ?2, opening_json = NULL, funding_json = ?3, payment_json = NULL, failure_json = NULL
              WHERE channel_id = ?1",
             params![
                 channel_id,
@@ -236,6 +244,55 @@ impl ClientStorage for SqliteClientStorage {
             .optional()
             .ok()?;
         opening_json.and_then(|json| serde_json::from_str(&json).ok())
+    }
+
+    fn set_opening_failed(
+        &mut self,
+        channel_id: &str,
+        failure: ClientOpeningFailure,
+    ) -> Result<(), String> {
+        let failure_json =
+            serde_json::to_string(&failure).map_err(|e| format!("serialize failure: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("sqlite lock poisoned: {e}"))?;
+        let rows = conn
+            .execute(
+                "UPDATE spilman_client_channels
+                 SET state = ?2, failure_json = ?3
+                 WHERE channel_id = ?1 AND state = ?4",
+                params![
+                    channel_id,
+                    Self::state_to_string(ClientChannelState::OpeningFailed),
+                    failure_json,
+                    Self::state_to_string(ClientChannelState::OpeningFromSwap)
+                ],
+            )
+            .map_err(|e| format!("set_opening_failed: {e}"))?;
+        if rows == 0 {
+            return Err(format!(
+                "channel {channel_id} is not in OpeningFromSwap state"
+            ));
+        }
+        Ok(())
+    }
+
+    fn get_opening_failure(&self, channel_id: &str) -> Option<ClientOpeningFailure> {
+        let conn = self.conn.lock().ok()?;
+        let failure_json: Option<String> = conn
+            .query_row(
+                "SELECT failure_json FROM spilman_client_channels
+                 WHERE channel_id = ?1 AND state = ?2",
+                params![
+                    channel_id,
+                    Self::state_to_string(ClientChannelState::OpeningFailed)
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()?;
+        failure_json.and_then(|json| serde_json::from_str(&json).ok())
     }
 
     fn get_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
@@ -572,5 +629,11 @@ mod tests {
     fn test_sqlite_storage_keyset_cache() {
         let mut storage = SqliteClientStorage::open_in_memory().unwrap();
         assert_storage_keyset_cache(&mut storage);
+    }
+
+    #[test]
+    fn test_sqlite_storage_opening_failed() {
+        let mut storage = SqliteClientStorage::open_in_memory().unwrap();
+        assert_storage_opening_failed(&mut storage);
     }
 }

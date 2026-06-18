@@ -524,6 +524,7 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
             "closed" | "Closed" => Some(ClientChannelState::Closed),
             "closing" | "Closing" => Some(ClientChannelState::Closing),
             "opening_from_swap" => Some(ClientChannelState::OpeningFromSwap),
+            "opening_failed" => Some(ClientChannelState::OpeningFailed),
             "open" | "Open" => Some(ClientChannelState::Open),
             _ => None,
         }

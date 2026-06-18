@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use cdk::error::ErrorResponse;
 use cdk::mint::Mint;
 use cdk::nuts::SwapRequest;
 use cdk_spilman::{SpilmanClientNetworking, SpilmanNetworking};
@@ -46,9 +47,11 @@ impl InMemoryMintNetworking {
         // This works with #[tokio::test] which uses a multi-threaded runtime
         let response = tokio::task::block_in_place(|| {
             handle.block_on(async move {
-                mint.process_swap_request(swap_request)
-                    .await
-                    .map_err(|e| format!("Mint swap failed: {}", e))
+                mint.process_swap_request(swap_request).await.map_err(|e| {
+                    let response = ErrorResponse::from(e);
+                    serde_json::to_string(&response)
+                        .unwrap_or_else(|ser_err| format!("Mint swap failed: {ser_err}"))
+                })
             })
         })?;
 
@@ -75,9 +78,11 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
 
         let response = tokio::task::block_in_place(|| {
             handle.block_on(async move {
-                mint.restore(restore_request)
-                    .await
-                    .map_err(|e| format!("Mint restore failed: {}", e))
+                mint.restore(restore_request).await.map_err(|e| {
+                    let response = ErrorResponse::from(e);
+                    serde_json::to_string(&response)
+                        .unwrap_or_else(|ser_err| format!("Mint restore failed: {ser_err}"))
+                })
             })
         })?;
 
