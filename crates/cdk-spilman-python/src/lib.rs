@@ -1078,7 +1078,10 @@ pub struct ClientOpenChannelResult {
     pub capacity: u64,
     pub funding_token_amount: u64,
     pub mint_url: String,
+    pub unit: String,
+    pub keyset_id: String,
     pub sender_pubkey_hex: String,
+    pub receiver_pubkey_hex: String,
 }
 
 /// Information about a stored channel.
@@ -1486,7 +1489,7 @@ impl ClientBridge {
     ///     max_amount: Maximum amount per output (from server policy, 0 = no limit)
     ///
     /// Returns:
-    ///     ClientOpenChannelResult with channel_id, capacity, funding_token_amount, mint_url, sender_pubkey_hex
+    ///     ClientOpenChannelResult with channel_id, capacity, funding_token_amount, mint_url, unit, keyset_id, sender_pubkey_hex, receiver_pubkey_hex
     #[pyo3(signature = (token_string, receiver_pubkey_hex, sender_pubkey_hex, expiry_timestamp, keyset_info_json, max_amount))]
     fn open_channel_from_token(
         &self,
@@ -1514,7 +1517,10 @@ impl ClientBridge {
             capacity: result.capacity,
             funding_token_amount: result.funding_token_amount,
             mint_url: result.mint_url,
+            unit: result.unit,
+            keyset_id: result.keyset_id,
             sender_pubkey_hex: result.sender_pubkey_hex,
+            receiver_pubkey_hex: result.receiver_pubkey_hex,
         })
     }
 

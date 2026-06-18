@@ -371,9 +371,11 @@ mod tests {
             channel_secret_hex: "aa".repeat(32),
             keyset_info_json: "{}".to_string(),
             sender_pubkey_hex: "02".to_string() + &"bb".repeat(32),
+            receiver_pubkey_hex: "02".to_string() + &"cc".repeat(32),
             capacity: 1000,
             funding_token_amount: 1100,
             mint_url: "https://mint.example.com".to_string(),
+            unit: "sat".to_string(),
             input_token: "cashuAtest".to_string(),
             created_at: 12345,
         };

@@ -30,7 +30,7 @@ use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 use super::bindings::{
     complete_funding_restore, complete_funding_swap, compute_channel_from_proofs,
     compute_channel_from_token, compute_channel_from_token_with_input_keysets,
-    create_funding_restore_request, create_funding_swap,
+    create_funding_restore_request, create_funding_swap, parse_keyset_info_from_json,
 };
 use super::bridge::Payment;
 use super::client_storage::{
@@ -322,8 +322,14 @@ pub struct OpenChannelResult {
     pub funding_token_amount: u64,
     /// Mint URL associated with the channel's funding proofs.
     pub mint_url: String,
+    /// Unit of the channel (e.g. "sat").
+    pub unit: String,
+    /// Keyset ID used for the channel's funding outputs.
+    pub keyset_id: String,
     /// Sender public key used for this channel.
     pub sender_pubkey_hex: String,
+    /// Receiver public key used for this channel.
+    pub receiver_pubkey_hex: String,
 }
 
 /// Stage where channel opening failed.
@@ -1193,6 +1199,36 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 "Missing 'proofs_json' in compute result",
             )
         })?;
+        let unit = compute_json["unit"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'unit' in compute result",
+                )
+            })?
+            .to_string();
+        let output_keyset_id = compute_json["output_keyset_id"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'output_keyset_id' in compute result",
+                )
+            })?
+            .to_string();
+        let receiver_pubkey_hex = compute_json["receiver_pubkey_hex"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'receiver_pubkey_hex' in compute result",
+                )
+            })?
+            .to_string();
 
         let swap_result = create_funding_swap(
             params_json,
@@ -1235,9 +1271,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             channel_secret_hex: channel_secret_hex.to_string(),
             keyset_info_json: keyset_info_json.to_string(),
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            receiver_pubkey_hex: receiver_pubkey_hex.clone(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
+            unit: unit.clone(),
             input_token: input_token.to_string(),
             created_at: self.host.now_seconds(),
         };
@@ -1382,7 +1420,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             capacity,
             funding_token_amount,
             mint_url,
+            unit,
+            keyset_id: output_keyset_id,
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            receiver_pubkey_hex,
         })
     }
 
@@ -1475,6 +1516,36 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 "Missing 'proofs_json' in compute result",
             )
         })?;
+        let unit = compute_json["unit"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'unit' in compute result",
+                )
+            })?
+            .to_string();
+        let output_keyset_id = compute_json["output_keyset_id"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'output_keyset_id' in compute result",
+                )
+            })?
+            .to_string();
+        let receiver_pubkey_hex_from_compute = compute_json["receiver_pubkey_hex"]
+            .as_str()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    "Missing 'receiver_pubkey_hex' in compute result",
+                )
+            })?
+            .to_string();
 
         // Step 3: Create funding swap request
         let swap_result = create_funding_swap(
@@ -1522,9 +1593,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             channel_secret_hex: channel_secret_hex.clone(),
             keyset_info_json: keyset_info_json.to_string(),
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            receiver_pubkey_hex: receiver_pubkey_hex_from_compute.clone(),
             capacity,
             funding_token_amount,
             mint_url: mint_url.clone(),
+            unit: unit.clone(),
             input_token: token_string.to_string(),
             created_at: self.host.now_seconds(),
         };
@@ -1675,7 +1748,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             capacity,
             funding_token_amount,
             mint_url,
+            unit,
+            keyset_id: output_keyset_id,
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
+            receiver_pubkey_hex: receiver_pubkey_hex_from_compute,
         })
     }
 
@@ -1753,12 +1829,22 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     e,
                 )
             })?;
+        let keyset_info = parse_keyset_info_from_json(&opening.keyset_info_json).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::MarkOpen,
+                Some(channel_id.to_string()),
+                format!("Failed to parse stored keyset info: {e}"),
+            )
+        })?;
         Ok(OpenChannelResult {
             channel_id: channel_id.to_string(),
             capacity: opening.capacity,
             funding_token_amount: opening.funding_token_amount,
             mint_url: opening.mint_url,
+            unit: opening.unit,
+            keyset_id: keyset_info.keyset_id.to_string(),
             sender_pubkey_hex: opening.sender_pubkey_hex,
+            receiver_pubkey_hex: opening.receiver_pubkey_hex,
         })
     }
 

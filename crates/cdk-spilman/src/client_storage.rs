@@ -29,12 +29,16 @@ pub struct ClientChannelOpeningFromSwap {
     pub keyset_info_json: String,
     /// Sender's public key for this channel (hex)
     pub sender_pubkey_hex: String,
+    /// Receiver's public key for this channel (hex)
+    pub receiver_pubkey_hex: String,
     /// Maximum value the receiver can claim
     pub capacity: u64,
     /// Nominal funding token amount
     pub funding_token_amount: u64,
     /// Mint URL associated with the channel
     pub mint_url: String,
+    /// Unit of the channel (e.g. "sat")
+    pub unit: String,
     /// Original Cashu token (cashuA.../cashuB...) for recovery if the swap fails
     pub input_token: String,
     /// Unix timestamp when channel was created
@@ -409,9 +413,11 @@ pub(crate) mod fixtures {
             channel_secret_hex: "aa".repeat(32),
             keyset_info_json: "{}".to_string(),
             sender_pubkey_hex: "02".to_string() + &"bb".repeat(32),
+            receiver_pubkey_hex: "02".to_string() + &"cc".repeat(32),
             capacity: 1000,
             funding_token_amount: 1100,
             mint_url: "https://mint.example.com".to_string(),
+            unit: "sat".to_string(),
             input_token: "cashuAeyJ0ZXN0IjogdHJ1ZX0=".to_string(),
             created_at: 1234567890,
         }

@@ -136,7 +136,10 @@ type OpenChannelResult struct {
 	Capacity           uint64 `json:"capacity"`
 	FundingTokenAmount uint64 `json:"funding_token_amount"`
 	MintURL            string `json:"mint_url"`
+	Unit               string `json:"unit"`
+	KeysetID           string `json:"keyset_id"`
 	SenderPubkeyHex    string `json:"sender_pubkey_hex"`
+	ReceiverPubkeyHex  string `json:"receiver_pubkey_hex"`
 }
 
 // ClientChannelInfo contains information about a stored channel.

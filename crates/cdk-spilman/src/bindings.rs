@@ -462,6 +462,9 @@ pub fn create_signed_balance_update(
 /// - `funding_token_amount`: Nominal value of the funding token
 /// - `input_value`: Total value of input proofs
 /// - `mint_url`: Mint URL from the token
+/// - `unit`: Unit of the channel (e.g. "sat")
+/// - `output_keyset_id`: Keyset ID used for the funding outputs
+/// - `receiver_pubkey_hex`: Receiver public key used for this channel
 /// - `params_json`: Serialized channel params for use in later functions
 /// - `proofs_json`: The parsed proofs from the token (for create_funding_swap)
 pub fn compute_channel_from_token(
@@ -527,6 +530,18 @@ pub fn compute_channel_from_token(
 /// `keyset_info_json` is the output keyset for newly-created channel funding
 /// proofs. `input_keysets_json` is a JSON array of NUT-02 keyset summaries used
 /// only to expand compact token proof keyset IDs.
+///
+/// # Returns
+/// JSON with:
+/// - `capacity`: Channel capacity (final value after all fees)
+/// - `funding_token_amount`: Nominal value of the funding token
+/// - `input_value`: Total value of input proofs
+/// - `mint_url`: Mint URL from the token
+/// - `unit`: Unit of the channel (e.g. "sat")
+/// - `output_keyset_id`: Keyset ID used for the funding outputs
+/// - `receiver_pubkey_hex`: Receiver public key used for this channel
+/// - `params_json`: Serialized channel params for use in later functions
+/// - `proofs_json`: The parsed proofs from the token (for create_funding_swap)
 #[allow(clippy::too_many_arguments)]
 pub fn compute_channel_from_token_with_input_keysets(
     token_string: &str,
@@ -574,6 +589,18 @@ pub fn compute_channel_from_token_with_input_keysets(
 ///
 /// Input proofs may be from any keyset accepted by the mint. The provided
 /// `keyset_info_json` is used only for the newly-created channel funding outputs.
+///
+/// # Returns
+/// JSON with:
+/// - `capacity`: Channel capacity (final value after all fees)
+/// - `funding_token_amount`: Nominal value of the funding token
+/// - `input_value`: Total value of input proofs
+/// - `mint_url`: Mint URL associated with the proofs
+/// - `unit`: Unit of the channel (e.g. "sat")
+/// - `output_keyset_id`: Keyset ID used for the funding outputs
+/// - `receiver_pubkey_hex`: Receiver public key used for this channel
+/// - `params_json`: Serialized channel params for use in later functions
+/// - `proofs_json`: The parsed input proofs (for create_funding_swap)
 #[allow(clippy::too_many_arguments)]
 pub fn compute_channel_from_proofs(
     mint_url: &str,
@@ -669,7 +696,7 @@ fn compute_channel_from_proofs_inner(
         sender_pubkey,
         receiver_pubkey,
         mint_url.to_string(),
-        unit,
+        unit.clone(),
         capacity,
         funding_token_amount,
         expiry_timestamp,
@@ -693,6 +720,9 @@ fn compute_channel_from_proofs_inner(
         "funding_token_amount": funding_token_amount,
         "input_value": input_value,
         "mint_url": mint_url,
+        "unit": unit.to_string(),
+        "output_keyset_id": keyset_info.keyset_id.to_string(),
+        "receiver_pubkey_hex": receiver_pubkey.to_hex(),
         "params_json": params_json,
         "proofs_json": proofs_json
     });
