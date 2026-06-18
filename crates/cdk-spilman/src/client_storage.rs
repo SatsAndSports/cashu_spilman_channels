@@ -264,6 +264,7 @@ impl ClientStorage for MemoryClientStorage {
         opening: ClientChannelOpeningFromSwap,
     ) -> Result<(), String> {
         self.opening.insert(channel_id.to_string(), opening);
+        self.failures.remove(channel_id);
         self.states
             .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
         Ok(())
@@ -285,6 +286,7 @@ impl ClientStorage for MemoryClientStorage {
             };
             self.funding.insert(channel_id.to_string(), funding);
         }
+        self.failures.remove(channel_id);
         self.states
             .insert(channel_id.to_string(), ClientChannelState::Open);
         Ok(())
@@ -314,6 +316,9 @@ impl ClientStorage for MemoryClientStorage {
     }
 
     fn get_opening_failure(&self, channel_id: &str) -> Option<ClientOpeningFailure> {
+        if self.states.get(channel_id) != Some(&ClientChannelState::OpeningFailed) {
+            return None;
+        }
         self.failures.get(channel_id).cloned()
     }
 
@@ -622,7 +627,9 @@ pub(crate) mod fixtures {
             .is_empty());
     }
 
-    /// Assert that explicit opening failures are retained separately from recoverable openings.
+    /// Assert that explicit opening failures are retained separately from recoverable openings,
+    /// and that stale failure metadata is cleared when the channel transitions away from
+    /// `OpeningFailed`.
     pub fn assert_storage_opening_failed<S: ClientStorage>(storage: &mut S) {
         let channel_id = "failed_open_channel";
         storage
@@ -649,6 +656,26 @@ pub(crate) mod fixtures {
             failure.message
         );
         assert!(storage.list_channel_ids().contains(&channel_id.to_string()));
+
+        // Re-saving the channel as OpeningFromSwap should clear the stale failure record
+        // and make it possible to mark it open.
+        storage
+            .save_opening_from_swap(channel_id, make_test_opening())
+            .expect("re-save opening");
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::OpeningFromSwap)
+        );
+        assert!(storage.get_opening_failure(channel_id).is_none());
+        assert!(storage.get_opening_from_swap(channel_id).is_some());
+
+        storage.set_open(channel_id, "[]").expect("mark open");
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Open)
+        );
+        assert!(storage.get_opening_failure(channel_id).is_none());
+        assert!(storage.get_opening_from_swap(channel_id).is_none());
     }
 }
 

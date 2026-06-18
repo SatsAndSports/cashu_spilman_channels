@@ -331,8 +331,6 @@ pub struct OpenChannelResult {
 pub enum OpenChannelFailureStage {
     /// Failure happened before any opening record was persisted.
     BeforeOpeningSaved,
-    /// Opening record was persisted, but failure happened before swap submit.
-    OpeningSavedBeforeSwapSubmit,
     /// Mint explicitly rejected the funding swap.
     MintRejected,
     /// Swap may have been submitted to the mint.
@@ -349,7 +347,6 @@ impl OpenChannelFailureStage {
     fn as_str(self) -> &'static str {
         match self {
             Self::BeforeOpeningSaved => "before_opening_saved",
-            Self::OpeningSavedBeforeSwapSubmit => "opening_saved_before_swap_submit",
             Self::MintRejected => "mint_rejected",
             Self::SwapSubmitted => "swap_submitted",
             Self::FundingProofsReceived => "funding_proofs_received",
