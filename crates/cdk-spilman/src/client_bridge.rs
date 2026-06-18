@@ -1546,11 +1546,32 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .call_mint_swap(&mint_url, swap_request_json)
             .await
             .map_err(|e| {
-                OpenChannelError::new(
-                    OpenChannelFailureStage::SwapSubmitted,
-                    Some(channel_id.clone()),
-                    normalize_mint_error_string(e),
-                )
+                let message = normalize_mint_error_string(e);
+                if is_explicit_mint_rejection(&message) {
+                    let failure = ClientOpeningFailure {
+                        stage: OpenChannelFailureStage::MintRejected.as_str().to_string(),
+                        message: message.clone(),
+                        failed_at: self.host.now_seconds(),
+                    };
+                    if let Err(mark_err) = self.host.mark_channel_opening_failed(&channel_id, failure) {
+                        return OpenChannelError::new(
+                            OpenChannelFailureStage::MarkOpen,
+                            Some(channel_id.clone()),
+                            format!("mint rejected swap, but failed to mark opening failed: {mark_err}; mint error: {message}"),
+                        );
+                    }
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::MintRejected,
+                        Some(channel_id.clone()),
+                        message,
+                    )
+                } else {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::SwapSubmitted,
+                        Some(channel_id.clone()),
+                        message,
+                    )
+                }
             })?;
 
         // Step 6: Unblind signatures and verify DLEQ
