@@ -37,7 +37,8 @@ pub use balance_update::{
 };
 pub use bindings::{
     attach_signature_to_balance_update, build_cashu_a_token, build_cashu_b_token,
-    channel_parameters_get_channel_id, compute_channel_from_proofs, compute_channel_from_token,
+    channel_parameters_get_channel_id, compute_channel_from_proofs,
+    compute_channel_from_proofs_with_input_keysets, compute_channel_from_token,
     compute_channel_from_token_with_input_keysets, compute_channel_secret_from_hex,
     compute_funding_token_amount, create_funding_outputs, create_funding_swap,
     create_signed_balance_update, create_unsigned_balance_update, parse_keyset_info_from_json,

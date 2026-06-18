@@ -28,9 +28,10 @@ use serde::{Deserialize, Serialize};
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{
-    complete_funding_restore, complete_funding_swap, compute_channel_from_proofs,
-    compute_channel_from_token, compute_channel_from_token_with_input_keysets,
-    create_funding_restore_request, create_funding_swap, parse_keyset_info_from_json,
+    complete_funding_restore, complete_funding_swap,
+    compute_channel_from_proofs_with_input_keysets, compute_channel_from_token,
+    compute_channel_from_token_with_input_keysets, create_funding_restore_request,
+    create_funding_swap, parse_keyset_info_from_json,
 };
 use super::bridge::Payment;
 use super::client_storage::{
@@ -612,6 +613,59 @@ fn token_input_keysets_from_response(keysets_json: &str, unit: &str) -> Result<S
 }
 
 #[cfg(feature = "wallet")]
+fn keyset_summary_from_cache_entry(
+    keyset_id: Id,
+    entry: &ClientKeysetCacheEntry,
+    expected_unit: &CurrencyUnit,
+) -> Result<serde_json::Value, String> {
+    if &entry.unit != expected_unit {
+        return Err(format!(
+            "cached keyset {keyset_id} unit mismatch: expected {expected_unit}, got {}",
+            entry.unit
+        ));
+    }
+    let info = parse_keyset_info_from_json(&entry.info_json)?;
+    if info.keyset_id != keyset_id {
+        return Err(format!(
+            "cached keyset id mismatch: requested {keyset_id}, cache entry has {}",
+            info.keyset_id
+        ));
+    }
+    if &info.unit != expected_unit {
+        return Err(format!(
+            "cached keyset {keyset_id} info unit mismatch: expected {expected_unit}, got {}",
+            info.unit
+        ));
+    }
+    let mut value = serde_json::json!({
+        "id": keyset_id.to_string(),
+        "unit": expected_unit.to_string(),
+        "active": entry.active,
+        "input_fee_ppk": info.input_fee_ppk,
+    });
+    if let Some(final_expiry) = info.final_expiry {
+        value["final_expiry"] = serde_json::json!(final_expiry);
+    }
+    Ok(value)
+}
+
+#[cfg(feature = "wallet")]
+fn proof_keyset_ids(input_proofs_json: &str) -> Result<Vec<Id>, String> {
+    let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
+        .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
+    let mut ids = Vec::new();
+    for proof in proofs {
+        if !ids.contains(&proof.keyset_id) {
+            ids.push(proof.keyset_id);
+        }
+    }
+    if ids.is_empty() {
+        return Err("input proofs are empty".to_string());
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "wallet")]
 fn first_active_keyset_id_from_response(
     keysets_json: &str,
     unit: &CurrencyUnit,
@@ -780,6 +834,61 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     fn fetch_token_input_keysets(&self, mint_url: &str, unit: &str) -> Result<String, String> {
         let keysets_json = self.networking.call_mint_keysets(mint_url)?;
         token_input_keysets_from_response(&keysets_json, unit)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn fetch_proof_input_keysets(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+    ) -> Result<String, String> {
+        let expected_unit = unit
+            .parse::<CurrencyUnit>()
+            .map_err(|e| format!("Invalid input proof unit: {e}"))?;
+        let proof_keyset_ids = proof_keyset_ids(input_proofs_json)?;
+
+        let mut summaries = Vec::new();
+        let mut missing = Vec::new();
+        for keyset_id in &proof_keyset_ids {
+            match self.host.get_keyset(mint_url, keyset_id) {
+                Some(entry) => summaries.push(keyset_summary_from_cache_entry(
+                    *keyset_id,
+                    &entry,
+                    &expected_unit,
+                )?),
+                None => missing.push(*keyset_id),
+            }
+        }
+
+        if missing.is_empty() {
+            return serde_json::to_string(&summaries)
+                .map_err(|e| format!("Failed to serialize cached input keysets: {e}"));
+        }
+
+        let keysets_json = self.networking.call_mint_keysets(mint_url)?;
+        let fetched_json = token_input_keysets_from_response(&keysets_json, unit)?;
+        let fetched: Vec<cashu::nuts::KeySetInfo> = serde_json::from_str(&fetched_json)
+            .map_err(|e| format!("Failed to parse fetched input keysets: {e}"))?;
+
+        for missing_id in missing {
+            let keyset = fetched
+                .iter()
+                .find(|keyset| keyset.id == missing_id)
+                .ok_or_else(|| {
+                    format!("missing input keyset metadata for proof keyset {missing_id}")
+                })?;
+            summaries.push(serde_json::json!({
+                "id": keyset.id.to_string(),
+                "unit": keyset.unit.to_string(),
+                "active": keyset.active,
+                "input_fee_ppk": keyset.input_fee_ppk,
+                "final_expiry": keyset.final_expiry,
+            }));
+        }
+
+        serde_json::to_string(&summaries)
+            .map_err(|e| format!("Failed to serialize input keysets: {e}"))
     }
 
     /// Open a new channel from a Cashu token using the first active output keyset.
@@ -1118,10 +1227,16 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .map_err(|e| {
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
-        let compute_result = compute_channel_from_proofs(
+        let input_keysets = self
+            .fetch_proof_input_keysets(mint_url, unit, input_proofs_json)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        let compute_result = compute_channel_from_proofs_with_input_keysets(
             mint_url,
             unit,
             input_proofs_json,
+            &input_keysets,
             receiver_pubkey_hex,
             sender_pubkey_hex,
             &channel_secret_hex,
@@ -2137,6 +2252,10 @@ pub fn base64_decode(input: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "wallet")]
+    use std::cell::Cell;
+    #[cfg(feature = "wallet")]
+    use std::rc::Rc;
 
     struct NoopNetworking;
 
@@ -2156,6 +2275,145 @@ mod tests {
         fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
             Err("not used".to_string())
         }
+    }
+
+    #[cfg(feature = "wallet")]
+    struct KeysetsNetworking {
+        keysets_json: String,
+        keysets_calls: Rc<Cell<u32>>,
+    }
+
+    #[cfg(feature = "wallet")]
+    impl SpilmanClientNetworking for KeysetsNetworking {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+            self.keysets_calls.set(self.keysets_calls.get() + 1);
+            Ok(self.keysets_json.clone())
+        }
+
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+    }
+
+    #[cfg(feature = "wallet")]
+    fn proof_json(keyset_id: Id, amount: u64) -> String {
+        let proof = Proof {
+            amount: cashu::Amount::from(amount),
+            keyset_id,
+            secret: cashu::secret::Secret::new("input-secret".to_string()),
+            c: "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2"
+                .parse()
+                .unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        serde_json::to_string(&vec![proof]).unwrap()
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn proof_input_keysets_use_cache_without_network() {
+        let input_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8], 900);
+        let host = crate::ConfigurableClientHost::new_in_memory();
+        host.set_keyset(
+            "https://mint.example",
+            input_keyset.keyset_id,
+            ClientKeysetCacheEntry {
+                info_json: serde_json::to_string(&input_keyset).unwrap(),
+                active: false,
+                unit: CurrencyUnit::Sat,
+            },
+        )
+        .unwrap();
+        let bridge = SpilmanClientBridge::new(host, NoopNetworking);
+
+        let input_keysets = bridge
+            .fetch_proof_input_keysets(
+                "https://mint.example",
+                "sat",
+                &proof_json(input_keyset.keyset_id, 8),
+            )
+            .unwrap();
+        let input_keysets: Vec<cashu::nuts::KeySetInfo> =
+            serde_json::from_str(&input_keysets).unwrap();
+
+        assert_eq!(input_keysets.len(), 1);
+        assert_eq!(input_keysets[0].id, input_keyset.keyset_id);
+        assert_eq!(input_keysets[0].input_fee_ppk, 900);
+        assert!(!input_keysets[0].active);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn proof_input_keysets_fetch_missing_from_keysets_endpoint() {
+        let input_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8], 700);
+        let keysets_calls = Rc::new(Cell::new(0));
+        let networking = KeysetsNetworking {
+            keysets_json: serde_json::json!({
+                "keysets": [{
+                    "id": input_keyset.keyset_id.to_string(),
+                    "unit": "sat",
+                    "active": false,
+                    "input_fee_ppk": 700,
+                }]
+            })
+            .to_string(),
+            keysets_calls: Rc::clone(&keysets_calls),
+        };
+        let bridge =
+            SpilmanClientBridge::new(crate::ConfigurableClientHost::new_in_memory(), networking);
+
+        let input_keysets = bridge
+            .fetch_proof_input_keysets(
+                "https://mint.example",
+                "sat",
+                &proof_json(input_keyset.keyset_id, 8),
+            )
+            .unwrap();
+        let input_keysets: Vec<cashu::nuts::KeySetInfo> =
+            serde_json::from_str(&input_keysets).unwrap();
+
+        assert_eq!(keysets_calls.get(), 1);
+        assert_eq!(input_keysets.len(), 1);
+        assert_eq!(input_keysets[0].id, input_keyset.keyset_id);
+        assert_eq!(input_keysets[0].input_fee_ppk, 700);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn proof_input_keysets_reject_wrong_unit_cache_entry() {
+        let input_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8], 900);
+        let host = crate::ConfigurableClientHost::new_in_memory();
+        host.set_keyset(
+            "https://mint.example",
+            input_keyset.keyset_id,
+            ClientKeysetCacheEntry {
+                info_json: serde_json::to_string(&input_keyset).unwrap(),
+                active: false,
+                unit: CurrencyUnit::Msat,
+            },
+        )
+        .unwrap();
+        let bridge = SpilmanClientBridge::new(host, NoopNetworking);
+
+        let err = bridge
+            .fetch_proof_input_keysets(
+                "https://mint.example",
+                "sat",
+                &proof_json(input_keyset.keyset_id, 8),
+            )
+            .unwrap_err();
+
+        assert!(err.contains("unit mismatch"));
     }
 
     struct FailingLifecycleHost;

@@ -16,7 +16,7 @@ use cashu::nuts::{CurrencyUnit, Id, Keys, Proof, PublicKey, SecretKey, SwapReque
 use cashu::secret::Secret;
 use cashu::util::{hex, unix_time};
 use cashu::Amount;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 /// Parse KeysetInfo from JSON
@@ -159,6 +159,49 @@ pub fn compute_funding_token_amount(
 
     ChannelParameters::get_minimum_funding_token_amount(capacity, &keyset_info, maximum_amount)
         .map_err(|e| format!("Failed to compute funding token amount: {}", e))
+}
+
+struct MixedInputFeeResult {
+    input_value: u64,
+    input_fee: u64,
+    post_swap_value: u64,
+}
+
+fn compute_post_swap_value_from_input_keysets(
+    proofs: &[Proof],
+    input_keysets: &[cashu::nuts::KeySetInfo],
+) -> Result<MixedInputFeeResult, String> {
+    let input_fee_ppk_by_keyset = input_keysets
+        .iter()
+        .map(|keyset| (keyset.id, keyset.input_fee_ppk))
+        .collect::<HashMap<_, _>>();
+
+    let mut input_value = 0u64;
+    let mut input_fee_ppk_sum = 0u64;
+    for proof in proofs {
+        input_value = input_value
+            .checked_add(u64::from(proof.amount))
+            .ok_or("input proof value overflow")?;
+        let input_fee_ppk = input_fee_ppk_by_keyset
+            .get(&proof.keyset_id)
+            .ok_or_else(|| {
+                format!(
+                    "missing input keyset fee metadata for proof keyset {}",
+                    proof.keyset_id
+                )
+            })?;
+        input_fee_ppk_sum = input_fee_ppk_sum
+            .checked_add(*input_fee_ppk)
+            .ok_or("input fee ppk overflow")?;
+    }
+
+    let input_fee = input_fee_ppk_sum.div_ceil(1000);
+    let post_swap_value = input_value.saturating_sub(input_fee);
+    Ok(MixedInputFeeResult {
+        input_value,
+        input_fee,
+        post_swap_value,
+    })
 }
 
 /// Create plain (non-P2PK) blinded messages for a given amount
@@ -481,12 +524,6 @@ pub fn compute_channel_from_token(
         .parse()
         .map_err(|e| format!("Failed to parse token: {}", e))?;
 
-    // Get total value from token (doesn't need keyset info)
-    let input_value: u64 = token
-        .value()
-        .map_err(|e| format!("Failed to get token value: {}", e))?
-        .into();
-
     // Get mint URL
     let mint_url = token
         .mint_url()
@@ -497,6 +534,13 @@ pub fn compute_channel_from_token(
 
     // Parse keyset info
     let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let input_keysets = vec![cashu::nuts::KeySetInfo {
+        id: keyset_info.keyset_id,
+        unit: unit.clone(),
+        active: true,
+        input_fee_ppk: keyset_info.input_fee_ppk,
+        final_expiry: keyset_info.final_expiry,
+    }];
 
     // Parse proofs using keyset info
     // We need to create a KeySetInfo (nut02) for the token's proofs() method
@@ -510,10 +554,13 @@ pub fn compute_channel_from_token(
     let proofs = token
         .proofs(&[nut02_keyset_info])
         .map_err(|e| format!("Failed to parse proofs: {}", e))?;
+    let input_fee = compute_post_swap_value_from_input_keysets(&proofs, &input_keysets)?;
 
     compute_channel_from_proofs_inner(
         &proofs,
-        input_value,
+        input_fee.input_value,
+        input_fee.post_swap_value,
+        input_fee.input_fee,
         &mint_url.to_string(),
         unit,
         receiver_pubkey_hex,
@@ -556,10 +603,6 @@ pub fn compute_channel_from_token_with_input_keysets(
     let token: Token = token_string
         .parse()
         .map_err(|e| format!("Failed to parse token: {e}"))?;
-    let input_value: u64 = token
-        .value()
-        .map_err(|e| format!("Failed to get token value: {e}"))?
-        .into();
     let mint_url = token
         .mint_url()
         .map_err(|e| format!("Failed to get mint URL: {e}"))?;
@@ -570,10 +613,13 @@ pub fn compute_channel_from_token_with_input_keysets(
     let proofs = token
         .proofs(&input_keysets)
         .map_err(|e| format!("Failed to parse proofs: {e}"))?;
+    let input_fee = compute_post_swap_value_from_input_keysets(&proofs, &input_keysets)?;
 
     compute_channel_from_proofs_inner(
         &proofs,
-        input_value,
+        input_fee.input_value,
+        input_fee.post_swap_value,
+        input_fee.input_fee,
         &mint_url.to_string(),
         unit,
         receiver_pubkey_hex,
@@ -613,15 +659,53 @@ pub fn compute_channel_from_proofs(
     keyset_info_json: &str,
     maximum_amount_for_one_output: u64,
 ) -> Result<String, String> {
+    let _ = (
+        mint_url,
+        unit,
+        input_proofs_json,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info_json,
+        maximum_amount_for_one_output,
+    );
+    Err("compute_channel_from_proofs requires input keyset fee metadata; use compute_channel_from_proofs_with_input_keysets".to_string())
+}
+
+/// Compute channel parameters from input proofs using explicit input keyset fee metadata.
+///
+/// Input proofs may be from mixed keysets. `input_keysets_json` must contain a
+/// NUT-02 keyset summary for every proof keyset so the input-side swap fee can
+/// be computed from the actual input proof keysets. The provided
+/// `output_keyset_info_json` is used only for newly-created channel funding
+/// outputs and the later close/refund fee stages.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_proofs_with_input_keysets(
+    mint_url: &str,
+    unit: &str,
+    input_proofs_json: &str,
+    input_keysets_json: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    output_keyset_info_json: &str,
+    maximum_amount_for_one_output: u64,
+) -> Result<String, String> {
     let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
         .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
-    let input_value = proofs.iter().map(|proof| u64::from(proof.amount)).sum();
     let unit = CurrencyUnit::from_str(unit).unwrap_or(CurrencyUnit::Custom(unit.to_string()));
-    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let input_keysets: Vec<cashu::nuts::KeySetInfo> = serde_json::from_str(input_keysets_json)
+        .map_err(|e| format!("Failed to parse input keysets: {e}"))?;
+    let input_fee = compute_post_swap_value_from_input_keysets(&proofs, &input_keysets)?;
+    let keyset_info = parse_keyset_info_from_json(output_keyset_info_json)?;
 
     compute_channel_from_proofs_inner(
         &proofs,
-        input_value,
+        input_fee.input_value,
+        input_fee.post_swap_value,
+        input_fee.input_fee,
         mint_url,
         unit,
         receiver_pubkey_hex,
@@ -637,6 +721,8 @@ pub fn compute_channel_from_proofs(
 fn compute_channel_from_proofs_inner(
     proofs: &[Proof],
     input_value: u64,
+    funding_token_amount: u64,
+    input_fee: u64,
     mint_url: &str,
     unit: CurrencyUnit,
     receiver_pubkey_hex: &str,
@@ -655,13 +741,9 @@ fn compute_channel_from_proofs_inner(
 
     let max_amt = maximum_amount_for_one_output;
 
-    // Step 1: funding_token_amount = forward_fees(input_value) - value after swap's input fees
-    // This is the nominal value of the funding token after swapping wallet proofs
-    let funding_token_amount = keyset_info
-        .deterministic_value_after_fees(input_value, max_amt)
-        .map_err(|e| format!("Failed to compute funding_token_amount: {}", e))?;
-
-    // Step 2: capacity = forward(forward(funding_token_amount)) - value after both close stages
+    // The funding token amount is the post-swap value of the mixed input proofs.
+    // The two following fee passes use the output keyset because they apply to
+    // the deterministic channel close/refund stages.
     let v2 = keyset_info
         .deterministic_value_after_fees(funding_token_amount, max_amt)
         .map_err(|e| format!("Failed to compute v2: {}", e))?;
@@ -719,6 +801,7 @@ fn compute_channel_from_proofs_inner(
         "capacity": capacity,
         "funding_token_amount": funding_token_amount,
         "input_value": input_value,
+        "input_fee": input_fee,
         "mint_url": mint_url,
         "unit": unit.to_string(),
         "output_keyset_id": keyset_info.keyset_id.to_string(),
@@ -1467,16 +1550,11 @@ mod tests {
     use super::*;
     use cashu::secret::Secret;
 
-    #[test]
-    fn compute_channel_from_proofs_allows_input_keyset_different_from_output_keyset() {
-        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
-        let input_keyset_id = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 0).keyset_id;
-        assert_ne!(input_keyset_id, output_keyset_info.keyset_id);
-
-        let input_proofs = vec![Proof {
-            amount: Amount::from(8),
-            keyset_id: input_keyset_id,
-            secret: Secret::new("input-secret".to_string()),
+    fn proof(amount: u64, keyset_id: Id, secret: &str) -> Proof {
+        Proof {
+            amount: Amount::from(amount),
+            keyset_id,
+            secret: Secret::new(secret.to_string()),
             c: PublicKey::from_str(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
@@ -1484,9 +1562,26 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
-        }];
+        }
+    }
+
+    fn nut02_keyset_info(keyset_info: &KeysetInfo, active: bool) -> cashu::nuts::KeySetInfo {
+        cashu::nuts::KeySetInfo {
+            id: keyset_info.keyset_id,
+            unit: CurrencyUnit::Sat,
+            active,
+            input_fee_ppk: keyset_info.input_fee_ppk,
+            final_expiry: keyset_info.final_expiry,
+        }
+    }
+
+    #[test]
+    fn compute_channel_from_proofs_requires_input_keyset_metadata() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let input_keyset_id = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 0).keyset_id;
         let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
-        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+        let input_proofs_json =
+            serde_json::to_string(&vec![proof(8, input_keyset_id, "input-secret")]).unwrap();
         let sender_secret = SecretKey::generate();
         let receiver_secret = SecretKey::generate();
         let channel_secret = compute_channel_secret_from_hex(
@@ -1495,7 +1590,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = compute_channel_from_proofs(
+        let err = compute_channel_from_proofs(
             "https://mint.example",
             "sat",
             &input_proofs_json,
@@ -1506,30 +1601,64 @@ mod tests {
             &output_keyset_info_json,
             0,
         )
-        .expect("compute channel from mismatched input/output keysets");
+        .unwrap_err();
+        assert!(err.contains("requires input keyset fee metadata"));
+    }
+
+    #[test]
+    fn compute_channel_from_proofs_with_input_keysets_uses_mixed_input_fees() {
+        let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
+        let input_keyset_a = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 400);
+        let input_keyset_b = crate::params::mock_keyset_info(vec![1, 5, 25], 900);
+        assert_ne!(input_keyset_a.keyset_id, output_keyset_info.keyset_id);
+        assert_ne!(input_keyset_b.keyset_id, output_keyset_info.keyset_id);
+
+        let input_proofs = vec![
+            proof(9, input_keyset_a.keyset_id, "input-secret-a"),
+            proof(5, input_keyset_b.keyset_id, "input-secret-b"),
+        ];
+        let input_keysets_json = serde_json::to_string(&vec![
+            nut02_keyset_info(&input_keyset_a, false),
+            nut02_keyset_info(&input_keyset_b, false),
+        ])
+        .unwrap();
+        let output_keyset_info_json = serde_json::to_string(&output_keyset_info).unwrap();
+        let input_proofs_json = serde_json::to_string(&input_proofs).unwrap();
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let channel_secret = compute_channel_secret_from_hex(
+            &sender_secret.to_secret_hex(),
+            &receiver_secret.public_key().to_hex(),
+        )
+        .unwrap();
+
+        let result = compute_channel_from_proofs_with_input_keysets(
+            "https://mint.example",
+            "sat",
+            &input_proofs_json,
+            &input_keysets_json,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            &channel_secret,
+            unix_time() + 3600,
+            &output_keyset_info_json,
+            0,
+        )
+        .expect("compute channel from mixed input keysets");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(result["input_value"].as_u64(), Some(8));
+        assert_eq!(result["input_value"].as_u64(), Some(14));
+        assert_eq!(result["input_fee"].as_u64(), Some(2));
+        assert_eq!(result["funding_token_amount"].as_u64(), Some(12));
         assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
     }
 
     #[test]
     fn compute_channel_from_token_with_input_keysets_allows_distinct_output_keyset() {
         let output_keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32], 0);
-        let input_keyset_info = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 0);
+        let input_keyset_info = crate::params::mock_keyset_info(vec![1, 3, 9, 27], 900);
         assert_ne!(input_keyset_info.keyset_id, output_keyset_info.keyset_id);
 
-        let input_proofs = vec![Proof {
-            amount: Amount::from(9),
-            keyset_id: input_keyset_info.keyset_id,
-            secret: Secret::new("input-token-secret".to_string()),
-            c: PublicKey::from_str(
-                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
-            )
-            .unwrap(),
-            witness: None,
-            dleq: None,
-            p2pk_e: None,
-        }];
+        let input_proofs = vec![proof(9, input_keyset_info.keyset_id, "input-token-secret")];
         let token = build_cashu_b_token(
             "https://mint.example",
             "sat",
@@ -1566,6 +1695,8 @@ mod tests {
         .expect("compute channel from token with distinct input/output keysets");
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["input_value"].as_u64(), Some(9));
+        assert_eq!(result["input_fee"].as_u64(), Some(1));
+        assert_eq!(result["funding_token_amount"].as_u64(), Some(8));
         assert_eq!(result["mint_url"].as_str(), Some("https://mint.example"));
     }
 }
