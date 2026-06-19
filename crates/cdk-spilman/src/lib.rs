@@ -28,6 +28,7 @@ pub mod sqlite_client_storage;
 pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
 mod established_channel;
+mod keyset_retry;
 mod keysets_and_amounts;
 mod mint_errors;
 mod params;
@@ -70,6 +71,10 @@ pub use deterministic::{
     MintConnection,
 };
 pub use established_channel::EstablishedChannel;
+pub use keyset_retry::{
+    with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError, KeysetRetryPhase,
+    KeysetRetrySuccess, SelectedOutputKeyset,
+};
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 pub use mint_errors::{
     extract_nut00_error_code, is_retryable_keyset_error_code, is_retryable_keyset_mint_error,

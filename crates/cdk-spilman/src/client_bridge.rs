@@ -40,6 +40,8 @@ use super::client_storage::{
 };
 #[cfg(feature = "wallet")]
 use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_mint_error};
+#[cfg(feature = "wallet")]
+use crate::{with_active_keyset_retry, KeysetRetryError};
 
 // ============================================================================
 // SpilmanClientHost trait
@@ -344,6 +346,12 @@ pub struct OpenChannelResult {
     pub receiver_pubkey_hex: String,
 }
 
+#[cfg(feature = "wallet")]
+struct TokenAutoAttempt {
+    keyset_info: String,
+    input_keysets: String,
+}
+
 /// Stage where channel opening failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenChannelFailureStage {
@@ -432,6 +440,23 @@ impl std::fmt::Display for OpenChannelError {
 }
 
 impl std::error::Error for OpenChannelError {}
+
+#[cfg(feature = "wallet")]
+fn unwrap_open_channel_retry_result<A>(
+    result: Result<
+        crate::KeysetRetrySuccess<A, OpenChannelResult>,
+        KeysetRetryError<A, OpenChannelError, OpenChannelError>,
+    >,
+) -> Result<OpenChannelResult, OpenChannelError> {
+    match result {
+        Ok(success) => Ok(success.value),
+        Err(KeysetRetryError::Select { error, .. })
+        | Err(KeysetRetryError::Prepare { error, .. })
+        | Err(KeysetRetryError::Refresh { error })
+        | Err(KeysetRetryError::Cleanup { error })
+        | Err(KeysetRetryError::Submit { error, .. }) => Err(error),
+    }
+}
 
 /// Information about a stored channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -965,41 +990,35 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
-        let first = self.open_channel_from_token_auto_once(
-            token_string,
-            receiver_pubkey_hex,
-            sender_pubkey_hex,
-            expiry_timestamp,
-            mint_url,
-            max_amount,
+        let result = with_active_keyset_retry(
+            |_phase| self.fetch_token_auto_keyset_info(mint_url, token_string),
+            |keyset_info, _phase| {
+                self.prepare_token_auto_attempt(mint_url, token_string, keyset_info)
+            },
+            |attempt| {
+                self.open_channel_from_token_with_input_keysets(
+                    token_string,
+                    receiver_pubkey_hex,
+                    sender_pubkey_hex,
+                    expiry_timestamp,
+                    &attempt.keyset_info,
+                    &attempt.input_keysets,
+                    max_amount,
+                )
+            },
+            OpenChannelError::is_retryable_keyset_rejection,
+            || Ok(()),
+            |_attempt, _error| Ok(()),
         );
-        if first
-            .as_ref()
-            .is_err_and(OpenChannelError::is_retryable_keyset_rejection)
-        {
-            return self.open_channel_from_token_auto_once(
-                token_string,
-                receiver_pubkey_hex,
-                sender_pubkey_hex,
-                expiry_timestamp,
-                mint_url,
-                max_amount,
-            );
-        }
-        first
+        unwrap_open_channel_retry_result(result)
     }
 
     #[cfg(feature = "wallet")]
-    #[allow(clippy::too_many_arguments)]
-    fn open_channel_from_token_auto_once(
+    fn fetch_token_auto_keyset_info(
         &self,
-        token_string: &str,
-        receiver_pubkey_hex: &str,
-        sender_pubkey_hex: &str,
-        expiry_timestamp: u64,
         mint_url: &str,
-        max_amount: u64,
-    ) -> Result<OpenChannelResult, OpenChannelError> {
+        token_string: &str,
+    ) -> Result<String, OpenChannelError> {
         let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::BeforeOpeningSaved,
@@ -1008,21 +1027,33 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             )
         })?;
         let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
-        let keyset_info = self.fetch_active_keyset_info(mint_url, &unit)?;
+        self.fetch_active_keyset_info(mint_url, &unit)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn prepare_token_auto_attempt(
+        &self,
+        mint_url: &str,
+        token_string: &str,
+        keyset_info: String,
+    ) -> Result<TokenAutoAttempt, OpenChannelError> {
+        let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                format!("Failed to parse token: {e}"),
+            )
+        })?;
+        let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
         let input_keysets = self
             .fetch_token_input_keysets(mint_url, &unit.to_string())
             .map_err(|e| {
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
-        self.open_channel_from_token_with_input_keysets(
-            token_string,
-            receiver_pubkey_hex,
-            sender_pubkey_hex,
-            expiry_timestamp,
-            &keyset_info,
-            &input_keysets,
-            max_amount,
-        )
+        Ok(TokenAutoAttempt {
+            keyset_info,
+            input_keysets,
+        })
     }
 
     /// Open a new channel from a Cashu token using a specific output keyset id.
@@ -1178,59 +1209,39 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
-        let first = self.open_channel_from_proofs_auto_once(
-            mint_url,
-            unit,
-            input_proofs_json,
-            receiver_pubkey_hex,
-            sender_pubkey_hex,
-            expiry_timestamp,
-            max_amount,
+        let result = with_active_keyset_retry(
+            |_phase| self.fetch_proofs_auto_keyset_info(mint_url, unit),
+            |keyset_info, _phase| Ok(keyset_info),
+            |keyset_info| {
+                self.open_channel_from_proofs(
+                    mint_url,
+                    unit,
+                    input_proofs_json,
+                    receiver_pubkey_hex,
+                    sender_pubkey_hex,
+                    expiry_timestamp,
+                    keyset_info,
+                    max_amount,
+                    None,
+                )
+            },
+            OpenChannelError::is_retryable_keyset_rejection,
+            || Ok(()),
+            |_attempt, _error| Ok(()),
         );
-        if first
-            .as_ref()
-            .is_err_and(OpenChannelError::is_retryable_keyset_rejection)
-        {
-            return self.open_channel_from_proofs_auto_once(
-                mint_url,
-                unit,
-                input_proofs_json,
-                receiver_pubkey_hex,
-                sender_pubkey_hex,
-                expiry_timestamp,
-                max_amount,
-            );
-        }
-        first
+        unwrap_open_channel_retry_result(result)
     }
 
     #[cfg(feature = "wallet")]
-    #[allow(clippy::too_many_arguments)]
-    fn open_channel_from_proofs_auto_once(
+    fn fetch_proofs_auto_keyset_info(
         &self,
         mint_url: &str,
         unit: &str,
-        input_proofs_json: &str,
-        receiver_pubkey_hex: &str,
-        sender_pubkey_hex: &str,
-        expiry_timestamp: u64,
-        max_amount: u64,
-    ) -> Result<OpenChannelResult, OpenChannelError> {
+    ) -> Result<String, OpenChannelError> {
         let unit = unit
             .parse::<CurrencyUnit>()
             .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
-        let keyset_info = self.fetch_active_keyset_info(mint_url, &unit)?;
-        self.open_channel_from_proofs(
-            mint_url,
-            &unit.to_string(),
-            input_proofs_json,
-            receiver_pubkey_hex,
-            sender_pubkey_hex,
-            expiry_timestamp,
-            &keyset_info,
-            max_amount,
-            None,
-        )
+        self.fetch_active_keyset_info(mint_url, &unit)
     }
 
     /// Open a new channel from input proofs using a specific output keyset id.

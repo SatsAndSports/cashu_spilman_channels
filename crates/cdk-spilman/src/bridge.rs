@@ -19,6 +19,7 @@ use cashu::util::hex;
 use std::str::FromStr;
 
 use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_error_code};
+use crate::{with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError};
 
 /// Funding data for a channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,7 +308,7 @@ pub struct UnblindResult {
 }
 
 /// Everything needed to execute a close operation after sync validation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PreparedClose {
     pub channel_id: String,
     pub balance: u64,
@@ -1956,6 +1957,38 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         })
     }
 
+    fn close_retry_result(
+        result: Result<
+            crate::KeysetRetrySuccess<PreparedClose, String>,
+            KeysetRetryError<PreparedClose, CloseError, String>,
+        >,
+        first_rejection: Option<String>,
+    ) -> Result<crate::KeysetRetrySuccess<PreparedClose, String>, CloseError> {
+        match result {
+            Ok(success) => Ok(success),
+            Err(KeysetRetryError::Select { error, .. })
+            | Err(KeysetRetryError::Prepare { error, .. })
+            | Err(KeysetRetryError::Refresh { error })
+            | Err(KeysetRetryError::Cleanup { error }) => Err(error),
+            Err(KeysetRetryError::Submit {
+                error,
+                retried: false,
+                ..
+            }) => Err(CloseError::mint_rejected(parse_mint_error_value(&error))),
+            Err(KeysetRetryError::Submit {
+                error,
+                retried: true,
+                ..
+            }) => {
+                let first = first_rejection.as_deref().unwrap_or(&error);
+                Err(CloseError::mint_rejected_after_retry(
+                    parse_mint_error_value(first),
+                    parse_mint_error_value(&error),
+                ))
+            }
+        }
+    }
+
     pub fn execute_close_for_closing_channel<N: SpilmanNetworking>(
         &self,
         channel_id: &str,
@@ -1978,32 +2011,43 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     expected_balance: None,
                     actual_balance: None,
                 })?;
-        let prep = self
-            .prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
-            .map_err(CloseError::from_preparation_error)?;
-        let (prep, resp) = match net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
-        {
-            Ok(r) => (prep, r),
-            Err(e) => {
-                // Only retry on keyset errors (12xxx); fail immediately otherwise
-                if !should_retry_swap_error(&e) {
-                    return Err(CloseError::mint_rejected(parse_mint_error_value(&e)));
+        let first_rejection = std::sync::Mutex::new(None::<String>);
+        let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        let result = with_active_keyset_retry(
+            |_phase| Ok::<_, CloseError>(()),
+            |(), _phase| {
+                self.prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
+                    .map_err(CloseError::from_preparation_error)
+            },
+            |prep| net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string()),
+            |error| {
+                if should_retry_swap_error(error) {
+                    let Ok(mut first_rejection) = first_rejection.lock() else {
+                        return false;
+                    };
+                    *first_rejection = Some(error.clone());
+                    true
+                } else {
+                    false
                 }
-                let _ = net.refresh_all_keysets(&prep.mint_url);
-                let retry = self
-                    .prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
-                    .map_err(CloseError::from_preparation_error)?;
-                let resp = net
-                    .call_mint_swap(&retry.mint_url, &retry.swap_request.to_string())
-                    .map_err(|re| {
-                        CloseError::mint_rejected_after_retry(
-                            parse_mint_error_value(&e),
-                            parse_mint_error_value(&re),
-                        )
-                    })?;
-                (retry, resp)
-            }
-        };
+            },
+            || {
+                let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
+                if let Some(mint_url) = mint_url.as_deref() {
+                    let _ = net.refresh_all_keysets(mint_url);
+                }
+                Ok(())
+            },
+            |attempt, _error| {
+                *retry_mint_url
+                    .lock()
+                    .map_err(|_| CloseError::storage_failed("close retry lock poisoned"))? =
+                    Some(attempt.mint_url.clone());
+                Ok(())
+            },
+        );
+        let success =
+            Self::close_retry_result(result, first_rejection.into_inner().unwrap_or_default())?;
         self.finalize_close(
             channel_id,
             cd.expiry_timestamp,
@@ -2011,8 +2055,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 balance: cd.balance,
                 signature: cd.signature,
             },
-            &resp,
-            &prep,
+            &success.value,
+            &success.attempt,
         )
     }
 
@@ -2038,35 +2082,49 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     expected_balance: None,
                     actual_balance: None,
                 })?;
-        let prep = self
-            .prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
-            .map_err(CloseError::from_preparation_error)?;
-        let (prep, resp) = match net
-            .call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
-            .await
-        {
-            Ok(r) => (prep, r),
-            Err(e) => {
-                // Only retry on keyset errors (12xxx); fail immediately otherwise
-                if !should_retry_swap_error(&e) {
-                    return Err(CloseError::mint_rejected(parse_mint_error_value(&e)));
-                }
-                let _ = net.refresh_all_keysets(&prep.mint_url).await;
-                let retry = self
-                    .prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
-                    .map_err(CloseError::from_preparation_error)?;
-                let resp = net
-                    .call_mint_swap(&retry.mint_url, &retry.swap_request.to_string())
+        let first_rejection = std::sync::Mutex::new(None::<String>);
+        let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        let result = with_active_keyset_retry_async(
+            |_phase| Ok::<_, CloseError>(()),
+            |(), _phase| {
+                self.prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
+                    .map_err(CloseError::from_preparation_error)
+            },
+            |prep| async move {
+                net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
                     .await
-                    .map_err(|re| {
-                        CloseError::mint_rejected_after_retry(
-                            parse_mint_error_value(&e),
-                            parse_mint_error_value(&re),
-                        )
-                    })?;
-                (retry, resp)
-            }
-        };
+            },
+            |error| {
+                if should_retry_swap_error(error) {
+                    let Ok(mut first_rejection) = first_rejection.lock() else {
+                        return false;
+                    };
+                    *first_rejection = Some(error.clone());
+                    true
+                } else {
+                    false
+                }
+            },
+            || {
+                let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
+                async move {
+                    if let Some(mint_url) = mint_url {
+                        let _ = net.refresh_all_keysets(&mint_url).await;
+                    }
+                    Ok(())
+                }
+            },
+            |attempt, _error| {
+                *retry_mint_url
+                    .lock()
+                    .map_err(|_| CloseError::storage_failed("close retry lock poisoned"))? =
+                    Some(attempt.mint_url.clone());
+                Ok(())
+            },
+        )
+        .await;
+        let success =
+            Self::close_retry_result(result, first_rejection.into_inner().unwrap_or_default())?;
         self.finalize_close(
             channel_id,
             cd.expiry_timestamp,
@@ -2074,8 +2132,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 balance: cd.balance,
                 signature: cd.signature,
             },
-            &resp,
-            &prep,
+            &success.value,
+            &success.attempt,
         )
     }
 
