@@ -734,6 +734,37 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         self.refresh_keysets_inner(mint_url).map(|_| ())
     }
 
+    /// Refresh and persist all keysets for a mint, returning the raw
+    /// `/v1/keysets` response used for the refresh.
+    #[cfg(feature = "wallet")]
+    pub fn refresh_keysets_response(&self, mint_url: &str) -> Result<String, OpenChannelError> {
+        self.refresh_keysets_inner(mint_url)
+    }
+
+    /// Return cached full keyset info JSON for a mint keyset.
+    #[cfg(feature = "wallet")]
+    pub fn cached_keyset_info(&self, mint_url: &str, keyset_id: &Id) -> Option<String> {
+        self.host
+            .get_keyset(mint_url, keyset_id)
+            .map(|entry| entry.info_json)
+    }
+
+    /// Return cached active keyset IDs for a mint and unit.
+    #[cfg(feature = "wallet")]
+    pub fn cached_active_keyset_ids(&self, mint_url: &str, unit: &CurrencyUnit) -> Vec<Id> {
+        self.host.get_active_keyset_ids(mint_url, unit)
+    }
+
+    /// Return cached keyset metadata for a mint and unit, including inactive keysets.
+    #[cfg(feature = "wallet")]
+    pub fn cached_keysets_for_unit(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, ClientKeysetCacheEntry)> {
+        self.host.list_keysets_for_unit(mint_url, unit)
+    }
+
     #[cfg(feature = "wallet")]
     fn refresh_keysets_inner(&self, mint_url: &str) -> Result<String, OpenChannelError> {
         let keysets_json = self.networking.call_mint_keysets(mint_url).map_err(|e| {
@@ -2290,7 +2321,11 @@ pub fn base64_decode(input: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     #[cfg(feature = "wallet")]
+    use crate::KeysetInfo;
+    #[cfg(feature = "wallet")]
     use std::cell::Cell;
+    #[cfg(feature = "wallet")]
+    use std::collections::HashMap;
     #[cfg(feature = "wallet")]
     use std::rc::Rc;
 
@@ -2373,6 +2408,70 @@ mod tests {
     }
 
     #[cfg(feature = "wallet")]
+    struct RefreshKeysetsNetworking {
+        keysets_json: String,
+        keys_by_id: HashMap<String, String>,
+        keysets_calls: Rc<Cell<u32>>,
+        keys_calls: Rc<Cell<u32>>,
+    }
+
+    #[cfg(feature = "wallet")]
+    impl SpilmanClientNetworking for RefreshKeysetsNetworking {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+            self.keysets_calls.set(self.keysets_calls.get() + 1);
+            Ok(self.keysets_json.clone())
+        }
+
+        fn call_mint_keys(&self, _: &str, keyset_id: &str) -> Result<String, String> {
+            self.keys_calls.set(self.keys_calls.get() + 1);
+            self.keys_by_id
+                .get(keyset_id)
+                .cloned()
+                .ok_or_else(|| format!("missing keys for {keyset_id}"))
+        }
+    }
+
+    #[cfg(feature = "wallet")]
+    fn mock_keyset_info_with_unit(
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        unit: CurrencyUnit,
+        secret_hex: &str,
+    ) -> KeysetInfo {
+        use cashu::nuts::{Keys, SecretKey};
+        use cashu::Amount;
+        use std::collections::BTreeMap;
+
+        let mut keys_map = BTreeMap::new();
+        let dummy_pubkey = SecretKey::from_hex(secret_hex).unwrap().public_key();
+        for amount in amounts {
+            keys_map.insert(Amount::from(amount), dummy_pubkey);
+        }
+        let active_keys = Keys::new(keys_map);
+        let keyset_id = Id::v1_from_keys(&active_keys);
+        KeysetInfo::new(keyset_id, unit, active_keys, input_fee_ppk, None)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn keys_response_json(keyset_info: &KeysetInfo) -> String {
+        serde_json::json!({
+            "keysets": [{
+                "id": keyset_info.keyset_id.to_string(),
+                "keys": keyset_info.active_keys,
+            }]
+        })
+        .to_string()
+    }
+
+    #[cfg(feature = "wallet")]
     fn proof_json(keyset_id: Id, amount: u64) -> String {
         let proof = Proof {
             amount: cashu::Amount::from(amount),
@@ -2386,6 +2485,104 @@ mod tests {
             p2pk_e: None,
         };
         serde_json::to_string(&vec![proof]).unwrap()
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn refresh_keysets_response_caches_all_units_and_inactive_keysets() {
+        let old_sat = mock_keyset_info_with_unit(
+            vec![1, 2, 4, 8],
+            100,
+            CurrencyUnit::Sat,
+            "0101010101010101010101010101010101010101010101010101010101010101",
+        );
+        let active_sat = mock_keyset_info_with_unit(
+            vec![1, 3, 9],
+            200,
+            CurrencyUnit::Sat,
+            "0202020202020202020202020202020202020202020202020202020202020202",
+        );
+        let active_msat = mock_keyset_info_with_unit(
+            vec![1, 5, 25],
+            300,
+            CurrencyUnit::Msat,
+            "0303030303030303030303030303030303030303030303030303030303030303",
+        );
+        let keysets_json = serde_json::json!({
+            "keysets": [
+                {
+                    "id": old_sat.keyset_id.to_string(),
+                    "unit": "sat",
+                    "active": false,
+                    "input_fee_ppk": 100,
+                },
+                {
+                    "id": active_sat.keyset_id.to_string(),
+                    "unit": "sat",
+                    "active": true,
+                    "input_fee_ppk": 200,
+                },
+                {
+                    "id": active_msat.keyset_id.to_string(),
+                    "unit": "msat",
+                    "active": true,
+                    "input_fee_ppk": 300,
+                }
+            ]
+        })
+        .to_string();
+        let mut keys_by_id = HashMap::new();
+        keys_by_id.insert(old_sat.keyset_id.to_string(), keys_response_json(&old_sat));
+        keys_by_id.insert(
+            active_sat.keyset_id.to_string(),
+            keys_response_json(&active_sat),
+        );
+        keys_by_id.insert(
+            active_msat.keyset_id.to_string(),
+            keys_response_json(&active_msat),
+        );
+        let keysets_calls = Rc::new(Cell::new(0));
+        let keys_calls = Rc::new(Cell::new(0));
+        let bridge = SpilmanClientBridge::new(
+            crate::ConfigurableClientHost::new_in_memory(),
+            RefreshKeysetsNetworking {
+                keysets_json: keysets_json.clone(),
+                keys_by_id,
+                keysets_calls: Rc::clone(&keysets_calls),
+                keys_calls: Rc::clone(&keys_calls),
+            },
+        );
+
+        let response = bridge
+            .refresh_keysets_response("https://mint.example")
+            .unwrap();
+        assert_eq!(response, keysets_json);
+        assert_eq!(keysets_calls.get(), 1);
+        assert_eq!(keys_calls.get(), 3);
+
+        let sat_keysets =
+            bridge.cached_keysets_for_unit("https://mint.example", &CurrencyUnit::Sat);
+        assert_eq!(sat_keysets.len(), 2);
+        assert!(sat_keysets
+            .iter()
+            .any(|(id, entry)| *id == old_sat.keyset_id && !entry.active));
+        assert!(sat_keysets
+            .iter()
+            .any(|(id, entry)| *id == active_sat.keyset_id && entry.active));
+
+        let active_sat_ids =
+            bridge.cached_active_keyset_ids("https://mint.example", &CurrencyUnit::Sat);
+        assert_eq!(active_sat_ids, vec![active_sat.keyset_id]);
+        let active_msat_ids =
+            bridge.cached_active_keyset_ids("https://mint.example", &CurrencyUnit::Msat);
+        assert_eq!(active_msat_ids, vec![active_msat.keyset_id]);
+
+        let cached_info = bridge
+            .cached_keyset_info("https://mint.example", &old_sat.keyset_id)
+            .unwrap();
+        let cached_info = crate::parse_keyset_info_from_json(&cached_info).unwrap();
+        assert_eq!(cached_info.keyset_id, old_sat.keyset_id);
+        assert_eq!(cached_info.input_fee_ppk, 100);
     }
 
     #[cfg(feature = "wallet")]
