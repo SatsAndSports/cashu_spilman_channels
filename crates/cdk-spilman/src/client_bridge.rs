@@ -38,6 +38,8 @@ use super::client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
     ClientOpeningFailure, ClientPaymentState,
 };
+#[cfg(feature = "wallet")]
+use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_mint_error};
 
 // ============================================================================
 // SpilmanClientHost trait
@@ -475,24 +477,13 @@ fn normalize_mint_error_string(raw: String) -> String {
 }
 
 #[cfg(feature = "wallet")]
-fn extract_mint_error_code(raw: &str) -> Option<u32> {
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.get("code")?.as_u64())
-        .map(|code| code as u32)
-}
-
-#[cfg(feature = "wallet")]
 fn is_explicit_mint_rejection(raw: &str) -> bool {
-    extract_mint_error_code(raw).is_some()
+    extract_nut00_error_code(raw).is_some()
 }
 
 #[cfg(feature = "wallet")]
 fn is_keyset_mint_rejection(raw: &str) -> bool {
-    matches!(
-        extract_mint_error_code(raw),
-        Some(12000..=12999) | Some(99999)
-    )
+    is_retryable_keyset_mint_error(raw)
 }
 
 /// Build keyset info JSON from the responses of `/v1/keysets` and `/v1/keys/{id}`.

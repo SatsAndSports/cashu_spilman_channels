@@ -18,6 +18,8 @@ use cashu::nuts::{BlindSignature, CurrencyUnit, Id, Proof, PublicKey, SwapReques
 use cashu::util::hex;
 use std::str::FromStr;
 
+use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_error_code};
+
 /// Funding data for a channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelFunding {
@@ -657,33 +659,13 @@ fn parse_mint_error_value(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
 }
 
-/// Extract the NUT-00 error code from a raw error string.
-/// Returns None if the string is not valid JSON or lacks a "code" field.
-fn extract_nut00_error_code(raw: &str) -> Option<u32> {
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|v| v.get("code")?.as_u64())
-        .map(|c| c as u32)
-}
-
-/// Returns true if the error code is in the keyset error range (12xxx).
-/// These errors may be recoverable by refreshing keysets and retrying.
-///
-/// Workaround: also treats code 99999 as retryable. Nutmix returns this
-/// catch-all code instead of the spec-standard 12001 ("Keyset is not known").
-/// This can be removed once nutmix is fixed:
-/// <https://github.com/lescuer97/nutmix/issues/237>
-fn is_keyset_error_code(code: u32) -> bool {
-    (12000..13000).contains(&code) || code == 99999
-}
-
 /// Determine if a swap error should trigger a retry (refresh keysets + re-attempt).
 /// Keyset errors (12xxx) and code 99999 (nutmix workaround) are retryable.
 /// All other errors fail immediately. If the error can't be parsed, fail immediately.
 fn should_retry_swap_error(raw: &str) -> bool {
     match extract_nut00_error_code(raw) {
         Some(code) => {
-            let retryable = is_keyset_error_code(code);
+            let retryable = is_retryable_keyset_error_code(code);
             if retryable {
                 tracing::debug!(
                     code,

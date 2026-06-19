@@ -29,6 +29,7 @@ pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
 mod established_channel;
 mod keysets_and_amounts;
+mod mint_errors;
 mod params;
 mod sender_and_receiver;
 
@@ -70,6 +71,9 @@ pub use deterministic::{
 };
 pub use established_channel::EstablishedChannel;
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
+pub use mint_errors::{
+    extract_nut00_error_code, is_retryable_keyset_error_code, is_retryable_keyset_mint_error,
+};
 pub use params::{compute_channel_secret, ChannelId, ChannelParameters};
 pub use sender_and_receiver::{
     verify_valid_channel, ChannelVerificationError, ChannelVerificationResult, SpilmanChannelSender,
