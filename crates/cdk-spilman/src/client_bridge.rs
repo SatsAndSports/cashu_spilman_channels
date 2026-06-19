@@ -412,7 +412,9 @@ impl OpenChannelError {
 
 #[cfg(feature = "wallet")]
 impl OpenChannelError {
-    fn is_retryable_keyset_rejection(&self) -> bool {
+    /// Returns true when the mint explicitly rejected the opening due to stale
+    /// or unknown keyset state and the input proofs are known not to be spent.
+    pub fn is_retryable_keyset_rejection(&self) -> bool {
         self.stage == OpenChannelFailureStage::MintRejected
             && is_keyset_mint_rejection(&self.message)
     }
@@ -2310,6 +2312,38 @@ mod tests {
         fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
             Err("not used".to_string())
         }
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn retryable_keyset_rejection_requires_safe_mint_rejection_stage() {
+        let retryable = OpenChannelError {
+            stage: OpenChannelFailureStage::MintRejected,
+            channel_id: Some("channel".to_string()),
+            input_may_be_spent: false,
+            message: r#"{"code":12001,"detail":"keyset is not known"}"#.to_string(),
+        };
+        assert!(retryable.is_retryable_keyset_rejection());
+
+        let ambiguous = OpenChannelError {
+            stage: OpenChannelFailureStage::SwapSubmitted,
+            channel_id: Some("channel".to_string()),
+            input_may_be_spent: true,
+            message: r#"{"code":12001,"detail":"keyset is not known"}"#.to_string(),
+        };
+        assert!(!ambiguous.is_retryable_keyset_rejection());
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn retryable_keyset_rejection_rejects_non_keyset_mint_errors() {
+        let error = OpenChannelError {
+            stage: OpenChannelFailureStage::MintRejected,
+            channel_id: Some("channel".to_string()),
+            input_may_be_spent: false,
+            message: r#"{"code":11001,"detail":"proofs already spent"}"#.to_string(),
+        };
+        assert!(!error.is_retryable_keyset_rejection());
     }
 
     #[cfg(feature = "wallet")]
