@@ -66,6 +66,7 @@ For other stacks, implement the `SpilmanHost` interface defined in [ARCHITECTURE
 *   **Policy**: Implement hooks to check if mints, keysets, and pubkeys are acceptable.
 *   **Pricing**: Implement `get_amount_due` based on your service's usage metrics.
 *   **Storage**: Implement persistent stores for funding data, balances, usage, and keyset cache.
+*   **Keyset cache presence**: Implement `has_keysets_for_unit(mint, unit)` as an inactive-inclusive cache check. It should return true when any keyset is cached for that mint/unit, not only when an active output keyset is available.
 
 ---
 

@@ -306,14 +306,20 @@ The implementation handles mint keyset rotation using a **Persistent Cache** str
 
 1.  **Retention**: When the keyset cache is refreshed, existing keysets are never removed from the local store, even if they are no longer returned by the mint's `/v1/keysets` endpoint.
 2.  **Validation**: Channels opened while a keyset was active remain valid and closable after the mint deactivates that keyset.
-3.  **Active Flag**: The bridge uses an `active` flag to decide which keysets are acceptable for *new* channels, while allowing *existing* channels to use their original keysets.
+3.  **Active Flag**: The bridge uses an `active` flag to select output keysets for *new* swap outputs, while input proofs and existing channels may reference old or inactive keysets if the mint still accepts them.
+4.  **Cache-First Retry**: Auto-open and close helpers ensure the cache has at least one keyset for the relevant `(mint, unit)` before entering the retry helper. Selection inside the helper is cache-only. If the mint rejects the first swap with a retryable keyset error, the helper refreshes, reselects, and retries once only if the selected output keyset changed.
+
+Custom `SpilmanHost` implementations expose this cache preflight through
+`has_keysets_for_unit(mint, unit)`. Its intended meaning is inactive-inclusive:
+return true when the host has any cached keyset for that mint/unit, not only an
+active output keyset.
 
 ### Channel Closing Flow
 
 Closing is orchestrated by the bridge in two stages:
 
-1. **Sync stage** (`prepare_cooperative_close_for_execution`): Validates signatures, verifies balance, and creates the swap request.
-2. **Async stage**: Submits the swap to the mint, retries on keyset error, unblinds signatures, verifies DLEQ, and calls the `mark_channel_closed` host hook.
+1. **Sync stage** (`prepare_cooperative_close_for_execution`): Validates signatures, verifies balance, and stores closing data.
+2. **Execution stage**: Ensures keysets are cached for the channel mint/unit, selects an active output keyset from cache, creates the swap request, submits it to the mint, retries once on changed-keyset retryable errors, unblinds signatures, verifies DLEQ, and calls the `mark_channel_closed` host hook.
 
 ### NUT-00 Error Handling
 
@@ -325,7 +331,7 @@ The bridge implements intelligent error handling based on [NUT-00](https://githu
 |------------|----------|----------------|
 | 10xxx | Proof/Token verification | Fail immediately |
 | 11xxx | Input/Output errors (e.g., spent proofs) | Fail immediately |
-| 12xxx | Keyset errors (not found, inactive) | Retry after refresh |
+| 12000..13000 | Keyset errors (not found, inactive) | Retry after refresh |
 | 99999 | Unknown keyset (NutMix workaround) | Retry after refresh |
 | 20xxx+ | Quote/Payment/Auth errors | Fail immediately |
 
@@ -334,9 +340,11 @@ The bridge implements intelligent error handling based on [NUT-00](https://githu
 When a swap fails during channel closing:
 
 1. **Parse the NUT-00 error code** from the mint's JSON response (`{"code": 12001, "detail": "..."}`)
-2. **Check if retryable**: Only keyset errors (12xxx range) trigger retry
-3. **If retryable**: Refresh keysets from mint, rebuild swap request, retry once
-4. **If not retryable**: Fail immediately without refresh or retry
+2. **Check if retryable**: Only keyset errors (`12000..13000`) and the NutMix unknown-keyset workaround (`99999`) trigger retry
+3. **If retryable**: refresh keysets from the mint, reselect the active output keyset from cache, and rebuild the swap request
+4. **Skip unchanged retry**: if refresh selects the same output keyset id, fail with the first mint rejection instead of resubmitting the same stale swap
+5. **If changed**: submit one rebuilt swap attempt
+6. **If not retryable**: fail immediately without refresh or retry
 
 This prevents wasted retries on errors that can't be fixed by refreshing keysets (e.g., proofs already spent, signature invalid). The error code is preserved in the `CloseError` for callers to inspect.
 

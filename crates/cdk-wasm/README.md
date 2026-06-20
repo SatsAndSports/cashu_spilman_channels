@@ -14,6 +14,8 @@ npm install cdk-wasm
 
 The `SpilmanBridge` handles payment validation and channel registration. It delegates storage and policy to a "host" object you provide.
 
+Server hosts must persist funding, balances, usage state, and keyset metadata. The current WASM adapter derives keyset-cache presence from the active-keyset method; Rust hosts can expose an inactive-inclusive cache-presence check for more precise cache-first retry behavior.
+
 ```javascript
 import * as wasm from "cdk-wasm";
 

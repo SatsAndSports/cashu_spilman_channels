@@ -180,9 +180,10 @@ make test-nut00-errors
 ```
 
 These tests verify that:
-- Keyset errors (12xxx) trigger retry after keysets refresh
+- Keyset errors (`12000..13000`) and NutMix unknown-keyset errors (`99999`) trigger refresh/reselection retry
 - Token-spent errors (11001) fail immediately without retry
 - Unparseable errors fail immediately without retry
+- Refresh that still selects the same output keyset skips retry and returns the first mint rejection
 
 ---
 

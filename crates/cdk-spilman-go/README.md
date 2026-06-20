@@ -16,6 +16,8 @@ go get github.com/SatsAndSports/demo_of_spillman_cashu_channel/crates/cdk-spilma
 
 The `Bridge` handles payment validation and channel registration. It delegates storage and policy to a `SpilmanHost` interface.
 
+Server hosts must persist funding, balances, usage state, and keyset metadata. The current Go binding adapter derives keyset-cache presence from the active-keyset callback; Rust hosts can expose an inactive-inclusive cache-presence check for more precise cache-first retry behavior.
+
 ```go
 package main
 
