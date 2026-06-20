@@ -41,7 +41,7 @@ use super::client_storage::{
 #[cfg(feature = "wallet")]
 use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_mint_error};
 #[cfg(feature = "wallet")]
-use crate::{with_active_keyset_retry, KeysetRetryError};
+use crate::{with_active_keyset_retry, KeysetRetryError, SelectedOutputKeyset};
 
 // ============================================================================
 // SpilmanClientHost trait
@@ -348,7 +348,7 @@ pub struct OpenChannelResult {
 
 #[cfg(feature = "wallet")]
 struct TokenAutoAttempt {
-    keyset_info: String,
+    output_keyset: SelectedOutputKeyset,
     input_keysets: String,
 }
 
@@ -454,7 +454,8 @@ fn unwrap_open_channel_retry_result<A>(
         | Err(KeysetRetryError::Prepare { error, .. })
         | Err(KeysetRetryError::Refresh { error })
         | Err(KeysetRetryError::Cleanup { error })
-        | Err(KeysetRetryError::Submit { error, .. }) => Err(error),
+        | Err(KeysetRetryError::Submit { error, .. })
+        | Err(KeysetRetryError::RetryKeysetUnchanged { error, .. }) => Err(error),
     }
 }
 
@@ -885,13 +886,26 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         unit: &CurrencyUnit,
     ) -> Result<String, OpenChannelError> {
+        self.fetch_active_output_keyset(mint_url, unit)
+            .map(|keyset| keyset.info_json)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn fetch_active_output_keyset(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let keysets_json = self.refresh_keysets_inner(mint_url)?;
         let keyset_id = first_active_keyset_id_from_response(&keysets_json, unit).map_err(|e| {
             OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
         })?;
         self.host
             .get_keyset(mint_url, &keyset_id)
-            .map(|entry| entry.info_json)
+            .map(|entry| SelectedOutputKeyset {
+                id: keyset_id.to_string(),
+                info_json: entry.info_json,
+            })
             .ok_or_else(|| {
                 OpenChannelError::new(
                     OpenChannelFailureStage::BeforeOpeningSaved,
@@ -991,17 +1005,15 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let result = with_active_keyset_retry(
-            |_phase| self.fetch_token_auto_keyset_info(mint_url, token_string),
-            |keyset_info, _phase| {
-                self.prepare_token_auto_attempt(mint_url, token_string, keyset_info)
-            },
+            || self.fetch_token_auto_keyset(mint_url, token_string),
+            |output_keyset| self.prepare_token_auto_attempt(mint_url, token_string, output_keyset),
             |attempt| {
                 self.open_channel_from_token_with_input_keysets(
                     token_string,
                     receiver_pubkey_hex,
                     sender_pubkey_hex,
                     expiry_timestamp,
-                    &attempt.keyset_info,
+                    &attempt.output_keyset.info_json,
                     &attempt.input_keysets,
                     max_amount,
                 )
@@ -1014,11 +1026,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     }
 
     #[cfg(feature = "wallet")]
-    fn fetch_token_auto_keyset_info(
+    fn fetch_token_auto_keyset(
         &self,
         mint_url: &str,
         token_string: &str,
-    ) -> Result<String, OpenChannelError> {
+    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::BeforeOpeningSaved,
@@ -1027,7 +1039,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             )
         })?;
         let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
-        self.fetch_active_keyset_info(mint_url, &unit)
+        self.fetch_active_output_keyset(mint_url, &unit)
     }
 
     #[cfg(feature = "wallet")]
@@ -1035,7 +1047,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         mint_url: &str,
         token_string: &str,
-        keyset_info: String,
+        output_keyset: SelectedOutputKeyset,
     ) -> Result<TokenAutoAttempt, OpenChannelError> {
         let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
             OpenChannelError::new(
@@ -1051,7 +1063,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
         Ok(TokenAutoAttempt {
-            keyset_info,
+            output_keyset,
             input_keysets,
         })
     }
@@ -1210,9 +1222,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let result = with_active_keyset_retry(
-            |_phase| self.fetch_proofs_auto_keyset_info(mint_url, unit),
-            |keyset_info, _phase| Ok(keyset_info),
-            |keyset_info| {
+            || self.fetch_proofs_auto_keyset(mint_url, unit),
+            Ok,
+            |output_keyset| {
                 self.open_channel_from_proofs(
                     mint_url,
                     unit,
@@ -1220,7 +1232,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     receiver_pubkey_hex,
                     sender_pubkey_hex,
                     expiry_timestamp,
-                    keyset_info,
+                    &output_keyset.info_json,
                     max_amount,
                     None,
                 )
@@ -1233,15 +1245,15 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     }
 
     #[cfg(feature = "wallet")]
-    fn fetch_proofs_auto_keyset_info(
+    fn fetch_proofs_auto_keyset(
         &self,
         mint_url: &str,
         unit: &str,
-    ) -> Result<String, OpenChannelError> {
+    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let unit = unit
             .parse::<CurrencyUnit>()
             .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
-        self.fetch_active_keyset_info(mint_url, &unit)
+        self.fetch_active_output_keyset(mint_url, &unit)
     }
 
     /// Open a new channel from input proofs using a specific output keyset id.

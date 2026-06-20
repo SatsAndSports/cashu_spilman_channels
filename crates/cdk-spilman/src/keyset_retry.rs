@@ -11,13 +11,16 @@ pub struct SelectedOutputKeyset {
     pub info_json: String,
 }
 
-/// Whether the helper is preparing the first attempt or the post-refresh retry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeysetRetryPhase {
-    /// Initial attempt before any retry refresh.
-    First,
-    /// Single retry after a retryable keyset rejection and refresh.
-    Retry,
+/// A selection result that exposes the active output keyset chosen for retry comparison.
+pub trait ActiveKeysetSelection {
+    /// Selected output keyset used to build the attempted swap.
+    fn selected_output_keyset(&self) -> &SelectedOutputKeyset;
+}
+
+impl ActiveKeysetSelection for SelectedOutputKeyset {
+    fn selected_output_keyset(&self) -> &SelectedOutputKeyset {
+        self
+    }
 }
 
 /// Successful result from a keyset-refresh retry helper.
@@ -36,15 +39,11 @@ pub struct KeysetRetrySuccess<A, T> {
 pub enum KeysetRetryError<A, P, S> {
     /// Selecting an active output keyset failed.
     Select {
-        /// Attempt phase that failed.
-        phase: KeysetRetryPhase,
         /// Selection error.
         error: P,
     },
     /// Preparing attempt data from the selected keyset failed.
     Prepare {
-        /// Attempt phase that failed.
-        phase: KeysetRetryPhase,
         /// Preparation error.
         error: P,
     },
@@ -66,6 +65,15 @@ pub enum KeysetRetryError<A, P, S> {
         error: S,
         /// Whether this was the retry submission.
         retried: bool,
+    },
+    /// A retryable submission failed, but refreshed selection chose the same output keyset.
+    RetryKeysetUnchanged {
+        /// Attempt data used for the first failed submission.
+        attempt: A,
+        /// First submission error.
+        error: S,
+        /// Unchanged selected keyset id.
+        keyset_id: String,
     },
 }
 
@@ -91,22 +99,17 @@ pub fn with_active_keyset_retry<
     mut cleanup: Cleanup,
 ) -> Result<KeysetRetrySuccess<A, T>, KeysetRetryError<A, P, S>>
 where
-    Select: FnMut(KeysetRetryPhase) -> Result<K, P>,
-    Prepare: FnMut(K, KeysetRetryPhase) -> Result<A, P>,
+    K: ActiveKeysetSelection,
+    Select: FnMut() -> Result<K, P>,
+    Prepare: FnMut(K) -> Result<A, P>,
     Submit: FnMut(&A) -> Result<T, S>,
     ShouldRetry: FnMut(&S) -> bool,
     Refresh: FnMut() -> Result<(), P>,
     Cleanup: FnMut(&A, &S) -> Result<(), P>,
 {
-    let keyset = select(KeysetRetryPhase::First).map_err(|error| KeysetRetryError::Select {
-        phase: KeysetRetryPhase::First,
-        error,
-    })?;
-    let attempt =
-        prepare(keyset, KeysetRetryPhase::First).map_err(|error| KeysetRetryError::Prepare {
-            phase: KeysetRetryPhase::First,
-            error,
-        })?;
+    let keyset = select().map_err(|error| KeysetRetryError::Select { error })?;
+    let keyset_id = keyset.selected_output_keyset().id.clone();
+    let attempt = prepare(keyset).map_err(|error| KeysetRetryError::Prepare { error })?;
 
     match submit(&attempt) {
         Ok(value) => Ok(KeysetRetrySuccess {
@@ -117,17 +120,17 @@ where
         Err(error) if should_retry(&error) => {
             cleanup(&attempt, &error).map_err(|error| KeysetRetryError::Cleanup { error })?;
             refresh().map_err(|error| KeysetRetryError::Refresh { error })?;
-            let keyset =
-                select(KeysetRetryPhase::Retry).map_err(|error| KeysetRetryError::Select {
-                    phase: KeysetRetryPhase::Retry,
+            let retry_keyset = select().map_err(|error| KeysetRetryError::Select { error })?;
+            let retry_keyset_id = retry_keyset.selected_output_keyset().id.clone();
+            if retry_keyset_id == keyset_id {
+                return Err(KeysetRetryError::RetryKeysetUnchanged {
+                    attempt,
                     error,
-                })?;
-            let attempt = prepare(keyset, KeysetRetryPhase::Retry).map_err(|error| {
-                KeysetRetryError::Prepare {
-                    phase: KeysetRetryPhase::Retry,
-                    error,
-                }
-            })?;
+                    keyset_id,
+                });
+            }
+            let attempt =
+                prepare(retry_keyset).map_err(|error| KeysetRetryError::Prepare { error })?;
             match submit(&attempt) {
                 Ok(value) => Ok(KeysetRetrySuccess {
                     attempt,
@@ -174,8 +177,9 @@ pub async fn with_active_keyset_retry_async<
 ) -> Result<KeysetRetrySuccess<A, T>, KeysetRetryError<A, P, S>>
 where
     A: Clone,
-    Select: FnMut(KeysetRetryPhase) -> Result<K, P>,
-    Prepare: FnMut(K, KeysetRetryPhase) -> Result<A, P>,
+    K: ActiveKeysetSelection,
+    Select: FnMut() -> Result<K, P>,
+    Prepare: FnMut(K) -> Result<A, P>,
     Submit: FnMut(A) -> SubmitFuture,
     SubmitFuture: Future<Output = Result<T, S>>,
     ShouldRetry: FnMut(&S) -> bool,
@@ -183,15 +187,9 @@ where
     RefreshFuture: Future<Output = Result<(), P>>,
     Cleanup: FnMut(&A, &S) -> Result<(), P>,
 {
-    let keyset = select(KeysetRetryPhase::First).map_err(|error| KeysetRetryError::Select {
-        phase: KeysetRetryPhase::First,
-        error,
-    })?;
-    let attempt =
-        prepare(keyset, KeysetRetryPhase::First).map_err(|error| KeysetRetryError::Prepare {
-            phase: KeysetRetryPhase::First,
-            error,
-        })?;
+    let keyset = select().map_err(|error| KeysetRetryError::Select { error })?;
+    let keyset_id = keyset.selected_output_keyset().id.clone();
+    let attempt = prepare(keyset).map_err(|error| KeysetRetryError::Prepare { error })?;
 
     match submit(attempt.clone()).await {
         Ok(value) => Ok(KeysetRetrySuccess {
@@ -204,17 +202,17 @@ where
             refresh()
                 .await
                 .map_err(|error| KeysetRetryError::Refresh { error })?;
-            let keyset =
-                select(KeysetRetryPhase::Retry).map_err(|error| KeysetRetryError::Select {
-                    phase: KeysetRetryPhase::Retry,
+            let retry_keyset = select().map_err(|error| KeysetRetryError::Select { error })?;
+            let retry_keyset_id = retry_keyset.selected_output_keyset().id.clone();
+            if retry_keyset_id == keyset_id {
+                return Err(KeysetRetryError::RetryKeysetUnchanged {
+                    attempt,
                     error,
-                })?;
-            let attempt = prepare(keyset, KeysetRetryPhase::Retry).map_err(|error| {
-                KeysetRetryError::Prepare {
-                    phase: KeysetRetryPhase::Retry,
-                    error,
-                }
-            })?;
+                    keyset_id,
+                });
+            }
+            let attempt =
+                prepare(retry_keyset).map_err(|error| KeysetRetryError::Prepare { error })?;
             match submit(attempt.clone()).await {
                 Ok(value) => Ok(KeysetRetrySuccess {
                     attempt,
@@ -240,13 +238,20 @@ where
 mod tests {
     use super::*;
 
+    fn keyset(id: &str) -> SelectedOutputKeyset {
+        SelectedOutputKeyset {
+            id: id.to_string(),
+            info_json: format!("{{\"id\":\"{id}\"}}"),
+        }
+    }
+
     #[test]
     fn sync_helper_returns_first_success_without_refresh() {
         let mut refreshes = 0;
         let result = with_active_keyset_retry(
-            Ok::<_, &'static str>,
-            |phase, _| Ok::<_, &'static str>(phase),
-            |attempt| Ok::<_, &'static str>(*attempt),
+            || Ok::<_, &'static str>(keyset("a")),
+            |keyset| Ok::<_, &'static str>(keyset.id),
+            |attempt| Ok::<_, &'static str>(attempt.clone()),
             |_| true,
             || {
                 refreshes += 1;
@@ -256,18 +261,22 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.value, KeysetRetryPhase::First);
+        assert_eq!(result.value, "a");
         assert!(!result.retried);
         assert_eq!(refreshes, 0);
     }
 
     #[test]
-    fn sync_helper_retries_once_after_retryable_error() {
+    fn sync_helper_retries_once_after_changed_keyset() {
+        let mut selects = 0;
         let mut submits = 0;
         let mut refreshes = 0;
         let result = with_active_keyset_retry(
-            Ok::<_, &'static str>,
-            |phase, _| Ok::<_, &'static str>(phase),
+            || {
+                selects += 1;
+                Ok::<_, &'static str>(keyset(if selects == 1 { "a" } else { "b" }))
+            },
+            |keyset| Ok::<_, &'static str>(keyset.id),
             |_attempt| {
                 submits += 1;
                 if submits == 1 {
@@ -285,18 +294,50 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.attempt, KeysetRetryPhase::Retry);
+        assert_eq!(result.attempt, "b");
         assert_eq!(result.value, "ok");
         assert!(result.retried);
+        assert_eq!(selects, 2);
         assert_eq!(submits, 2);
         assert_eq!(refreshes, 1);
     }
 
     #[test]
+    fn sync_helper_skips_retry_when_keyset_unchanged() {
+        let mut selects = 0;
+        let mut submits = 0;
+        let result = with_active_keyset_retry(
+            || {
+                selects += 1;
+                Ok::<_, &'static str>(keyset("a"))
+            },
+            |keyset| Ok::<_, &'static str>(keyset.id),
+            |_attempt| {
+                submits += 1;
+                Err::<(), _>("retryable")
+            },
+            |error| *error == "retryable",
+            || Ok::<_, &'static str>(()),
+            |_, _| Ok::<_, &'static str>(()),
+        );
+
+        assert_eq!(
+            result,
+            Err(KeysetRetryError::RetryKeysetUnchanged {
+                attempt: "a".to_string(),
+                error: "retryable",
+                keyset_id: "a".to_string(),
+            })
+        );
+        assert_eq!(selects, 2);
+        assert_eq!(submits, 1);
+    }
+
+    #[test]
     fn sync_helper_returns_non_retryable_submit_error() {
         let result = with_active_keyset_retry(
-            Ok::<_, &'static str>,
-            |phase, _| Ok::<_, &'static str>(phase),
+            || Ok::<_, &'static str>(keyset("a")),
+            |keyset| Ok::<_, &'static str>(keyset.id),
             |_attempt| Err::<(), _>("fatal"),
             |error| *error == "retryable",
             || Ok::<_, &'static str>(()),
@@ -306,7 +347,7 @@ mod tests {
         assert_eq!(
             result,
             Err(KeysetRetryError::Submit {
-                attempt: KeysetRetryPhase::First,
+                attempt: "a".to_string(),
                 error: "fatal",
                 retried: false,
             })
@@ -316,8 +357,8 @@ mod tests {
     #[tokio::test]
     async fn async_helper_reports_refresh_failure() {
         let result = with_active_keyset_retry_async(
-            Ok::<_, &'static str>,
-            |phase, _| Ok::<_, &'static str>(phase),
+            || Ok::<_, &'static str>(keyset("a")),
+            |keyset| Ok::<_, &'static str>(keyset.id),
             |_attempt| async { Err::<(), _>("retryable") },
             |error| *error == "retryable",
             || async { Err::<(), _>("refresh failed") },
@@ -331,5 +372,32 @@ mod tests {
                 error: "refresh failed"
             })
         );
+    }
+
+    #[tokio::test]
+    async fn async_helper_skips_retry_when_keyset_unchanged() {
+        let mut submits = 0;
+        let result = with_active_keyset_retry_async(
+            || Ok::<_, &'static str>(keyset("a")),
+            |keyset| Ok::<_, &'static str>(keyset.id),
+            |_attempt| {
+                submits += 1;
+                async { Err::<(), _>("retryable") }
+            },
+            |error| *error == "retryable",
+            || async { Ok::<_, &'static str>(()) },
+            |_, _| Ok::<_, &'static str>(()),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            Err(KeysetRetryError::RetryKeysetUnchanged {
+                attempt: "a".to_string(),
+                error: "retryable",
+                keyset_id: "a".to_string(),
+            })
+        );
+        assert_eq!(submits, 1);
     }
 }

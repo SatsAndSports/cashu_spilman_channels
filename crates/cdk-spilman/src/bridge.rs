@@ -19,7 +19,10 @@ use cashu::util::hex;
 use std::str::FromStr;
 
 use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_error_code};
-use crate::{with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError};
+use crate::{
+    with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError,
+    SelectedOutputKeyset,
+};
 
 /// Funding data for a channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1511,6 +1514,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         balance: u64,
         signature: &str,
         funding: ChannelFunding,
+        out_keyset: KeysetInfo,
         validate_due: bool,
     ) -> Result<CloseData, BridgeError> {
         let secret: [u8; 32] = hex::decode(&funding.channel_secret_hex)
@@ -1526,21 +1530,6 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         .map_err(|e| BridgeError::Internal(e.to_string()))?;
         let proofs: Vec<Proof> = serde_json::from_str(&funding.funding_proofs_json)
             .map_err(|e| BridgeError::Internal(e.to_string()))?;
-        let active = self.host.get_active_keyset_ids(&params.mint, &params.unit);
-        let out_keyset = if active.contains(&params.keyset_info.keyset_id) {
-            params.keyset_info.clone()
-        } else {
-            let nid = active
-                .first()
-                .ok_or_else(|| BridgeError::Internal("No active keysets".into()))?;
-            super::parse_keyset_info_from_json(
-                &self
-                    .host
-                    .get_keyset_info(&params.mint, nid)
-                    .ok_or_else(|| BridgeError::Internal("Missing keyset info".into()))?,
-            )
-            .map_err(|e| BridgeError::Internal(e.to_string()))?
-        };
         if balance > params.capacity {
             return Err(BridgeError::BalanceExceedsCapacity {
                 balance,
@@ -1639,7 +1628,69 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 signature,
             )?,
         };
-        self.prepare_close_data_impl(channel_id, balance, signature, funding, validate_due)
+        let out_keyset = self.select_close_output_keyset_from_funding(&funding)?;
+        self.prepare_close_data_impl(
+            channel_id,
+            balance,
+            signature,
+            funding,
+            out_keyset,
+            validate_due,
+        )
+    }
+
+    fn select_close_output_keyset_from_funding(
+        &self,
+        funding: &ChannelFunding,
+    ) -> Result<KeysetInfo, BridgeError> {
+        let secret: [u8; 32] = hex::decode(&funding.channel_secret_hex)
+            .map_err(|e| BridgeError::Internal(e.to_string()))?
+            .try_into()
+            .map_err(|_| BridgeError::Internal("Invalid secret length".into()))?;
+        let params = ChannelParameters::from_json_with_channel_secret(
+            &funding.params_json,
+            super::parse_keyset_info_from_json(&funding.keyset_info_json)
+                .map_err(|e| BridgeError::Internal(e.to_string()))?,
+            secret,
+        )
+        .map_err(|e| BridgeError::Internal(e.to_string()))?;
+        let active = self.host.get_active_keyset_ids(&params.mint, &params.unit);
+        let id = active
+            .first()
+            .ok_or_else(|| BridgeError::Internal("No active keysets".into()))?;
+        super::parse_keyset_info_from_json(
+            &self
+                .host
+                .get_keyset_info(&params.mint, id)
+                .ok_or_else(|| BridgeError::Internal("Missing keyset info".into()))?,
+        )
+        .map_err(|e| BridgeError::Internal(e.to_string()))
+    }
+
+    fn select_close_output_keyset_for_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<SelectedOutputKeyset, ClosePreparationError> {
+        let funding = self
+            .host
+            .get_funding(channel_id)
+            .ok_or_else(|| ClosePreparationError::internal("Missing funding"))?;
+        let keyset = self
+            .select_close_output_keyset_from_funding(&funding)
+            .map_err(ClosePreparationError::from_bridge_error)?;
+        let info_json = serde_json::to_string(&keyset)
+            .map_err(|e| ClosePreparationError::internal(e.to_string()))?;
+        Ok(SelectedOutputKeyset {
+            id: keyset.keyset_id.to_string(),
+            info_json,
+        })
+    }
+
+    fn selected_output_keyset_info(
+        selected: SelectedOutputKeyset,
+    ) -> Result<KeysetInfo, ClosePreparationError> {
+        super::parse_keyset_info_from_json(&selected.info_json)
+            .map_err(|e| ClosePreparationError::internal(e.to_string()))
     }
 
     pub fn validate_and_prepare_cooperative_close(
@@ -1714,15 +1765,24 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Self::wrap_close_data(close_data, channel_id, p.balance, funding)
     }
 
-    /// Prepare a close using explicit balance/signature (used by the unified Closing→Closed path).
-    fn prepare_close_for_closing_channel(
+    fn prepare_close_for_closing_channel_with_keyset(
         &self,
         channel_id: &str,
         balance: u64,
         signature: &str,
+        selected: SelectedOutputKeyset,
     ) -> Result<PreparedClose, ClosePreparationError> {
         let close_data = self
-            .prepare_close_data(channel_id, balance, signature, None, None, false)
+            .prepare_close_data_impl(
+                channel_id,
+                balance,
+                signature,
+                self.host
+                    .get_funding(channel_id)
+                    .ok_or_else(|| ClosePreparationError::internal("Missing funding"))?,
+                Self::selected_output_keyset_info(selected)?,
+                false,
+            )
             .map_err(ClosePreparationError::from_bridge_error)?;
         let funding = self
             .host
@@ -1986,6 +2046,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     parse_mint_error_value(&error),
                 ))
             }
+            Err(KeysetRetryError::RetryKeysetUnchanged { error, .. }) => {
+                Err(CloseError::mint_rejected(parse_mint_error_value(&error)))
+            }
         }
     }
 
@@ -2014,10 +2077,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
         let result = with_active_keyset_retry(
-            |_phase| Ok::<_, CloseError>(()),
-            |(), _phase| {
-                self.prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
+            || {
+                self.select_close_output_keyset_for_channel(channel_id)
                     .map_err(CloseError::from_preparation_error)
+            },
+            |selected| {
+                self.prepare_close_for_closing_channel_with_keyset(
+                    channel_id,
+                    cd.balance,
+                    &cd.signature,
+                    selected,
+                )
+                .map_err(CloseError::from_preparation_error)
             },
             |prep| net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string()),
             |error| {
@@ -2085,10 +2156,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
         let result = with_active_keyset_retry_async(
-            |_phase| Ok::<_, CloseError>(()),
-            |(), _phase| {
-                self.prepare_close_for_closing_channel(channel_id, cd.balance, &cd.signature)
+            || {
+                self.select_close_output_keyset_for_channel(channel_id)
                     .map_err(CloseError::from_preparation_error)
+            },
+            |selected| {
+                self.prepare_close_for_closing_channel_with_keyset(
+                    channel_id,
+                    cd.balance,
+                    &cd.signature,
+                    selected,
+                )
+                .map_err(CloseError::from_preparation_error)
             },
             |prep| async move {
                 net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
@@ -2330,6 +2409,37 @@ mod tests {
             Err("N/A".into())
         }
     }
+
+    #[test]
+    fn close_retry_unchanged_keyset_returns_first_mint_rejection() {
+        let error = r#"{"code":12001,"detail":"keyset stale"}"#.to_string();
+        let result: Result<crate::KeysetRetrySuccess<PreparedClose, String>, _> =
+            Err(KeysetRetryError::RetryKeysetUnchanged {
+                attempt: PreparedClose {
+                    channel_id: "channel".to_string(),
+                    balance: 0,
+                    mint_url: "https://mint.example".to_string(),
+                    swap_request: serde_json::json!({}),
+                    secrets_with_blinding: serde_json::json!([]),
+                    output_keyset_info: serde_json::json!({}),
+                    params_json: "{}".to_string(),
+                    keyset_info_json: "{}".to_string(),
+                    channel_secret: "00".repeat(32),
+                },
+                error: error.clone(),
+                keyset_id: "00abcdef".to_string(),
+            });
+
+        let err =
+            SpilmanBridge::<MockHost, String>::close_retry_result(result, Some(error)).unwrap_err();
+        match err {
+            CloseError::MintRejected { mint_error, .. } => {
+                assert_eq!(mint_error["detail"].as_str(), Some("keyset stale"));
+            }
+            other => panic!("expected first mint rejection, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_bridge_rejects_unacceptable_receiver() {
         let b = SpilmanBridge::new(MockHost {

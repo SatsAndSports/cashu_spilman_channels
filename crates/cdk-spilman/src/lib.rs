@@ -72,8 +72,8 @@ pub use deterministic::{
 };
 pub use established_channel::EstablishedChannel;
 pub use keyset_retry::{
-    with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError, KeysetRetryPhase,
-    KeysetRetrySuccess, SelectedOutputKeyset,
+    with_active_keyset_retry, with_active_keyset_retry_async, ActiveKeysetSelection,
+    KeysetRetryError, KeysetRetrySuccess, SelectedOutputKeyset,
 };
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 pub use mint_errors::{
