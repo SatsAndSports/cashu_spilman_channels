@@ -174,6 +174,12 @@ impl SpilmanHost for PySpilmanHost {
         })
     }
 
+    fn has_keysets_for_unit(&self, mint: &str, unit: &cashu::nuts::CurrencyUnit) -> bool {
+        // The Python host API currently exposes active keyset lookup, not an
+        // inactive-inclusive cache query. Treat any active keyset as cached.
+        !self.get_active_keyset_ids(mint, unit).is_empty()
+    }
+
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String> {
         Python::with_gil(|py| {
             match self

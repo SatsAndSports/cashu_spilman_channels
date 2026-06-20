@@ -366,6 +366,11 @@ impl SpilmanHost<String> for WasmSpilmanHostProxy {
             .filter_map(|v| v.as_string().and_then(|s| Id::from_str(&s).ok()))
             .collect()
     }
+    fn has_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> bool {
+        // The WASM host API currently exposes active keyset lookup, not an
+        // inactive-inclusive cache query. Treat any active keyset as cached.
+        !self.get_active_keyset_ids(mint, unit).is_empty()
+    }
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String> {
         self.js_host
             .get_keyset_info(mint, &keyset_id.to_string())

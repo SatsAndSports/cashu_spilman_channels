@@ -412,6 +412,12 @@ impl SpilmanHost<String> for CGoSpilmanHost {
         }
     }
 
+    fn has_keysets_for_unit(&self, mint: &str, unit: &cashu::nuts::CurrencyUnit) -> bool {
+        // The Go binding host currently exposes active keyset lookup, not an
+        // inactive-inclusive cache query. Treat any active keyset as cached.
+        !self.get_active_keyset_ids(mint, unit).is_empty()
+    }
+
     fn get_keyset_info(&self, mint: &str, keyset_id: &cashu::nuts::Id) -> Option<String> {
         let mint_c = CString::new(mint).unwrap();
         let kid_c = CString::new(keyset_id.to_string()).unwrap();

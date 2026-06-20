@@ -193,6 +193,10 @@ impl SpilmanHost<()> for TestServerHost {
             .unwrap_or_default()
     }
 
+    fn has_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> bool {
+        !self.get_active_keyset_ids(mint, unit).is_empty()
+    }
+
     fn get_keyset_info(&self, _mint: &str, keyset_id: &Id) -> Option<String> {
         self.keyset_infos.borrow().get(keyset_id).cloned()
     }

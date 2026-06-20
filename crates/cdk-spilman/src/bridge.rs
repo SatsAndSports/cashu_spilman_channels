@@ -126,6 +126,9 @@ pub trait SpilmanHost<C = String> {
     /// Get active keyset IDs for a mint and unit
     fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
 
+    /// True if any keyset is cached for a mint and unit, including inactive keysets.
+    fn has_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> bool;
+
     /// Get full KeysetInfo JSON for a specific keyset
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String>;
 
@@ -1667,6 +1670,60 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         .map_err(|e| BridgeError::Internal(e.to_string()))
     }
 
+    fn close_mint_unit_for_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<(String, CurrencyUnit), ClosePreparationError> {
+        let funding = self
+            .host
+            .get_funding(channel_id)
+            .ok_or_else(|| ClosePreparationError::internal("Missing funding"))?;
+        let secret: [u8; 32] = hex::decode(&funding.channel_secret_hex)
+            .map_err(|e| ClosePreparationError::internal(e.to_string()))?
+            .try_into()
+            .map_err(|_| ClosePreparationError::internal("Invalid secret length"))?;
+        let params = ChannelParameters::from_json_with_channel_secret(
+            &funding.params_json,
+            super::parse_keyset_info_from_json(&funding.keyset_info_json)
+                .map_err(|e| ClosePreparationError::internal(e.to_string()))?,
+            secret,
+        )
+        .map_err(|e| ClosePreparationError::internal(e.to_string()))?;
+        Ok((params.mint, params.unit))
+    }
+
+    fn ensure_close_keysets_cached<N: SpilmanNetworking>(
+        &self,
+        channel_id: &str,
+        net: &N,
+    ) -> Result<(), CloseError> {
+        let (mint, unit) = self
+            .close_mint_unit_for_channel(channel_id)
+            .map_err(CloseError::from_preparation_error)?;
+        if !self.host.has_keysets_for_unit(&mint, &unit) {
+            net.refresh_all_keysets(&mint).map_err(|e| {
+                CloseError::storage_failed(format!("refresh keysets before close: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_close_keysets_cached_async<N: SpilmanAsyncNetworking>(
+        &self,
+        channel_id: &str,
+        net: &N,
+    ) -> Result<(), CloseError> {
+        let (mint, unit) = self
+            .close_mint_unit_for_channel(channel_id)
+            .map_err(CloseError::from_preparation_error)?;
+        if !self.host.has_keysets_for_unit(&mint, &unit) {
+            net.refresh_all_keysets(&mint).await.map_err(|e| {
+                CloseError::storage_failed(format!("refresh keysets before close: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+
     fn select_close_output_keyset_for_channel(
         &self,
         channel_id: &str,
@@ -2076,17 +2133,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        self.ensure_close_keysets_cached(channel_id, net)?;
         // Closing a channel spends the stored channel funding proofs through a
         // mint swap, splitting value between receiver and sender outputs.  The
         // close outputs must be created for an active mint keyset.  Hosts cache
         // keyset metadata because building the deterministic outputs requires
-        // full keyset info, but that cache can be stale if the mint has rotated
-        // active keysets.  The helper owns the common safe sequence: select a
-        // cached active output keyset, prepare and submit the close swap, and on
-        // a retryable keyset rejection refresh keysets, reselect, and retry once
-        // only if the selected keyset id changed.  If refresh still chooses the
-        // same keyset, retrying would submit the same stale swap again, so the
-        // helper returns the first mint rejection.
+        // full keyset info.  Before entering the retry helper, ensure that cache
+        // has at least one keyset for the channel's mint/unit; inside the helper
+        // selection is cache-only.  If the cached active output keyset is stale,
+        // the helper refreshes after a retryable keyset rejection, reselects, and
+        // retries once only if the selected keyset id changed.  If refresh still
+        // chooses the same keyset, retrying would submit the same stale swap
+        // again, so the helper returns the first mint rejection.
         let result = with_active_keyset_retry(
             // Select the output keyset from the host's cached mint keyset data.
             // Close intentionally uses the first active keyset for the channel's
@@ -2181,11 +2239,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        self.ensure_close_keysets_cached_async(channel_id, net)
+            .await?;
         // Async variant of the same close-swap retry policy used above.  The
-        // selected output keyset comes from cached host keyset metadata, which
-        // can lag behind mint rotation.  On a retryable keyset rejection the
-        // helper refreshes, reselects, skips an identical-keyset retry, or
-        // rebuilds/submits exactly one changed-keyset retry.
+        // cache is pre-warmed if empty, then selection stays cache-only until a
+        // retryable keyset rejection causes the helper to refresh and reselect.
         let result = with_active_keyset_retry_async(
             // Select active close output keyset from host cache.
             || {
@@ -2419,6 +2477,9 @@ mod tests {
         }
         fn get_active_keyset_ids(&self, _: &str, _: &CurrencyUnit) -> Vec<Id> {
             Vec::new()
+        }
+        fn has_keysets_for_unit(&self, _: &str, _: &CurrencyUnit) -> bool {
+            false
         }
         fn get_keyset_info(&self, _: &str, _: &Id) -> Option<String> {
             None

@@ -228,6 +228,10 @@ pub trait SpilmanStorage: Send + Sync {
     /// Get all active keyset IDs for a given mint and unit.
     fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
 
+    /// List cached keysets for a mint and unit, including inactive keysets.
+    fn list_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit)
+        -> Vec<(Id, KeysetCacheEntry)>;
+
     /// Returns `{ mint_url: { unit: [keyset_id, …] } }` for all active keysets.
     fn get_mints_units_keysets(&self) -> HashMap<String, HashMap<String, Vec<String>>>;
 
@@ -420,6 +424,20 @@ impl SpilmanStorage for MemoryStorage {
             .iter()
             .filter(|((m, _), entry)| m == mint && entry.unit == *unit && entry.active)
             .map(|((_, kid), _)| *kid)
+            .collect()
+    }
+
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, KeysetCacheEntry)> {
+        self.keysets
+            .read()
+            .expect("keysets lock")
+            .iter()
+            .filter(|((m, _), entry)| m == mint && entry.unit == *unit)
+            .map(|((_, kid), entry)| (*kid, entry.clone()))
             .collect()
     }
 
@@ -806,6 +824,41 @@ impl SpilmanStorage for SqliteStorage {
                     let entry: KeysetCacheEntry = serde_json::from_str(&json).ok()?;
                     if entry.active && entry.unit.to_string() == unit_str {
                         kid_str.parse::<Id>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn list_keysets_for_unit(
+        &self,
+        mint: &str,
+        unit: &CurrencyUnit,
+    ) -> Vec<(Id, KeysetCacheEntry)> {
+        let conn = self.conn.lock().expect("sqlite lock");
+        let mut stmt = match conn
+            .prepare("SELECT keyset_id, entry_json FROM spilman_keysets WHERE mint_url = ?1")
+        {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+        let unit_str = unit.to_string();
+        stmt.query_map([mint], |row| {
+            let kid_str: String = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok((kid_str, json))
+        })
+        .ok()
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter_map(|(kid_str, json)| {
+                    let entry: KeysetCacheEntry = serde_json::from_str(&json).ok()?;
+                    if entry.unit.to_string() == unit_str {
+                        Some((kid_str.parse::<Id>().ok()?, entry))
                     } else {
                         None
                     }
@@ -1276,6 +1329,10 @@ impl SpilmanHost for ConfigurableHost {
 
     fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id> {
         self.storage.get_active_keyset_ids(mint, unit)
+    }
+
+    fn has_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> bool {
+        !self.storage.list_keysets_for_unit(mint, unit).is_empty()
     }
 
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String> {

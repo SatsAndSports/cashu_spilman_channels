@@ -1378,6 +1378,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         fn get_active_keyset_ids(&self, _mint: &str, _unit: &CurrencyUnit) -> Vec<Id> {
             self.keyset_ids.clone()
         }
+        fn has_keysets_for_unit(&self, _mint: &str, _unit: &CurrencyUnit) -> bool {
+            !self.keyset_ids.is_empty()
+        }
         fn get_keyset_info(&self, _mint: &str, keyset_id: &Id) -> Option<String> {
             self.keyset_infos.get(keyset_id).cloned()
         }
@@ -2011,6 +2014,9 @@ mod close_balance_tests {
         fn get_active_keyset_ids(&self, _mint: &str, _unit: &CU) -> Vec<Id> {
             vec![self.keyset_id]
         }
+        fn has_keysets_for_unit(&self, _mint: &str, _unit: &CU) -> bool {
+            self.keyset_infos.contains_key(&self.keyset_id)
+        }
         fn get_keyset_info(&self, _mint: &str, keyset_id: &Id) -> Option<String> {
             self.keyset_infos.get(keyset_id).cloned()
         }
@@ -2516,6 +2522,9 @@ mod retry_tests {
         }
         fn get_active_keyset_ids(&self, _mint: &str, _unit: &CurrencyUnit) -> Vec<Id> {
             self.active_keyset_ids.borrow().clone()
+        }
+        fn has_keysets_for_unit(&self, _mint: &str, _unit: &CurrencyUnit) -> bool {
+            !self.active_keyset_ids.borrow().is_empty()
         }
         fn get_keyset_info(&self, _mint: &str, keyset_id: &Id) -> Option<String> {
             self.keyset_infos.get(keyset_id).cloned()

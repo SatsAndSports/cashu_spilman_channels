@@ -442,6 +442,18 @@ impl std::fmt::Display for OpenChannelError {
 impl std::error::Error for OpenChannelError {}
 
 #[cfg(feature = "wallet")]
+fn token_unit(token_string: &str) -> Result<CurrencyUnit, OpenChannelError> {
+    let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
+        OpenChannelError::new(
+            OpenChannelFailureStage::BeforeOpeningSaved,
+            None,
+            format!("Failed to parse token: {e}"),
+        )
+    })?;
+    Ok(token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat))
+}
+
+#[cfg(feature = "wallet")]
 fn unwrap_open_channel_retry_result<A>(
     result: Result<
         crate::KeysetRetrySuccess<A, OpenChannelResult>,
@@ -900,6 +912,79 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let keyset_id = first_active_keyset_id_from_response(&keysets_json, unit).map_err(|e| {
             OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
         })?;
+        self.cached_active_output_keyset(mint_url, unit, &keyset_id)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn ensure_keysets_cached_for_unit(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+    ) -> Result<(), OpenChannelError> {
+        if self.host.list_keysets_for_unit(mint_url, unit).is_empty() {
+            self.refresh_keysets(mint_url)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "wallet")]
+    fn cached_active_output_keyset(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+        preferred_keyset_id: &Id,
+    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
+        let keyset_id = self
+            .host
+            .get_active_keyset_ids(mint_url, unit)
+            .into_iter()
+            .find(|id| id == preferred_keyset_id)
+            .or_else(|| {
+                self.host
+                    .get_active_keyset_ids(mint_url, unit)
+                    .into_iter()
+                    .next()
+            })
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("mint {mint_url} has no cached active keyset for unit {unit}"),
+                )
+            })?;
+        self.host
+            .get_keyset(mint_url, &keyset_id)
+            .map(|entry| SelectedOutputKeyset {
+                id: keyset_id.to_string(),
+                info_json: entry.info_json,
+            })
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("active keyset {keyset_id} was not cached"),
+                )
+            })
+    }
+
+    #[cfg(feature = "wallet")]
+    fn first_cached_active_output_keyset(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
+        let keyset_id = self
+            .host
+            .get_active_keyset_ids(mint_url, unit)
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    None,
+                    format!("mint {mint_url} has no cached active keyset for unit {unit}"),
+                )
+            })?;
         self.host
             .get_keyset(mint_url, &keyset_id)
             .map(|entry| SelectedOutputKeyset {
@@ -1004,21 +1089,24 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        let token_unit = token_unit(token_string)?;
+        self.ensure_keysets_cached_for_unit(mint_url, &token_unit)?;
+
         // Opening a channel creates a mint swap whose outputs are locked to a
         // mint keyset.  Mints rotate active keysets, while clients cache keyset
         // metadata locally because swap construction needs the full keyset info
-        // JSON, not just the keyset id.  This auto path chooses the mint's
-        // current active output keyset and also gathers input-keyset metadata
-        // for the token being spent.  If the cached/selected output keyset is
-        // stale, the mint can reject the swap with a keyset error before input
-        // proofs are spent.  The retry helper centralizes the safe pattern:
-        // build and submit once, refresh/reselect on retryable keyset rejection,
-        // skip the retry if refresh still selects the same keyset id, otherwise
-        // rebuild and retry once.
+        // JSON, not just the keyset id.  Before entering the retry helper we
+        // ensure the cache has at least some data for this mint/unit; inside the
+        // helper the selector is cache-only.  If that cached active output
+        // keyset is stale, the mint can reject the swap with a keyset error
+        // before input proofs are spent.  The helper centralizes the safe
+        // pattern: build and submit once, refresh/reselect on retryable keyset
+        // rejection, skip the retry if refresh still selects the same keyset id,
+        // otherwise rebuild and retry once.
         let result = with_active_keyset_retry(
-            // Selection fetches the mint keysets and returns the active output
-            // keyset info needed to construct the funding swap.
-            || self.fetch_token_auto_keyset(mint_url, token_string),
+            // Cache-only selection of the active output keyset info needed to
+            // construct the funding swap.
+            || self.first_cached_active_output_keyset(mint_url, &token_unit),
             // Preparation is cheap and has no external reservation here: parse
             // the token and fetch/cache metadata for the token's input keysets.
             |output_keyset| self.prepare_token_auto_attempt(mint_url, token_string, output_keyset),
@@ -1037,31 +1125,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             // Only retry explicit, safe keyset rejections.  Ambiguous submit
             // failures may have spent inputs and are never retried here.
             OpenChannelError::is_retryable_keyset_rejection,
-            // No separate refresh step is needed: the selector fetches the
-            // mint's keyset response every time it is called.
-            || Ok(()),
+            // On retryable keyset rejection, refresh all keysets for this mint
+            // before the helper reselects from cache.
+            || self.refresh_keysets(mint_url),
             // No cleanup is needed because this auto path does not reserve
             // caller-owned state outside the upstream opening record.
             |_attempt, _error| Ok(()),
         );
         unwrap_open_channel_retry_result(result)
-    }
-
-    #[cfg(feature = "wallet")]
-    fn fetch_token_auto_keyset(
-        &self,
-        mint_url: &str,
-        token_string: &str,
-    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
-        let token: cashu::nuts::Token = token_string.parse().map_err(|e| {
-            OpenChannelError::new(
-                OpenChannelFailureStage::BeforeOpeningSaved,
-                None,
-                format!("Failed to parse token: {e}"),
-            )
-        })?;
-        let unit = token.unit().unwrap_or(cashu::nuts::CurrencyUnit::Sat);
-        self.fetch_active_output_keyset(mint_url, &unit)
     }
 
     #[cfg(feature = "wallet")]
@@ -1243,18 +1314,26 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        let parsed_unit = unit
+            .parse::<CurrencyUnit>()
+            .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+        self.ensure_keysets_cached_for_unit(mint_url, &parsed_unit)?;
+
         // Opening from raw proofs has the same stale-output-keyset problem as
         // token opens: output proofs must be created for an active mint keyset,
-        // but the locally cached view of active keysets may be old.  Input
-        // proofs may come from inactive/old keysets as long as the mint accepts
-        // them; the retry decision is only about the selected output keyset for
-        // the new channel funding swap.  Explicit-keyset methods intentionally
-        // do not use this helper, because their callers have already chosen the
-        // keyset and own any retry/reselection policy.
+        // but the locally cached view of active keysets may be old.  We ensure
+        // the cache is non-empty for this mint/unit before entering the helper;
+        // after that, selection is cache-only until a retryable keyset rejection
+        // triggers the helper's refresh callback.  Input proofs may come from
+        // inactive/old keysets as long as the mint accepts them; the retry
+        // decision is only about the selected output keyset for the new channel
+        // funding swap.  Explicit-keyset methods intentionally do not use this
+        // helper, because their callers have already chosen the keyset and own
+        // any retry/reselection policy.
         let result = with_active_keyset_retry(
-            // Fetch the mint keyset list and choose the first active keyset for
-            // the requested unit.
-            || self.fetch_proofs_auto_keyset(mint_url, unit),
+            // Cache-only selection of the first active keyset for the requested
+            // unit.
+            || self.first_cached_active_output_keyset(mint_url, &parsed_unit),
             // The selected output keyset is already the complete attempt input
             // for this auto path.
             Ok,
@@ -1276,25 +1355,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             // Retry only when the mint explicitly rejected the output keyset and
             // the input proofs are known not to have been spent.
             OpenChannelError::is_retryable_keyset_rejection,
-            // Selection already refreshes keysets by fetching the mint keyset
-            // response, so there is no additional refresh operation here.
-            || Ok(()),
+            // Refresh this mint before the helper reselects from cache.
+            || self.refresh_keysets(mint_url),
             // No external reservation is owned by this upstream auto path.
             |_attempt, _error| Ok(()),
         );
         unwrap_open_channel_retry_result(result)
-    }
-
-    #[cfg(feature = "wallet")]
-    fn fetch_proofs_auto_keyset(
-        &self,
-        mint_url: &str,
-        unit: &str,
-    ) -> Result<SelectedOutputKeyset, OpenChannelError> {
-        let unit = unit
-            .parse::<CurrencyUnit>()
-            .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
-        self.fetch_active_output_keyset(mint_url, &unit)
     }
 
     /// Open a new channel from input proofs using a specific output keyset id.
