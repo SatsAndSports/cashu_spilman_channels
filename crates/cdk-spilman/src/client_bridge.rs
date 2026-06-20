@@ -1004,9 +1004,25 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        // Opening a channel creates a mint swap whose outputs are locked to a
+        // mint keyset.  Mints rotate active keysets, while clients cache keyset
+        // metadata locally because swap construction needs the full keyset info
+        // JSON, not just the keyset id.  This auto path chooses the mint's
+        // current active output keyset and also gathers input-keyset metadata
+        // for the token being spent.  If the cached/selected output keyset is
+        // stale, the mint can reject the swap with a keyset error before input
+        // proofs are spent.  The retry helper centralizes the safe pattern:
+        // build and submit once, refresh/reselect on retryable keyset rejection,
+        // skip the retry if refresh still selects the same keyset id, otherwise
+        // rebuild and retry once.
         let result = with_active_keyset_retry(
+            // Selection fetches the mint keysets and returns the active output
+            // keyset info needed to construct the funding swap.
             || self.fetch_token_auto_keyset(mint_url, token_string),
+            // Preparation is cheap and has no external reservation here: parse
+            // the token and fetch/cache metadata for the token's input keysets.
             |output_keyset| self.prepare_token_auto_attempt(mint_url, token_string, output_keyset),
+            // Submission constructs the channel opening and calls the mint swap.
             |attempt| {
                 self.open_channel_from_token_with_input_keysets(
                     token_string,
@@ -1018,8 +1034,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     max_amount,
                 )
             },
+            // Only retry explicit, safe keyset rejections.  Ambiguous submit
+            // failures may have spent inputs and are never retried here.
             OpenChannelError::is_retryable_keyset_rejection,
+            // No separate refresh step is needed: the selector fetches the
+            // mint's keyset response every time it is called.
             || Ok(()),
+            // No cleanup is needed because this auto path does not reserve
+            // caller-owned state outside the upstream opening record.
             |_attempt, _error| Ok(()),
         );
         unwrap_open_channel_retry_result(result)
@@ -1221,9 +1243,23 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         max_amount: u64,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        // Opening from raw proofs has the same stale-output-keyset problem as
+        // token opens: output proofs must be created for an active mint keyset,
+        // but the locally cached view of active keysets may be old.  Input
+        // proofs may come from inactive/old keysets as long as the mint accepts
+        // them; the retry decision is only about the selected output keyset for
+        // the new channel funding swap.  Explicit-keyset methods intentionally
+        // do not use this helper, because their callers have already chosen the
+        // keyset and own any retry/reselection policy.
         let result = with_active_keyset_retry(
+            // Fetch the mint keyset list and choose the first active keyset for
+            // the requested unit.
             || self.fetch_proofs_auto_keyset(mint_url, unit),
+            // The selected output keyset is already the complete attempt input
+            // for this auto path.
             Ok,
+            // Construct the channel opening from the caller's proofs and submit
+            // the mint swap using the selected output keyset info JSON.
             |output_keyset| {
                 self.open_channel_from_proofs(
                     mint_url,
@@ -1237,8 +1273,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     None,
                 )
             },
+            // Retry only when the mint explicitly rejected the output keyset and
+            // the input proofs are known not to have been spent.
             OpenChannelError::is_retryable_keyset_rejection,
+            // Selection already refreshes keysets by fetching the mint keyset
+            // response, so there is no additional refresh operation here.
             || Ok(()),
+            // No external reservation is owned by this upstream auto path.
             |_attempt, _error| Ok(()),
         );
         unwrap_open_channel_retry_result(result)

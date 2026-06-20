@@ -2076,11 +2076,27 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        // Closing a channel spends the stored channel funding proofs through a
+        // mint swap, splitting value between receiver and sender outputs.  The
+        // close outputs must be created for an active mint keyset.  Hosts cache
+        // keyset metadata because building the deterministic outputs requires
+        // full keyset info, but that cache can be stale if the mint has rotated
+        // active keysets.  The helper owns the common safe sequence: select a
+        // cached active output keyset, prepare and submit the close swap, and on
+        // a retryable keyset rejection refresh keysets, reselect, and retry once
+        // only if the selected keyset id changed.  If refresh still chooses the
+        // same keyset, retrying would submit the same stale swap again, so the
+        // helper returns the first mint rejection.
         let result = with_active_keyset_retry(
+            // Select the output keyset from the host's cached mint keyset data.
+            // Close intentionally uses the first active keyset for the channel's
+            // mint/unit instead of preferring the original funding keyset.
             || {
                 self.select_close_output_keyset_for_channel(channel_id)
                     .map_err(CloseError::from_preparation_error)
             },
+            // Build the signed close swap for the selected output keyset.  This
+            // is side-effect free; durable state changes happen in finalize.
             |selected| {
                 self.prepare_close_for_closing_channel_with_keyset(
                     channel_id,
@@ -2090,7 +2106,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 )
                 .map_err(CloseError::from_preparation_error)
             },
+            // Submit the prepared swap request to the mint.
             |prep| net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string()),
+            // Retry only keyset-class mint errors and remember the original
+            // rejection so error mapping can distinguish first vs retry failure.
             |error| {
                 if should_retry_swap_error(error) {
                     let Ok(mut first_rejection) = first_rejection.lock() else {
@@ -2102,6 +2121,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     false
                 }
             },
+            // Preserve historical close behavior: ask the networking layer to
+            // refresh all keysets for the mint, but ignore refresh errors.  If
+            // refresh fails or still yields the same keyset, the helper skips the
+            // retry and the original mint rejection is returned.
             || {
                 let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
                 if let Some(mint_url) = mint_url.as_deref() {
@@ -2109,6 +2132,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 }
                 Ok(())
             },
+            // Cleanup runs after the first retryable rejection and before the
+            // refresh.  Close has no reservation to release, but the refresh
+            // closure needs to know which mint was used by the failed attempt.
             |attempt, _error| {
                 *retry_mint_url
                     .lock()
@@ -2155,11 +2181,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
+        // Async variant of the same close-swap retry policy used above.  The
+        // selected output keyset comes from cached host keyset metadata, which
+        // can lag behind mint rotation.  On a retryable keyset rejection the
+        // helper refreshes, reselects, skips an identical-keyset retry, or
+        // rebuilds/submits exactly one changed-keyset retry.
         let result = with_active_keyset_retry_async(
+            // Select active close output keyset from host cache.
             || {
                 self.select_close_output_keyset_for_channel(channel_id)
                     .map_err(CloseError::from_preparation_error)
             },
+            // Prepare a close swap for that selected output keyset.
             |selected| {
                 self.prepare_close_for_closing_channel_with_keyset(
                     channel_id,
@@ -2169,10 +2202,13 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 )
                 .map_err(CloseError::from_preparation_error)
             },
+            // Submit via async networking.
             |prep| async move {
                 net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
                     .await
             },
+            // Restrict retries to safe keyset rejections and remember the first
+            // rejection for final error mapping.
             |error| {
                 if should_retry_swap_error(error) {
                     let Ok(mut first_rejection) = first_rejection.lock() else {
@@ -2184,6 +2220,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     false
                 }
             },
+            // Delegate keyset refresh to the networking layer.  As in the sync
+            // path, refresh failures are intentionally ignored and will normally
+            // surface as unchanged-keyset/original-rejection behavior.
             || {
                 let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
                 async move {
@@ -2193,6 +2232,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     Ok(())
                 }
             },
+            // No close reservation is released here; this just records the mint
+            // URL needed by the refresh closure.
             |attempt, _error| {
                 *retry_mint_url
                     .lock()
