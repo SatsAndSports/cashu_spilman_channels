@@ -59,7 +59,7 @@ CONTAINER_CMD ?= podman
 	run-python-server run-python-client \
 	run-go-server run-go-client \
 	run-ts-server run-ts-client \
-	test test-rust-only test-unit-spilman test-integration-rust \
+	test test-rust-only test-unit-spilman test-core test-test-mint test-interop test-wasm test-rust-demo test-client-integration-rust test-integration-rust \
 	test-unit-go test-integration-go test-integration-python test-integration-ts \
 	test-server-ts test-server-rust test-server-python test-server-go test-server-all \
 	test-demo-python test-demo-go test-demo-ts \
@@ -217,15 +217,21 @@ run-ts-client:
 test-unit-spilman:
 	cargo test -p cdk-spilman --features configurable-host,client-sqlite --manifest-path Cargo.toml
 
-# Run workspace tests
+# Run core Spilman library tests with all Rust features
 test-core:
-	cargo test -p cdk-spilman --manifest-path Cargo.toml
+	cargo test -p cdk-spilman --all-features --manifest-path Cargo.toml
+
+test-test-mint:
+	cargo test -p cdk-spilman-test-mint --manifest-path Cargo.toml
 
 test-interop:
 	cargo test -p cdk-spilman-interop-tests --manifest-path Cargo.toml
 
 test-wasm:
 	cargo test -p cdk-wasm --manifest-path Cargo.toml
+
+test-client-integration-rust:
+	cargo test -p cdk-spilman-client-integration-tests --manifest-path Cargo.toml
 
 test-rust-demo:
 	$(MINT_RUNNER) cargo test -p rust-ascii-art --manifest-path Cargo.toml
@@ -356,8 +362,11 @@ test-kit-all: test-kit-python test-kit-go test-kit-ts
 # Default test target: Rust-only tests (no Node.js, Python, or Go required)
 test: test-rust-only
 
-# Rust-only tests: unit tests + Rust server integration tests
-test-rust-only: test-unit-spilman test-server-rust
+# Rust-only tests: Rust crates plus Rust client/server integration paths.
+# This intentionally excludes Go/Python/TS bindings, language-kit tests, demos
+# for non-Rust languages, and ignored/special-purpose tests such as NUT-00
+# compliance checks.
+test-rust-only: test-core test-test-mint test-interop test-client-integration-rust test-wasm test-rust-demo test-server-rust
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL RUST-ONLY TESTS PASSED"
