@@ -2,10 +2,14 @@
 //!
 //! Contains the complete channel state after funding
 
-use cashu::nuts::Proof;
+use cashu::nuts::{Proof, SecretKey};
+use cashu::util::hex;
 
+use super::client_storage::ClientChannelFunding;
 use super::deterministic::MintConnection;
 use super::params::ChannelParameters;
+use super::sender_and_receiver::SpilmanChannelSender;
+use crate::bindings::parse_keyset_info_from_json;
 
 /// An established Spilman payment channel
 /// Contains all channel components after funding transaction is complete
@@ -60,6 +64,44 @@ impl EstablishedChannel {
             params,
             funding_proofs,
         })
+    }
+
+    /// Reconstruct an established channel from client-side persisted funding data.
+    pub fn from_client_channel_funding(
+        funding: &ClientChannelFunding,
+    ) -> Result<Self, anyhow::Error> {
+        let keyset_info = parse_keyset_info_from_json(&funding.keyset_info_json)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let channel_secret: [u8; 32] = hex::decode(&funding.channel_secret_hex)
+            .map_err(|e| anyhow::anyhow!("invalid channel secret hex: {e}"))?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("channel secret is not 32 bytes"))?;
+        let params = ChannelParameters::from_json_with_channel_secret(
+            &funding.params_json,
+            keyset_info,
+            channel_secret,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let funding_proofs: Vec<Proof> = serde_json::from_str(&funding.funding_proofs_json)
+            .map_err(|e| anyhow::anyhow!("invalid funding proofs JSON: {e}"))?;
+
+        Self::new(params, funding_proofs)
+    }
+
+    /// Restore the sender's deterministic output proofs after the receiver has
+    /// spent the funding token, using client-side persisted funding data.
+    pub async fn restore_sender_proofs_from_client_funding<M>(
+        funding: &ClientChannelFunding,
+        sender_secret: SecretKey,
+        mint_connection: &M,
+    ) -> Result<Vec<Proof>, anyhow::Error>
+    where
+        M: MintConnection + ?Sized,
+    {
+        let channel = Self::from_client_channel_funding(funding)?;
+        SpilmanChannelSender::new(sender_secret, channel)
+            .restore_sender_proofs(mint_connection)
+            .await
     }
 
     /// Get the Y value for checking the funding token state

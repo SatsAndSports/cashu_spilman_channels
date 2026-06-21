@@ -411,6 +411,33 @@ impl MintConnector for DirectMintConnection {
     async fn set_auth_wallet(&self, _wallet: Option<cdk::wallet::AuthWallet>) {}
 }
 
+#[async_trait]
+impl cdk_spilman::MintConnection for DirectMintConnection {
+    async fn process_swap(&self, request: SwapRequest) -> anyhow::Result<SwapResponse> {
+        self.mint
+            .process_swap_request(request)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    async fn post_restore(&self, request: RestoreRequest) -> anyhow::Result<RestoreResponse> {
+        self.mint
+            .restore(request)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    async fn check_state(
+        &self,
+        ys: Vec<cdk::nuts::PublicKey>,
+    ) -> anyhow::Result<CheckStateResponse> {
+        self.mint
+            .check_state(&CheckStateRequest { ys })
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+}
+
 #[tokio::test]
 async fn test_spilman_2of2_spending_with_blinded_keys() -> anyhow::Result<()> {
     let test_mint = TestMintHelper::new().await?;
@@ -904,7 +931,7 @@ async fn create_stage2_receiver_proof_fixture(
     let close_response = mint.process_swap_request(close_swap).await?;
     let proofs_with_meta = commitment_outputs.unblind_all(close_response.signatures, &keys)?;
 
-    let receiver_proofs = proofs_with_meta
+    let receiver_proofs: Vec<Proof> = proofs_with_meta
         .into_iter()
         .filter(|p| p.is_receiver)
         .map(|proof_meta| {
@@ -937,12 +964,272 @@ async fn create_stage2_receiver_proof_fixture(
         })
         .collect();
 
+    assert_stage2_receiver_proofs_state(&receiver_proofs, proof_mode);
+
     Ok((mint, charlie_secret, receiver_proofs))
 }
 
-async fn assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
+fn assert_stage2_receiver_proofs_state(proofs: &[Proof], mode: Stage2ReceiverProofMode) {
+    assert!(!proofs.is_empty(), "receiver should have stage-2 proofs");
+    for proof in proofs {
+        match mode {
+            Stage2ReceiverProofMode::P2pkEOnly => {
+                assert!(
+                    proof.p2pk_e.is_some(),
+                    "p2pk_e-only receiver proof should keep p2pk_e"
+                );
+                assert!(
+                    proof.witness.is_none(),
+                    "p2pk_e-only receiver proof should not have a witness"
+                );
+            }
+            Stage2ReceiverProofMode::SignatureOnly => {
+                assert!(
+                    proof.p2pk_e.is_none(),
+                    "signature-only receiver proof should not have p2pk_e"
+                );
+                let signatures = match &proof.witness {
+                    Some(cdk::nuts::Witness::P2PKWitness(w)) => &w.signatures,
+                    other => panic!(
+                        "signature-only receiver proof should have a P2PK witness, got {other:?}"
+                    ),
+                };
+                assert!(
+                    !signatures.is_empty(),
+                    "signature-only receiver proof should have witness signatures"
+                );
+            }
+            Stage2ReceiverProofMode::SignatureAndP2pkE => {
+                assert!(
+                    proof.p2pk_e.is_some(),
+                    "signature+p2pk_e receiver proof should keep p2pk_e"
+                );
+                let signatures = match &proof.witness {
+                    Some(cdk::nuts::Witness::P2PKWitness(w)) => &w.signatures,
+                    other => panic!(
+                        "signature+p2pk_e receiver proof should have a P2PK witness, got {other:?}"
+                    ),
+                };
+                assert!(
+                    !signatures.is_empty(),
+                    "signature+p2pk_e receiver proof should have witness signatures"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_stage2_receiver_p2pk_e_only_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, charlie_secret, receiver_proofs) =
+        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::P2pkEOnly).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
+        mint,
+        receiver_proofs,
+        ReceiveOptions {
+            p2pk_signing_keys: vec![charlie_secret],
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_stage2_receiver_signature_only_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, _charlie_secret, receiver_proofs) =
+        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::SignatureOnly).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
+        mint,
+        receiver_proofs,
+        ReceiveOptions::default(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_stage2_receiver_signature_and_p2pk_e_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, _charlie_secret, receiver_proofs) =
+        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::SignatureAndP2pkE).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
+        mint,
+        receiver_proofs,
+        ReceiveOptions::default(),
+    )
+    .await
+}
+
+// ====================================================================
+// Sender stage-2 proof spendability tests
+// ====================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage2SenderProofMode {
+    P2pkEOnly,
+    SignatureOnly,
+    SignatureAndP2pkE,
+}
+
+async fn create_stage2_sender_proof_fixture(
+    proof_mode: Stage2SenderProofMode,
+) -> anyhow::Result<(Mint, cdk::nuts::SecretKey, Vec<Proof>)> {
+    let test_mint = TestMintHelper::new().await?;
+    let mint = test_mint.mint().clone();
+
+    let alice_secret = cdk::nuts::SecretKey::generate();
+    let sender_pubkey = alice_secret.public_key();
+    let charlie_secret = cdk::nuts::SecretKey::generate();
+    let receiver_pubkey = charlie_secret.public_key();
+
+    let keyset_id = test_mint.active_sat_keyset_id;
+    let keys = test_mint.public_keys_of_the_active_sat_keyset.clone();
+    let input_fee_ppk = test_mint.input_fee_ppk;
+    let keyset_info = KeysetInfo::new(
+        keyset_id,
+        test_mint.unit.clone(),
+        keys.clone(),
+        input_fee_ppk,
+        test_mint.final_expiry,
+    );
+
+    let mint_amount = 100u64;
+    let input_proofs = test_mint.mint_proofs(Amount::from(mint_amount)).await?;
+    let num_input_proofs = input_proofs.len() as u64;
+    let actual_fee = (input_fee_ppk * num_input_proofs).div_ceil(1000);
+    let actual_funding = mint_amount - actual_fee;
+
+    let capacity = 10u64;
+    let balance = 5u64;
+    let future_expiry = unix_time() + 3600;
+
+    let params = ChannelParameters::new_with_secret_key(
+        sender_pubkey,
+        receiver_pubkey,
+        "http://localhost:3338".to_string(),
+        CurrencyUnit::Sat,
+        capacity,
+        actual_funding,
+        future_expiry,
+        unix_time(),
+        keyset_info.clone(),
+        64,
+        &alice_secret,
+    )?;
+
+    let funding_outputs = DeterministicOutputsForOneContext::new(
+        "funding".to_string(),
+        actual_funding,
+        params.clone(),
+    )?;
+    let funding_blinded_messages = funding_outputs.get_blinded_messages(None)?;
+    let swap_request = SwapRequest::new(input_proofs, funding_blinded_messages);
+    let swap_response = mint.process_swap_request(swap_request).await?;
+
+    let secrets_with_blinding = funding_outputs.get_secrets_with_blinding()?;
+    let blinding_factors = secrets_with_blinding
+        .iter()
+        .map(|s| s.blinding_factor.clone())
+        .collect();
+    let secrets = secrets_with_blinding
+        .iter()
+        .map(|s| s.secret.clone())
+        .collect();
+    let funding_proofs =
+        construct_proofs(swap_response.signatures, blinding_factors, secrets, &keys)?;
+
+    let established_channel = EstablishedChannel::new(params.clone(), funding_proofs.clone())?;
+
+    let commitment_outputs = CommitmentOutputs::for_balance(balance, &params)?;
+    let mut close_swap = commitment_outputs.create_swap_request(funding_proofs, None)?;
+
+    let alice_blinded_secret = params.get_sender_blinded_secret_key_for_stage1(&alice_secret)?;
+    let charlie_blinded_secret =
+        params.get_receiver_blinded_secret_key_for_stage1(&charlie_secret)?;
+    close_swap.sign_sig_all(alice_blinded_secret)?;
+    close_swap.sign_sig_all(charlie_blinded_secret)?;
+
+    // Spend the funding token so NUT-09 restore can find sender outputs.
+    mint.process_swap_request(close_swap).await?;
+
+    let sender = SpilmanChannelSender::new(alice_secret.clone(), established_channel);
+    let mint_connection = DirectMintConnection::new(mint.clone());
+    let mut restored_proofs = sender
+        .restore_sender_proofs(&mint_connection)
+        .await
+        .map_err(|e| anyhow::anyhow!("restore sender proofs failed: {e}"))?;
+
+    for proof in &mut restored_proofs {
+        match proof_mode {
+            Stage2SenderProofMode::P2pkEOnly => {
+                proof.witness = None;
+            }
+            Stage2SenderProofMode::SignatureOnly => {
+                proof.p2pk_e = None;
+            }
+            Stage2SenderProofMode::SignatureAndP2pkE => {}
+        }
+    }
+
+    assert_stage2_sender_proofs_state(&restored_proofs, proof_mode);
+
+    Ok((mint, alice_secret, restored_proofs))
+}
+
+fn assert_stage2_sender_proofs_state(proofs: &[Proof], mode: Stage2SenderProofMode) {
+    assert!(
+        !proofs.is_empty(),
+        "sender should have restored stage-2 proofs"
+    );
+    for proof in proofs {
+        match mode {
+            Stage2SenderProofMode::P2pkEOnly => {
+                assert!(
+                    proof.p2pk_e.is_some(),
+                    "p2pk_e-only sender proof should keep p2pk_e"
+                );
+                assert!(
+                    proof.witness.is_none(),
+                    "p2pk_e-only sender proof should not have a witness"
+                );
+            }
+            Stage2SenderProofMode::SignatureOnly => {
+                assert!(
+                    proof.p2pk_e.is_none(),
+                    "signature-only sender proof should not have p2pk_e"
+                );
+                let signatures = match &proof.witness {
+                    Some(cdk::nuts::Witness::P2PKWitness(w)) => &w.signatures,
+                    other => panic!(
+                        "signature-only sender proof should have a P2PK witness, got {other:?}"
+                    ),
+                };
+                assert!(
+                    !signatures.is_empty(),
+                    "signature-only sender proof should have witness signatures"
+                );
+            }
+            Stage2SenderProofMode::SignatureAndP2pkE => {
+                assert!(
+                    proof.p2pk_e.is_some(),
+                    "signature+p2pk_e sender proof should keep p2pk_e"
+                );
+                let signatures = match &proof.witness {
+                    Some(cdk::nuts::Witness::P2PKWitness(w)) => &w.signatures,
+                    other => panic!(
+                        "signature+p2pk_e sender proof should have a P2PK witness, got {other:?}"
+                    ),
+                };
+                assert!(
+                    !signatures.is_empty(),
+                    "signature+p2pk_e sender proof should have witness signatures"
+                );
+            }
+        }
+    }
+}
+
+async fn assert_wallet_can_receive_and_spend_stage2_proofs(
     mint: Mint,
-    receiver_proofs: Vec<Proof>,
+    proofs: Vec<Proof>,
     receive_options: ReceiveOptions,
 ) -> anyhow::Result<()> {
     let connector = DirectMintConnection::new(mint.clone());
@@ -961,7 +1248,7 @@ async fn assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
         .build()?;
 
     let received_amount = wallet
-        .receive_proofs(receiver_proofs, receive_options, None, None)
+        .receive_proofs(proofs, receive_options, None, None)
         .await?;
     let prepared = wallet
         .prepare_send(Amount::from(1u64), SendOptions::default())
@@ -972,14 +1259,14 @@ async fn assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
 }
 
 #[tokio::test]
-async fn test_stage2_receiver_can_sign_and_spend_with_wallet() -> anyhow::Result<()> {
-    let (mint, charlie_secret, receiver_proofs) =
-        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::P2pkEOnly).await?;
-    assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
+async fn test_stage2_sender_p2pk_e_only_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, alice_secret, sender_proofs) =
+        create_stage2_sender_proof_fixture(Stage2SenderProofMode::P2pkEOnly).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
         mint,
-        receiver_proofs,
+        sender_proofs,
         ReceiveOptions {
-            p2pk_signing_keys: vec![charlie_secret],
+            p2pk_signing_keys: vec![alice_secret],
             ..Default::default()
         },
     )
@@ -987,24 +1274,24 @@ async fn test_stage2_receiver_can_sign_and_spend_with_wallet() -> anyhow::Result
 }
 
 #[tokio::test]
-async fn test_stage2_receiver_signature_only_can_spend_with_wallet() -> anyhow::Result<()> {
-    let (mint, _charlie_secret, receiver_proofs) =
-        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::SignatureOnly).await?;
-    assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
+async fn test_stage2_sender_signature_only_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, _alice_secret, sender_proofs) =
+        create_stage2_sender_proof_fixture(Stage2SenderProofMode::SignatureOnly).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
         mint,
-        receiver_proofs,
+        sender_proofs,
         ReceiveOptions::default(),
     )
     .await
 }
 
 #[tokio::test]
-async fn test_stage2_receiver_signature_and_p2pk_e_can_spend_with_wallet() -> anyhow::Result<()> {
-    let (mint, _charlie_secret, receiver_proofs) =
-        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::SignatureAndP2pkE).await?;
-    assert_wallet_can_receive_and_spend_stage2_receiver_proofs(
+async fn test_stage2_sender_signature_and_p2pk_e_can_spend_with_wallet() -> anyhow::Result<()> {
+    let (mint, _alice_secret, sender_proofs) =
+        create_stage2_sender_proof_fixture(Stage2SenderProofMode::SignatureAndP2pkE).await?;
+    assert_wallet_can_receive_and_spend_stage2_proofs(
         mint,
-        receiver_proofs,
+        sender_proofs,
         ReceiveOptions::default(),
     )
     .await

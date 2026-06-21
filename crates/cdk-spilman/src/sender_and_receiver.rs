@@ -6,10 +6,12 @@
 
 use serde::Serialize;
 
-use cashu::nuts::{Proof, PublicKey, RestoreRequest, SecretKey, SwapRequest};
+use cashu::nuts::{P2PKWitness, Proof, PublicKey, RestoreRequest, SecretKey, SwapRequest, Witness};
+use cashu::util::hex;
 use cashu::Amount;
 
 use super::balance_update::BalanceUpdateMessage;
+use super::bindings::sign_with_tweaked_key_util;
 use super::deterministic::{CommitmentOutputs, DeterministicOutputsForOneContext, MintConnection};
 use super::established_channel::EstablishedChannel;
 use super::params::{ChannelParameters, Stage2Role};
@@ -308,6 +310,30 @@ impl SpilmanChannelSender {
         &self.channel.params.channel_secret
     }
 
+    fn sign_sender_close_proof(
+        &self,
+        mut proof: Proof,
+        amount: u64,
+        index: usize,
+    ) -> anyhow::Result<Proof> {
+        use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+
+        let params = &self.channel.params;
+        params.attach_stage2_p2pk_e(&mut proof, Stage2Role::Sender, amount, index)?;
+        let tweak_info = params.stage2_tweak_info_for_role(Stage2Role::Sender, amount, index)?;
+        let tweak_hex = hex::encode(tweak_info.stage2_tweak_scalar.to_be_bytes());
+        let msg_hash = Sha256Hash::hash(&proof.secret.to_bytes());
+        let msg_hex = hex::encode(msg_hash.as_byte_array());
+        let secret_hex = hex::encode(self.alice_secret.secret_bytes());
+        let signature = sign_with_tweaked_key_util(&secret_hex, &msg_hex, &tweak_hex)
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        proof.witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec![signature],
+        }));
+        Ok(proof)
+    }
+
     /// Restore sender's proofs after Charlie has exited the channel
     ///
     /// When Charlie exits by submitting the commitment transaction, Alice may not
@@ -376,16 +402,10 @@ impl SpilmanChannelSender {
                             vec![det_output.secret.clone()],
                             &params.keyset_info.active_keys,
                         )?;
-                        let mut proof = proofs.pop().ok_or_else(|| {
+                        let proof = proofs.pop().ok_or_else(|| {
                             anyhow::anyhow!("construct_proofs returned no proofs")
                         })?;
-
-                        params.attach_stage2_p2pk_e(
-                            &mut proof,
-                            Stage2Role::Sender,
-                            amount,
-                            index,
-                        )?;
+                        let proof = self.sign_sender_close_proof(proof, amount, index)?;
 
                         recovered_proofs.push(proof);
                         index += 1;

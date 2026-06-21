@@ -2337,6 +2337,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         })
     }
 
+    /// Get immutable funding data for an open channel.
+    #[cfg(feature = "wallet")]
+    pub fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
+        self.host.get_channel_funding(channel_id)
+    }
+
     /// List all stored channel IDs.
     pub fn list_channels(&self) -> Vec<String> {
         self.host.list_channel_ids()
