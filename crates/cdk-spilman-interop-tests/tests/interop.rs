@@ -3275,7 +3275,8 @@ impl SpilmanNetworking for JsonFailingNetworking {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_cooperative_close_retry_preserves_structured_mint_errors() -> anyhow::Result<()> {
+async fn test_cooperative_close_same_keyset_skip_preserves_structured_mint_error(
+) -> anyhow::Result<()> {
     let s = retry_tests::setup_retry_scenario().await;
     let net = JsonFailingNetworking {
         swap_call_count: std::cell::Cell::new(0),
@@ -3292,32 +3293,22 @@ async fn test_cooperative_close_retry_preserves_structured_mint_errors() -> anyh
     let err = s
         .bridge
         .execute_cooperative_close(&payment_json, &net)
-        .expect_err("close should fail after retry");
+        .expect_err("close should fail after same-keyset retry is skipped");
 
-    assert_eq!(net.swap_call_count.get(), 2);
+    assert_eq!(net.swap_call_count.get(), 1);
     assert_eq!(net.refresh_count.get(), 1);
 
     match err {
-        CloseError::MintRejectedAfterRetry {
-            original_error,
-            retry_error,
-            status,
-        } => {
+        CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
             assert!(
-                original_error.is_object(),
+                mint_error.is_object(),
                 "original error should be JSON object"
             );
-            assert!(retry_error.is_object(), "retry error should be JSON object");
-            assert_eq!(original_error["code"], serde_json::json!(12002));
-            assert_eq!(
-                original_error["detail"],
-                serde_json::json!("Inactive Keyset")
-            );
-            assert_eq!(retry_error["code"], serde_json::json!(12001));
-            assert_eq!(retry_error["detail"], serde_json::json!("Unknown Keyset"));
+            assert_eq!(mint_error["code"], serde_json::json!(12002));
+            assert_eq!(mint_error["detail"], serde_json::json!("Inactive Keyset"));
         }
-        other => panic!("expected MintRejectedAfterRetry, got {other:?}"),
+        other => panic!("expected MintRejected, got {other:?}"),
     }
 
     Ok(())
@@ -3599,9 +3590,10 @@ async fn test_close_no_retry_on_token_spent_error() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Test that keyset errors (12001, 12002) trigger retry after refreshing keysets.
+/// Test that keyset errors (12001, 12002) trigger refresh, but do not resubmit
+/// when refreshed selection keeps the same output keyset.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_close_retry_on_keyset_error() -> anyhow::Result<()> {
+async fn test_close_keyset_error_skips_retry_when_keyset_unchanged() -> anyhow::Result<()> {
     let s = retry_tests::setup_retry_scenario().await;
 
     // Error code 12001 = KeysetNotFound (keyset error, should retry)
@@ -3617,13 +3609,13 @@ async fn test_close_retry_on_keyset_error() -> anyhow::Result<()> {
     let err = s
         .bridge
         .execute_cooperative_close(&payment_json, &net)
-        .expect_err("close should fail after retry");
+        .expect_err("close should fail after same-keyset retry is skipped");
 
-    // Should call swap twice (initial + retry)
+    // Should call swap once; refresh still chose the same output keyset.
     assert_eq!(
         net.swap_call_count.get(),
-        2,
-        "Should attempt swap twice for keyset error"
+        1,
+        "Should not resubmit when refreshed keyset is unchanged"
     );
     // Should refresh keysets once
     assert_eq!(
@@ -3632,18 +3624,13 @@ async fn test_close_retry_on_keyset_error() -> anyhow::Result<()> {
         "Should refresh keysets once for keyset error"
     );
 
-    // Should return MintRejectedAfterRetry
+    // Should return the original mint rejection rather than a retry rejection.
     match err {
-        CloseError::MintRejectedAfterRetry {
-            original_error,
-            retry_error,
-            status,
-        } => {
+        CloseError::MintRejected { mint_error, status } => {
             assert_eq!(status, 502);
-            assert_eq!(original_error["code"], serde_json::json!(12001));
-            assert_eq!(retry_error["code"], serde_json::json!(12001));
+            assert_eq!(mint_error["code"], serde_json::json!(12001));
         }
-        other => panic!("expected MintRejectedAfterRetry, got {other:?}"),
+        other => panic!("expected MintRejected, got {other:?}"),
     }
 
     Ok(())
