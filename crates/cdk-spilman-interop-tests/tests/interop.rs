@@ -850,6 +850,7 @@ enum Stage2ReceiverProofMode {
     P2pkEOnly,
     SignatureOnly,
     SignatureAndP2pkE,
+    NoSignatureOrP2pkE,
 }
 
 async fn create_stage2_receiver_proof_fixture(
@@ -959,6 +960,10 @@ async fn create_stage2_receiver_proof_fixture(
                         .expect("stage2 signing key");
                     proof.sign_p2pk(signing_key).expect("sign stage2 proof");
                 }
+                Stage2ReceiverProofMode::NoSignatureOrP2pkE => {
+                    proof.p2pk_e = None;
+                    proof.witness = None;
+                }
             }
             proof
         })
@@ -1015,8 +1020,48 @@ fn assert_stage2_receiver_proofs_state(proofs: &[Proof], mode: Stage2ReceiverPro
                     "signature+p2pk_e receiver proof should have witness signatures"
                 );
             }
+            Stage2ReceiverProofMode::NoSignatureOrP2pkE => {
+                assert!(
+                    proof.p2pk_e.is_none(),
+                    "no-authorization receiver proof should not have p2pk_e"
+                );
+                assert!(
+                    proof.witness.is_none(),
+                    "no-authorization receiver proof should not have a witness"
+                );
+            }
         }
     }
+}
+
+async fn assert_wallet_cannot_receive_stage2_proofs(
+    mint: Mint,
+    proofs: Vec<Proof>,
+    receive_options: ReceiveOptions,
+) -> anyhow::Result<()> {
+    let connector = DirectMintConnection::new(mint.clone());
+    let store = Arc::new(memory::empty().await?);
+    let seed = random::<[u8; 64]>();
+    let wallet = WalletBuilder::new()
+        .mint_url(
+            "http://localhost:3338"
+                .parse()
+                .expect("localhost mint URL should parse"),
+        )
+        .unit(CurrencyUnit::Sat)
+        .localstore(store)
+        .seed(seed)
+        .client(connector)
+        .build()?;
+
+    let result = wallet
+        .receive_proofs(proofs, receive_options, None, None)
+        .await;
+    assert!(
+        result.is_err(),
+        "stage-2 proofs without p2pk_e or signature should not be receivable/spendable"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -1058,6 +1103,14 @@ async fn test_stage2_receiver_signature_and_p2pk_e_can_spend_with_wallet() -> an
     .await
 }
 
+#[tokio::test]
+async fn test_stage2_receiver_without_p2pk_e_or_signature_is_unspendable() -> anyhow::Result<()> {
+    let (mint, _charlie_secret, receiver_proofs) =
+        create_stage2_receiver_proof_fixture(Stage2ReceiverProofMode::NoSignatureOrP2pkE).await?;
+    assert_wallet_cannot_receive_stage2_proofs(mint, receiver_proofs, ReceiveOptions::default())
+        .await
+}
+
 // ====================================================================
 // Sender stage-2 proof spendability tests
 // ====================================================================
@@ -1067,6 +1120,7 @@ enum Stage2SenderProofMode {
     P2pkEOnly,
     SignatureOnly,
     SignatureAndP2pkE,
+    NoSignatureOrP2pkE,
 }
 
 async fn create_stage2_sender_proof_fixture(
@@ -1166,6 +1220,10 @@ async fn create_stage2_sender_proof_fixture(
                 proof.p2pk_e = None;
             }
             Stage2SenderProofMode::SignatureAndP2pkE => {}
+            Stage2SenderProofMode::NoSignatureOrP2pkE => {
+                proof.p2pk_e = None;
+                proof.witness = None;
+            }
         }
     }
 
@@ -1221,6 +1279,16 @@ fn assert_stage2_sender_proofs_state(proofs: &[Proof], mode: Stage2SenderProofMo
                 assert!(
                     !signatures.is_empty(),
                     "signature+p2pk_e sender proof should have witness signatures"
+                );
+            }
+            Stage2SenderProofMode::NoSignatureOrP2pkE => {
+                assert!(
+                    proof.p2pk_e.is_none(),
+                    "no-authorization sender proof should not have p2pk_e"
+                );
+                assert!(
+                    proof.witness.is_none(),
+                    "no-authorization sender proof should not have a witness"
                 );
             }
         }
@@ -1295,6 +1363,13 @@ async fn test_stage2_sender_signature_and_p2pk_e_can_spend_with_wallet() -> anyh
         ReceiveOptions::default(),
     )
     .await
+}
+
+#[tokio::test]
+async fn test_stage2_sender_without_p2pk_e_or_signature_is_unspendable() -> anyhow::Result<()> {
+    let (mint, _alice_secret, sender_proofs) =
+        create_stage2_sender_proof_fixture(Stage2SenderProofMode::NoSignatureOrP2pkE).await?;
+    assert_wallet_cannot_receive_stage2_proofs(mint, sender_proofs, ReceiveOptions::default()).await
 }
 
 // ====================================================================
