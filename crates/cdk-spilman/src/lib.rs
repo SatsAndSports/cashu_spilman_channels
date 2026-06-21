@@ -70,7 +70,9 @@ pub use deterministic::{
     CommitmentOutputs, DeterministicOutputsForOneContext, DeterministicSecretWithBlinding,
     MintConnection,
 };
-pub use established_channel::EstablishedChannel;
+pub use established_channel::{
+    EstablishedChannel, FundingSpendKind, PreparedSenderRefund, PreparedSenderRefundOutput,
+};
 pub use keyset_retry::{
     with_active_keyset_retry, with_active_keyset_retry_async, ActiveKeysetSelection,
     KeysetRetryError, KeysetRetrySuccess, SelectedOutputKeyset,

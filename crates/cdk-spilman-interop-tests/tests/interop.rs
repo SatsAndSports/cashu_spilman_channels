@@ -17,7 +17,7 @@ use cdk::nuts::{
     CheckStateResponse, CurrencyUnit, Id, KeySet, Keys, KeysetResponse, MeltQuoteBolt11Response,
     MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
     MintRequest, MintResponse, PaymentMethod, PreMintSecrets, Proof, RestoreRequest,
-    RestoreResponse, SpendingConditions, SwapRequest, SwapResponse,
+    RestoreResponse, SpendingConditions, State, SwapRequest, SwapResponse,
 };
 use cdk::secret::Secret;
 use cdk::util::unix_time;
@@ -31,8 +31,8 @@ use cdk_fake_wallet::FakeWallet;
 use cdk_spilman::{
     complete_funding_swap, compute_channel_from_token, create_funding_swap, ChannelFunding,
     ChannelParameters, ChannelPolicy, ChannelState, CloseError, ClosingData, CommitmentOutputs,
-    DeterministicOutputsForOneContext, EstablishedChannel, KeysetInfo, PaymentProof, SpilmanBridge,
-    SpilmanChannelSender, SpilmanHost, SpilmanNetworking,
+    DeterministicOutputsForOneContext, EstablishedChannel, FundingSpendKind, KeysetInfo,
+    PaymentProof, SpilmanBridge, SpilmanChannelSender, SpilmanHost, SpilmanNetworking,
 };
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -702,6 +702,203 @@ async fn test_spilman_refund_spending_with_blinded_key() -> anyhow::Result<()> {
     swap_request_refund.sign_sig_all(alice_refund_blinded_secret)?;
 
     mint.process_swap_request(swap_request_refund).await?;
+    Ok(())
+}
+
+struct RefundFixture {
+    mint: Mint,
+    keys: Keys,
+    alice_secret: cdk::nuts::SecretKey,
+    charlie_secret: cdk::nuts::SecretKey,
+    established: EstablishedChannel,
+}
+
+async fn create_refund_fixture(expiry_timestamp: u64) -> anyhow::Result<RefundFixture> {
+    let test_mint = TestMintHelper::new().await?;
+    let mint = test_mint.mint().clone();
+    let alice_secret = cdk::nuts::SecretKey::generate();
+    let sender_pubkey = alice_secret.public_key();
+    let charlie_secret = cdk::nuts::SecretKey::generate();
+    let receiver_pubkey = charlie_secret.public_key();
+    let keyset_info = KeysetInfo::new(
+        test_mint.active_sat_keyset_id,
+        test_mint.unit.clone(),
+        test_mint.public_keys_of_the_active_sat_keyset.clone(),
+        test_mint.input_fee_ppk,
+        test_mint.final_expiry,
+    );
+
+    let mint_amount = 100u64;
+    let input_proofs = test_mint.mint_proofs(Amount::from(mint_amount)).await?;
+    let input_fee = (test_mint.input_fee_ppk * input_proofs.len() as u64).div_ceil(1000);
+    let funding_amount = mint_amount - input_fee;
+    let params = ChannelParameters::new_with_secret_key(
+        sender_pubkey,
+        receiver_pubkey,
+        "http://localhost:3338".to_string(),
+        CurrencyUnit::Sat,
+        10,
+        funding_amount,
+        expiry_timestamp,
+        unix_time(),
+        keyset_info,
+        64,
+        &alice_secret,
+    )?;
+
+    let funding_outputs = DeterministicOutputsForOneContext::new(
+        "funding".to_string(),
+        funding_amount,
+        params.clone(),
+    )?;
+    let swap_response = mint
+        .process_swap_request(SwapRequest::new(
+            input_proofs,
+            funding_outputs.get_blinded_messages(None)?,
+        ))
+        .await?;
+    let secrets_with_blinding = funding_outputs.get_secrets_with_blinding()?;
+    let funding_proofs = construct_proofs(
+        swap_response.signatures,
+        secrets_with_blinding
+            .iter()
+            .map(|output| output.blinding_factor.clone())
+            .collect(),
+        secrets_with_blinding
+            .iter()
+            .map(|output| output.secret.clone())
+            .collect(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )?;
+
+    Ok(RefundFixture {
+        mint,
+        keys: test_mint.public_keys_of_the_active_sat_keyset,
+        alice_secret,
+        charlie_secret,
+        established: EstablishedChannel::new(params, funding_proofs)?,
+    })
+}
+
+#[tokio::test]
+async fn test_sender_refund_prepare_rejects_before_expiry() -> anyhow::Result<()> {
+    let fixture = create_refund_fixture(unix_time() + 3600).await?;
+    let err = fixture
+        .established
+        .prepare_sender_refund_after_expiry(fixture.alice_secret, unix_time())
+        .unwrap_err();
+    assert!(err.to_string().contains("channel has not expired"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> anyhow::Result<()> {
+    let fixture = create_refund_fixture(unix_time() + 3).await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let connection = DirectMintConnection::new(fixture.mint.clone());
+    let prepared = fixture
+        .established
+        .prepare_sender_refund_after_expiry(fixture.alice_secret, unix_time())?;
+
+    let proofs =
+        EstablishedChannel::submit_prepared_sender_refund(&prepared, &connection, &fixture.keys)
+            .await?;
+    assert_eq!(
+        proofs
+            .iter()
+            .map(|proof| u64::from(proof.amount))
+            .sum::<u64>(),
+        prepared.output_amount_raw
+    );
+    assert!(proofs.iter().all(|proof| proof.p2pk_e.is_none()));
+    let funding_state = fixture
+        .established
+        .check_funding_token_state(&connection)
+        .await?;
+    assert_eq!(funding_state.state, State::Spent);
+    assert_eq!(
+        EstablishedChannel::classify_funding_spend_witness(&funding_state),
+        FundingSpendKind::PostExpiryRefund
+    );
+
+    let restored = EstablishedChannel::restore_prepared_sender_refund_outputs(
+        &prepared,
+        &connection,
+        &fixture.keys,
+    )
+    .await?;
+    assert_eq!(
+        restored
+            .iter()
+            .map(|proof| u64::from(proof.amount))
+            .sum::<u64>(),
+        prepared.output_amount_raw
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyhow::Result<()> {
+    let fixture = create_refund_fixture(unix_time() + 3).await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let connection = DirectMintConnection::new(fixture.mint.clone());
+    let prepared = fixture
+        .established
+        .prepare_sender_refund_after_expiry(fixture.alice_secret.clone(), unix_time())?;
+
+    let commitment = CommitmentOutputs::for_balance(5, &fixture.established.params)?;
+    let mut close_swap =
+        commitment.create_swap_request(fixture.established.funding_proofs.clone(), None)?;
+    close_swap.sign_sig_all(
+        fixture
+            .established
+            .params
+            .get_sender_blinded_secret_key_for_stage1(&fixture.alice_secret)?,
+    )?;
+    close_swap.sign_sig_all(
+        fixture
+            .established
+            .params
+            .get_receiver_blinded_secret_key_for_stage1(&fixture.charlie_secret)?,
+    )?;
+    fixture.mint.process_swap_request(close_swap).await?;
+    let funding_state = fixture
+        .established
+        .check_funding_token_state(&connection)
+        .await?;
+    assert_eq!(funding_state.state, State::Spent);
+    assert_eq!(
+        EstablishedChannel::classify_funding_spend_witness(&funding_state),
+        FundingSpendKind::RelayClose
+    );
+
+    assert!(
+        EstablishedChannel::submit_prepared_sender_refund(&prepared, &connection, &fixture.keys)
+            .await
+            .is_err(),
+        "refund submit should fail after the relay close already spent funding proofs"
+    );
+    assert!(
+        EstablishedChannel::restore_prepared_sender_refund_outputs(
+            &prepared,
+            &connection,
+            &fixture.keys,
+        )
+        .await
+        .is_err(),
+        "refund outputs should not exist when relay close won"
+    );
+
+    let sender = SpilmanChannelSender::new(fixture.alice_secret, fixture.established);
+    let restored_sender_proofs = sender.restore_sender_proofs(&connection).await?;
+    assert!(!restored_sender_proofs.is_empty());
+    assert!(
+        restored_sender_proofs
+            .iter()
+            .map(|proof| u64::from(proof.amount))
+            .sum::<u64>()
+            > 0
+    );
     Ok(())
 }
 
