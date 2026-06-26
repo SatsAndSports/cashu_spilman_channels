@@ -48,7 +48,10 @@ pub use bindings::{
 };
 #[cfg(feature = "wallet")]
 pub use bindings::{
-    complete_funding_swap, construct_proofs, create_plain_blinded_messages, mint_proofs_from_mint,
+    complete_funding_swap, complete_funding_swap_with_plain_change, complete_plain_change_restore,
+    compute_channel_from_proofs_with_input_keysets_and_funding_amount, construct_proofs,
+    create_funding_swap_with_plain_change, create_plain_blinded_messages,
+    create_plain_change_restore_request, mint_proofs_from_mint,
 };
 pub use bridge::{
     unblind_and_verify_stage1_response, BridgeError, BridgeErrorResponse, ChannelFunding,

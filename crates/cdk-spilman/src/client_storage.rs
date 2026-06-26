@@ -41,6 +41,12 @@ pub struct ClientChannelOpeningFromSwap {
     pub unit: String,
     /// Original Cashu token (cashuA.../cashuB...) for recovery if the swap fails
     pub input_token: String,
+    /// Plain change output secrets from the funding swap, persisted before swap submission.
+    #[serde(default)]
+    pub change_secrets_json: String,
+    /// Raw value expected from plain change outputs.
+    #[serde(default)]
+    pub change_amount_raw: u64,
     /// Unix timestamp when channel was created
     pub created_at: u64,
 }
@@ -439,6 +445,8 @@ pub(crate) mod fixtures {
             mint_url: "https://mint.example.com".to_string(),
             unit: "sat".to_string(),
             input_token: "cashuAeyJ0ZXN0IjogdHJ1ZX0=".to_string(),
+            change_secrets_json: "[]".to_string(),
+            change_amount_raw: 0,
             created_at: 1234567890,
         }
     }

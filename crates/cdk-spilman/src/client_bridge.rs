@@ -28,10 +28,12 @@ use serde::{Deserialize, Serialize};
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{
-    complete_funding_restore, complete_funding_swap,
-    compute_channel_from_proofs_with_input_keysets, compute_channel_from_token,
+    complete_funding_restore, complete_funding_swap_with_plain_change,
+    complete_plain_change_restore,
+    compute_channel_from_proofs_with_input_keysets_and_funding_amount, compute_channel_from_token,
     compute_channel_from_token_with_input_keysets, create_funding_restore_request,
-    create_funding_swap, parse_keyset_info_from_json,
+    create_funding_swap_with_plain_change, create_plain_change_restore_request,
+    parse_keyset_info_from_json,
 };
 use super::bridge::Payment;
 use super::client_storage::{
@@ -344,6 +346,9 @@ pub struct OpenChannelResult {
     pub sender_pubkey_hex: String,
     /// Receiver public key used for this channel.
     pub receiver_pubkey_hex: String,
+    /// Plain loose change proofs returned by the funding swap.
+    #[serde(default)]
+    pub change_proofs_json: String,
 }
 
 #[cfg(feature = "wallet")]
@@ -1417,6 +1422,38 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         max_amount: u64,
         requested_capacity: Option<u64>,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        self.open_channel_from_proofs_with_funding_amount(
+            mint_url,
+            unit,
+            input_proofs_json,
+            receiver_pubkey_hex,
+            sender_pubkey_hex,
+            expiry_timestamp,
+            output_keyset_info_json,
+            max_amount,
+            requested_capacity,
+            None,
+        )
+    }
+
+    /// Open a new channel while optionally allocating only part of the selected
+    /// post-swap input value to the channel funding token. Any remainder is
+    /// returned as plain change proofs in [`OpenChannelResult::change_proofs_json`].
+    #[cfg(feature = "wallet")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_channel_from_proofs_with_funding_amount(
+        &self,
+        mint_url: &str,
+        unit: &str,
+        input_proofs_json: &str,
+        receiver_pubkey_hex: &str,
+        sender_pubkey_hex: &str,
+        expiry_timestamp: u64,
+        output_keyset_info_json: &str,
+        max_amount: u64,
+        requested_capacity: Option<u64>,
+        requested_funding_token_amount: Option<u64>,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
         let channel_secret_hex = self
             .host
             .compute_channel_secret(sender_pubkey_hex, receiver_pubkey_hex)
@@ -1428,7 +1465,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .map_err(|e| {
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
-        let compute_result = compute_channel_from_proofs_with_input_keysets(
+        let compute_result = compute_channel_from_proofs_with_input_keysets_and_funding_amount(
             mint_url,
             unit,
             input_proofs_json,
@@ -1440,6 +1477,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             output_keyset_info_json,
             max_amount,
             requested_capacity,
+            requested_funding_token_amount,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1531,6 +1569,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 )
             })?
             .to_string();
+        let change_amount_raw = compute_json["change_amount_raw"].as_u64().unwrap_or(0);
         let receiver_pubkey_hex = compute_json["receiver_pubkey_hex"]
             .as_str()
             .ok_or_else(|| {
@@ -1542,11 +1581,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             })?
             .to_string();
 
-        let swap_result = create_funding_swap(
+        let swap_result = create_funding_swap_with_plain_change(
             params_json,
             channel_secret_hex,
             keyset_info_json,
             proofs_json,
+            change_amount_raw,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
         let swap_json: serde_json::Value = serde_json::from_str(&swap_result).map_err(|e| {
@@ -1570,6 +1610,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 "Missing 'funding_secrets_json' in swap result",
             )
         })?;
+        let change_secrets_json = swap_json["change_secrets_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'change_secrets_json' in swap result",
+            )
+        })?;
 
         let channel_id = super::bindings::channel_parameters_get_channel_id(
             params_json,
@@ -1589,6 +1636,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             mint_url: mint_url.clone(),
             unit: unit.clone(),
             input_token: input_token.to_string(),
+            change_secrets_json: change_secrets_json.to_string(),
+            change_amount_raw,
             created_at: self.host.now_seconds(),
         };
 
@@ -1630,15 +1679,19 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 }
             })?;
 
-        let complete_result =
-            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)
-                .map_err(|e| {
-                    OpenChannelError::new(
-                        OpenChannelFailureStage::SwapSubmitted,
-                        Some(channel_id.clone()),
-                        e,
-                    )
-                })?;
+        let complete_result = complete_funding_swap_with_plain_change(
+            &swap_response_json,
+            funding_secrets_json,
+            change_secrets_json,
+            keyset_info_json,
+        )
+        .map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::SwapSubmitted,
+                Some(channel_id.clone()),
+                e,
+            )
+        })?;
         let complete_json: serde_json::Value =
             serde_json::from_str(&complete_result).map_err(|e| {
                 OpenChannelError::new(
@@ -1657,6 +1710,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                         "Missing 'funding_proofs_json' in complete result",
                     )
                 })?;
+        let change_proofs_json = complete_json["change_proofs_json"].as_str().unwrap_or("[]");
 
         let restore_request =
             create_funding_restore_request(params_json, channel_secret_hex, keyset_info_json)
@@ -1736,6 +1790,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_id: output_keyset_id,
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
             receiver_pubkey_hex,
+            change_proofs_json: change_proofs_json.to_string(),
         })
     }
 
@@ -1849,6 +1904,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 )
             })?
             .to_string();
+        let change_amount_raw = compute_json["change_amount_raw"].as_u64().unwrap_or(0);
         let receiver_pubkey_hex_from_compute = compute_json["receiver_pubkey_hex"]
             .as_str()
             .ok_or_else(|| {
@@ -1861,11 +1917,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .to_string();
 
         // Step 3: Create funding swap request
-        let swap_result = create_funding_swap(
+        let swap_result = create_funding_swap_with_plain_change(
             params_json,
             &channel_secret_hex,
             keyset_info_json,
             proofs_json,
+            change_amount_raw,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1891,6 +1948,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 "Missing 'funding_secrets_json' in swap result",
             )
         })?;
+        let change_secrets_json = swap_json["change_secrets_json"].as_str().ok_or_else(|| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::BeforeOpeningSaved,
+                None,
+                "Missing 'change_secrets_json' in swap result",
+            )
+        })?;
 
         // Compute channel ID
         let channel_id = super::bindings::channel_parameters_get_channel_id(
@@ -1912,6 +1976,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             mint_url: mint_url.clone(),
             unit: unit.clone(),
             input_token: token_string.to_string(),
+            change_secrets_json: change_secrets_json.to_string(),
+            change_amount_raw,
             created_at: self.host.now_seconds(),
         };
 
@@ -1955,15 +2021,19 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             })?;
 
         // Step 6: Unblind signatures and verify DLEQ
-        let complete_result =
-            complete_funding_swap(&swap_response_json, funding_secrets_json, keyset_info_json)
-                .map_err(|e| {
-                    OpenChannelError::new(
-                        OpenChannelFailureStage::SwapSubmitted,
-                        Some(channel_id.clone()),
-                        e,
-                    )
-                })?;
+        let complete_result = complete_funding_swap_with_plain_change(
+            &swap_response_json,
+            funding_secrets_json,
+            change_secrets_json,
+            keyset_info_json,
+        )
+        .map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::SwapSubmitted,
+                Some(channel_id.clone()),
+                e,
+            )
+        })?;
 
         let complete_json: serde_json::Value =
             serde_json::from_str(&complete_result).map_err(|e| {
@@ -1984,6 +2054,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                         "Missing 'funding_proofs_json' in complete result",
                     )
                 })?;
+        let change_proofs_json = complete_json["change_proofs_json"].as_str().unwrap_or("[]");
 
         // Step 6b: Verify restore path produces identical proofs
         let restore_request =
@@ -2065,6 +2136,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_id: output_keyset_id,
             sender_pubkey_hex: sender_pubkey_hex.to_string(),
             receiver_pubkey_hex: receiver_pubkey_hex_from_compute,
+            change_proofs_json: change_proofs_json.to_string(),
         })
     }
 
@@ -2110,6 +2182,42 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or_else(|| "Missing 'funding_proofs_json' in restore result".to_string())
     }
 
+    /// Restore plain change proofs for an opening channel using persisted change secrets.
+    #[cfg(feature = "wallet")]
+    pub fn restore_change_proofs(&self, channel_id: &str) -> Result<String, String> {
+        let opening = self
+            .host
+            .get_channel_opening_from_swap(channel_id)
+            .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
+
+        if opening.change_amount_raw == 0 {
+            return Ok("[]".to_string());
+        }
+
+        let restore_request = create_plain_change_restore_request(
+            &opening.change_secrets_json,
+            &opening.keyset_info_json,
+        )?;
+
+        let restore_response = self
+            .networking
+            .call_mint_restore(&opening.mint_url, &restore_request)?;
+
+        let result = complete_plain_change_restore(
+            &restore_response,
+            &opening.change_secrets_json,
+            &opening.keyset_info_json,
+        )?;
+
+        let result_json: serde_json::Value = serde_json::from_str(&result)
+            .map_err(|e| format!("Failed to parse change restore result: {}", e))?;
+
+        result_json["change_proofs_json"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'change_proofs_json' in change restore result".to_string())
+    }
+
     /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
     #[cfg(feature = "wallet")]
     pub fn recover_open_channel_from_swap(
@@ -2127,6 +2235,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 )
             })?;
         let funding_proofs_json = self.restore_funding_proofs(channel_id).map_err(|e| {
+            OpenChannelError::new(
+                OpenChannelFailureStage::RestoreVerification,
+                Some(channel_id.to_string()),
+                e,
+            )
+        })?;
+        let change_proofs_json = self.restore_change_proofs(channel_id).map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::RestoreVerification,
                 Some(channel_id.to_string()),
@@ -2158,6 +2273,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_id: keyset_info.keyset_id.to_string(),
             sender_pubkey_hex: opening.sender_pubkey_hex,
             receiver_pubkey_hex: opening.receiver_pubkey_hex,
+            change_proofs_json,
         })
     }
 
@@ -2197,6 +2313,46 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| "Missing 'funding_proofs_json' in restore result".to_string())
+    }
+
+    /// Restore plain change proofs for an opening channel using async networking.
+    #[cfg(feature = "wallet")]
+    pub async fn restore_change_proofs_async<AN: SpilmanClientAsyncNetworking>(
+        &self,
+        channel_id: &str,
+        async_networking: &AN,
+    ) -> Result<String, String> {
+        let opening = self
+            .host
+            .get_channel_opening_from_swap(channel_id)
+            .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
+
+        if opening.change_amount_raw == 0 {
+            return Ok("[]".to_string());
+        }
+
+        let restore_request = create_plain_change_restore_request(
+            &opening.change_secrets_json,
+            &opening.keyset_info_json,
+        )?;
+
+        let restore_response = async_networking
+            .call_mint_restore(&opening.mint_url, &restore_request)
+            .await?;
+
+        let result = complete_plain_change_restore(
+            &restore_response,
+            &opening.change_secrets_json,
+            &opening.keyset_info_json,
+        )?;
+
+        let result_json: serde_json::Value = serde_json::from_str(&result)
+            .map_err(|e| format!("Failed to parse change restore result: {}", e))?;
+
+        result_json["change_proofs_json"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'change_proofs_json' in change restore result".to_string())
     }
 
     /// Create a payment for a channel (without funding data).

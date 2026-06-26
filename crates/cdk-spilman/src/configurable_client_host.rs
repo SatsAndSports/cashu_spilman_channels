@@ -385,6 +385,8 @@ mod tests {
             mint_url: "https://mint.example.com".to_string(),
             unit: "sat".to_string(),
             input_token: "cashuAtest".to_string(),
+            change_secrets_json: "[]".to_string(),
+            change_amount_raw: 0,
             created_at: 12345,
         };
 
