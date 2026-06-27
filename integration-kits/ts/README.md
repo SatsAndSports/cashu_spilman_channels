@@ -53,8 +53,8 @@ const result = await bridge.openChannelFromToken(
   token, receiverPubkey, senderPubkey, expiry, keysetInfo, maxAmount
 );
 
-const header = bridge.buildPaymentHeader(result.channelId, BigInt(balance), true);
-const closeReq = bridge.createCooperativeCloseRequest(result.channelId, BigInt(finalBalance));
+const header = bridge.signPaymentHeader(result.channelId, BigInt(balance), true);
+const closeReq = bridge.signCooperativeCloseRequest(result.channelId, BigInt(finalBalance));
 bridge.processCooperativeCloseResponse(closeResponseJson);
 ```
 

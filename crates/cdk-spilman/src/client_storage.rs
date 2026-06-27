@@ -82,7 +82,11 @@ pub struct ClientChannelFunding {
 /// This tracks the current state of payments made through the channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientPaymentState {
-    /// Last signed balance (cumulative, monotonically increasing)
+    /// Last locally recorded signed receiver balance.
+    ///
+    /// Normal payments usually increase this cumulative balance. Cooperative
+    /// adjustments may intentionally record a lower balance when the receiver
+    /// agrees to reduce its claim.
     pub balance: u64,
     /// Last signature corresponding to the balance
     pub signature: String,

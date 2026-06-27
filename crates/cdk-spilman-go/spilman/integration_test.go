@@ -645,9 +645,9 @@ func TestClientBridge(t *testing.T) {
 	// Step 3: Create payments
 	// ================================================================
 
-	paymentJSON, err := clientBridge.CreatePayment(openResult.ChannelID, 10)
+	paymentJSON, err := clientBridge.SignPayment(openResult.ChannelID, 10)
 	if err != nil {
-		t.Fatalf("CreatePayment failed: %v", err)
+		t.Fatalf("SignPayment failed: %v", err)
 	}
 
 	var payment map[string]interface{}
@@ -662,16 +662,16 @@ func TestClientBridge(t *testing.T) {
 	if _, ok := payment["signature"]; !ok {
 		t.Fatal("Payment missing signature")
 	}
-	t.Log("CreatePayment returned valid JSON")
+	t.Log("SignPayment returned valid JSON")
 
 	// ================================================================
 	// Step 4: Build payment headers
 	// ================================================================
 
 	// Header WITH funding (first request to server)
-	headerWithFunding, err := clientBridge.BuildPaymentHeader(openResult.ChannelID, 10, true)
+	headerWithFunding, err := clientBridge.SignPaymentHeader(openResult.ChannelID, 0, true)
 	if err != nil {
-		t.Fatalf("BuildPaymentHeader (with funding) failed: %v", err)
+		t.Fatalf("SignPaymentHeader (with funding) failed: %v", err)
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(headerWithFunding)
@@ -687,7 +687,7 @@ func TestClientBridge(t *testing.T) {
 	if headerJSON["channel_id"].(string) != openResult.ChannelID {
 		t.Fatal("Header channel_id mismatch")
 	}
-	if uint64(headerJSON["balance"].(float64)) != 10 {
+	if uint64(headerJSON["balance"].(float64)) != 0 {
 		t.Fatal("Header balance mismatch")
 	}
 	if _, ok := headerJSON["signature"]; !ok {
@@ -702,9 +702,9 @@ func TestClientBridge(t *testing.T) {
 	t.Log("Payment header (with funding) is valid")
 
 	// Header WITHOUT funding (subsequent requests)
-	headerNoFunding, err := clientBridge.BuildPaymentHeader(openResult.ChannelID, 20, false)
+	headerNoFunding, err := clientBridge.SignPaymentHeader(openResult.ChannelID, 20, false)
 	if err != nil {
-		t.Fatalf("BuildPaymentHeader (no funding) failed: %v", err)
+		t.Fatalf("SignPaymentHeader (no funding) failed: %v", err)
 	}
 
 	decoded2, err := base64.StdEncoding.DecodeString(headerNoFunding)
@@ -737,22 +737,22 @@ func TestClientBridge(t *testing.T) {
 	}
 	defer serverBridge.Free()
 
-	// First payment: header with funding (server learns about channel)
+	// Registration: header with funding (server learns about channel)
 	paymentResult, err := serverBridge.ProcessPayment(string(decoded), `{"type":"test"}`)
 	if err != nil {
-		t.Fatalf("Server ProcessPayment (first) failed: %v", err)
+		t.Fatalf("Server ProcessPayment (registration) failed: %v", err)
 	}
 
 	if paymentResult.ChannelID != openResult.ChannelID {
 		t.Fatal("Server channel_id mismatch")
 	}
-	if paymentResult.Balance != 10 {
-		t.Fatalf("Server balance mismatch: expected 10, got %d", paymentResult.Balance)
+	if paymentResult.Balance != 0 {
+		t.Fatalf("Server balance mismatch: expected 0, got %d", paymentResult.Balance)
 	}
 	if paymentResult.Capacity != openResult.Capacity {
 		t.Fatalf("Server capacity mismatch: expected %d, got %d", openResult.Capacity, paymentResult.Capacity)
 	}
-	t.Logf("Server accepted first payment (balance=%d, capacity=%d)",
+	t.Logf("Server accepted registration (balance=%d, capacity=%d)",
 		paymentResult.Balance, paymentResult.Capacity)
 
 	// Second payment: header without funding (server already knows channel)

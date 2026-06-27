@@ -15,12 +15,13 @@ typedef struct {
 
 // Client bridge FFI functions that return CResult
 CResult spilman_client_bridge_open_channel_from_token(void* ptr, const char* token, const char* receiver_pubkey, const char* sender_pubkey, uint64_t expiry_timestamp, const char* keyset_info, uint64_t max_amount);
-CResult spilman_client_bridge_create_payment(void* ptr, const char* channel_id, uint64_t balance);
-CResult spilman_client_bridge_create_payment_with_funding(void* ptr, const char* channel_id, uint64_t balance);
-CResult spilman_client_bridge_build_payment_header(void* ptr, const char* channel_id, uint64_t balance, int include_funding);
+CResult spilman_client_bridge_sign_payment(void* ptr, const char* channel_id, uint64_t balance);
+CResult spilman_client_bridge_sign_and_record_payment(void* ptr, const char* channel_id, uint64_t balance);
+CResult spilman_client_bridge_sign_channel_registration(void* ptr, const char* channel_id);
+CResult spilman_client_bridge_sign_payment_header(void* ptr, const char* channel_id, uint64_t balance, int include_funding);
 CResult spilman_client_bridge_get_channel_info(void* ptr, const char* channel_id);
 CResult spilman_client_bridge_list_channels(void* ptr);
-CResult spilman_client_bridge_create_cooperative_close_request(void* ptr, const char* channel_id, uint64_t final_balance);
+CResult spilman_client_bridge_sign_cooperative_close_request(void* ptr, const char* channel_id, uint64_t final_balance);
 CResult spilman_client_bridge_process_cooperative_close_response(void* ptr, const char* response_json);
 CResult spilman_sign_with_tweaked_key_util(const char* secret_key_hex, const char* message_hex, const char* tweak_scalar_hex);
 void spilman_free_cresult(CResult res);
@@ -58,12 +59,12 @@ func clientBridgeOpenChannel(ptr unsafe.Pointer, token, receiverPubkeyHex, sende
 	return &result, nil
 }
 
-// clientBridgeCreatePayment calls the Rust FFI and returns the JSON Payment.
-func clientBridgeCreatePayment(ptr unsafe.Pointer, channelID string, balance uint64) (string, error) {
+// clientBridgeSignPayment calls the Rust FFI and returns the JSON Payment.
+func clientBridgeSignPayment(ptr unsafe.Pointer, channelID string, balance uint64) (string, error) {
 	cID := C.CString(channelID)
 	defer C.free(unsafe.Pointer(cID))
 
-	res := C.spilman_client_bridge_create_payment(ptr, cID, C.uint64_t(balance))
+	res := C.spilman_client_bridge_sign_payment(ptr, cID, C.uint64_t(balance))
 	defer C.spilman_free_cresult(res)
 
 	if res.error != nil {
@@ -72,12 +73,12 @@ func clientBridgeCreatePayment(ptr unsafe.Pointer, channelID string, balance uin
 	return C.GoString(res.data), nil
 }
 
-// clientBridgeCreatePaymentWithFunding calls the Rust FFI and returns the JSON Payment with funding.
-func clientBridgeCreatePaymentWithFunding(ptr unsafe.Pointer, channelID string, balance uint64) (string, error) {
+// clientBridgeSignAndRecordPayment calls the Rust FFI and returns the JSON Payment.
+func clientBridgeSignAndRecordPayment(ptr unsafe.Pointer, channelID string, balance uint64) (string, error) {
 	cID := C.CString(channelID)
 	defer C.free(unsafe.Pointer(cID))
 
-	res := C.spilman_client_bridge_create_payment_with_funding(ptr, cID, C.uint64_t(balance))
+	res := C.spilman_client_bridge_sign_and_record_payment(ptr, cID, C.uint64_t(balance))
 	defer C.spilman_free_cresult(res)
 
 	if res.error != nil {
@@ -86,8 +87,22 @@ func clientBridgeCreatePaymentWithFunding(ptr unsafe.Pointer, channelID string, 
 	return C.GoString(res.data), nil
 }
 
-// clientBridgeBuildPaymentHeader calls the Rust FFI and returns the base64 header.
-func clientBridgeBuildPaymentHeader(ptr unsafe.Pointer, channelID string, balance uint64, includeFunding bool) (string, error) {
+// clientBridgeSignChannelRegistration calls the Rust FFI and returns the JSON zero-balance registration Payment.
+func clientBridgeSignChannelRegistration(ptr unsafe.Pointer, channelID string) (string, error) {
+	cID := C.CString(channelID)
+	defer C.free(unsafe.Pointer(cID))
+
+	res := C.spilman_client_bridge_sign_channel_registration(ptr, cID)
+	defer C.spilman_free_cresult(res)
+
+	if res.error != nil {
+		return "", errors.New(C.GoString(res.error))
+	}
+	return C.GoString(res.data), nil
+}
+
+// clientBridgeSignPaymentHeader calls the Rust FFI and returns the base64 header.
+func clientBridgeSignPaymentHeader(ptr unsafe.Pointer, channelID string, balance uint64, includeFunding bool) (string, error) {
 	cID := C.CString(channelID)
 	defer C.free(unsafe.Pointer(cID))
 
@@ -96,7 +111,7 @@ func clientBridgeBuildPaymentHeader(ptr unsafe.Pointer, channelID string, balanc
 		cInclude = 1
 	}
 
-	res := C.spilman_client_bridge_build_payment_header(ptr, cID, C.uint64_t(balance), cInclude)
+	res := C.spilman_client_bridge_sign_payment_header(ptr, cID, C.uint64_t(balance), cInclude)
 	defer C.spilman_free_cresult(res)
 
 	if res.error != nil {
@@ -140,12 +155,12 @@ func clientBridgeListChannels(ptr unsafe.Pointer) []string {
 	return channels
 }
 
-// clientBridgeCreateCooperativeCloseRequest calls the Rust FFI and returns the JSON request.
-func clientBridgeCreateCooperativeCloseRequest(ptr unsafe.Pointer, channelID string, finalBalance uint64) (string, error) {
+// clientBridgeSignCooperativeCloseRequest calls the Rust FFI and returns the JSON request.
+func clientBridgeSignCooperativeCloseRequest(ptr unsafe.Pointer, channelID string, finalBalance uint64) (string, error) {
 	cID := C.CString(channelID)
 	defer C.free(unsafe.Pointer(cID))
 
-	res := C.spilman_client_bridge_create_cooperative_close_request(ptr, cID, C.uint64_t(finalBalance))
+	res := C.spilman_client_bridge_sign_cooperative_close_request(ptr, cID, C.uint64_t(finalBalance))
 	defer C.spilman_free_cresult(res)
 
 	if res.error != nil {

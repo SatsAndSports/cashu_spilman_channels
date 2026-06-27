@@ -70,7 +70,7 @@ def main():
     print(f"Channel {cid[:8]} ready! Sending requests...")
     for i, msg in enumerate(messages):
         balance += len(msg)
-        header = client.build_payment_header(cid, balance, i == 0)
+        header = client.sign_payment_header(cid, balance, i == 0)
 
         resp = requests.post(
             f"{SERVER_URL}/ascii",
@@ -87,7 +87,7 @@ def main():
     if should_close:
         print("\nClosing channel...")
         status = requests.get(f"{SERVER_URL}/channel/{cid}/status").json()
-        close_req = client.create_cooperative_close_request(cid, status["amount_due"])
+        close_req = client.sign_cooperative_close_request(cid, status["amount_due"])
 
         c_resp = requests.post(
             f"{SERVER_URL}/channel/{cid}/close", json=json.loads(close_req)

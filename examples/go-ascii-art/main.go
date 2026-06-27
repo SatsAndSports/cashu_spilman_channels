@@ -169,7 +169,7 @@ func runClient(args []string) {
 	balance := uint64(0)
 	for i, msg := range messages {
 		balance += uint64(len(msg))
-		header, _ := bridge.BuildPaymentHeader(cid, balance, i == 0)
+		header, _ := bridge.SignPaymentHeader(cid, balance, i == 0)
 		reqB, _ := json.Marshal(map[string]string{"message": msg})
 		req, _ := http.NewRequest("POST", SERVER_URL+"/ascii", strings.NewReader(string(reqB)))
 		req.Header.Set("X-Cashu-Channel", header)
@@ -186,7 +186,7 @@ func runClient(args []string) {
 		sResp, _ := http.Get(fmt.Sprintf("%s/channel/%s/status", SERVER_URL, cid))
 		var st struct{ Amount_due uint64 }
 		json.NewDecoder(sResp.Body).Decode(&st)
-		closeReqJ, _ := bridge.CreateCooperativeCloseRequest(cid, st.Amount_due)
+		closeReqJ, _ := bridge.SignCooperativeCloseRequest(cid, st.Amount_due)
 		cResp, _ := http.Post(fmt.Sprintf("%s/channel/%s/close", SERVER_URL, cid), "application/json", strings.NewReader(closeReqJ))
 		body, _ := io.ReadAll(cResp.Body)
 		bridge.ProcessCooperativeCloseResponse(string(body))

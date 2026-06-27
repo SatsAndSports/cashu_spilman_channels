@@ -195,13 +195,17 @@ pub struct SpilmanBridge<H: SpilmanHost<C>, C = String> {
 /// A signed payment for a Spilman channel.
 ///
 /// This is the core protocol message exchanged between client and server.
-/// The client creates it via `SpilmanClientBridge::create_payment()`,
+/// The client creates it via `SpilmanClientBridge::sign_payment()`,
 /// the server validates it via `SpilmanBridge::process_payment()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payment {
     /// Channel identifier
     pub channel_id: String,
-    /// Cumulative balance the receiver can claim (monotonically increasing)
+    /// Cumulative balance the receiver can claim.
+    ///
+    /// Normal payments usually increase this value. Cooperative adjustments may
+    /// intentionally sign a lower value when the receiver agrees to reduce its
+    /// claim.
     pub balance: u64,
     /// BIP-340 Schnorr signature over the balance commitment
     pub signature: String,

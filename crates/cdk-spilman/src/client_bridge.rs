@@ -16,9 +16,9 @@
 //! // Open a channel from an existing Cashu token
 //! let result = bridge.open_channel_from_token(...)?;
 //!
-//! // Make payments
-//! let payment = bridge.create_payment(&result.channel_id, 10)?;
-//! let payment_with_funding = bridge.create_payment_with_funding(&result.channel_id, 10)?;
+//! // Sign a payment, then explicitly record it if/when the caller chooses.
+//! let payment = bridge.sign_payment(&result.channel_id, 10)?;
+//! bridge.record_signed_payment(&payment)?;
 //! ```
 
 use base64::Engine;
@@ -115,8 +115,10 @@ pub trait SpilmanClientHost {
 
     /// Record a new payment state.
     ///
-    /// Called after each successful payment signing. Updates the stored
-    /// balance, signature, payment count, and timestamp.
+    /// Updates the stored balance, signature, payment count, and timestamp.
+    /// Normal payments usually increase the balance, but callers may
+    /// intentionally record a lower cooperative adjustment when the receiver
+    /// agrees to reduce its claim.
     fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String>;
 
     // ========================================================================
@@ -2355,36 +2357,63 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or_else(|| "Missing 'change_proofs_json' in change restore result".to_string())
     }
 
-    /// Create a payment for a channel (without funding data).
+    /// Sign a payment for a channel without recording it locally.
     ///
-    /// Returns a `Payment` struct ready to send to the server.
-    /// Use this for subsequent payments after the channel is registered.
+    /// Returns a `Payment` struct ready to send to the server. The caller must
+    /// explicitly call [`record_signed_payment`](Self::record_signed_payment)
+    /// if this payment should become the latest locally recorded state.
     ///
     /// The `balance` is the cumulative amount the receiver can claim.
     ///
     /// # Errors
     /// - Returns an error if the channel doesn't exist or is closed
     /// - Returns an error if `balance` exceeds the channel capacity
-    pub fn create_payment(&self, channel_id: &str, balance: u64) -> Result<Payment, String> {
-        self.create_payment_internal(channel_id, balance, false)
+    pub fn sign_payment(&self, channel_id: &str, balance: u64) -> Result<Payment, String> {
+        self.sign_payment_internal(channel_id, balance, false)
     }
 
-    /// Create a payment with funding data (for first payment).
+    /// Sign the zero-balance channel registration payment without recording it.
     ///
-    /// Returns a `Payment` struct with `params` and `funding_proofs` included.
-    /// Use this for the first payment when registering a channel with the server.
+    /// The returned payment includes channel params and funding proofs and is
+    /// suitable for registering or re-registering funding with a receiver. It
+    /// always carries balance `0` and intentionally does not overwrite any
+    /// locally recorded latest payment state.
+    pub fn sign_channel_registration(&self, channel_id: &str) -> Result<Payment, String> {
+        self.sign_payment_internal(channel_id, 0, true)
+    }
+
+    /// Sign a payment and immediately record it as the latest local state.
     ///
-    /// The same validation rules apply as `create_payment()`.
-    pub fn create_payment_with_funding(
+    /// This is the convenience method for ordinary channel payments. It also
+    /// supports explicit cooperative decreases because recording policy belongs
+    /// to callers/protocols above this bridge.
+    pub fn sign_and_record_payment(
         &self,
         channel_id: &str,
         balance: u64,
     ) -> Result<Payment, String> {
-        self.create_payment_internal(channel_id, balance, true)
+        let payment = self.sign_payment(channel_id, balance)?;
+        self.record_signed_payment(&payment)?;
+        Ok(payment)
     }
 
-    /// Internal implementation for creating payments.
-    fn create_payment_internal(
+    /// Record an already-signed payment as the latest local channel state.
+    pub fn record_signed_payment(&self, payment: &Payment) -> Result<(), String> {
+        let previous = self.host.get_payment_state(&payment.channel_id);
+        let payment_count = previous.map(|state| state.payment_count).unwrap_or(0) + 1;
+        self.host.record_payment(
+            &payment.channel_id,
+            ClientPaymentState {
+                balance: payment.balance,
+                signature: payment.signature.clone(),
+                payment_count,
+                last_payment_at: self.host.now_seconds(),
+            },
+        )
+    }
+
+    /// Internal implementation for signing payments.
+    fn sign_payment_internal(
         &self,
         channel_id: &str,
         balance: u64,
@@ -2422,20 +2451,6 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
         let signature = balance_update.signature.to_string();
 
-        // Record the payment state
-        let payment_state = self.host.get_payment_state(channel_id);
-        let payment_count = payment_state.map(|s| s.payment_count).unwrap_or(0) + 1;
-
-        self.host.record_payment(
-            channel_id,
-            ClientPaymentState {
-                balance,
-                signature: signature.clone(),
-                payment_count,
-                last_payment_at: self.host.now_seconds(),
-            },
-        )?;
-
         // Build the Payment struct
         if include_funding {
             let params: serde_json::Value = serde_json::from_str(&funding.params_json)
@@ -2455,19 +2470,20 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         }
     }
 
-    /// Build a complete `X-Cashu-Channel` payment header value.
+    /// Sign and build a complete `X-Cashu-Channel` payment header value.
     ///
     /// Returns a base64-encoded JSON string ready to use as the header value.
     ///
     /// If `include_funding` is true, the header includes `params` and `funding_proofs`
     /// (needed for the first request, or when the server doesn't know this channel yet).
-    pub fn build_payment_header(
+    /// This method does not record payment state locally.
+    pub fn sign_payment_header(
         &self,
         channel_id: &str,
         balance: u64,
         include_funding: bool,
     ) -> Result<String, String> {
-        let payment = self.create_payment_internal(channel_id, balance, include_funding)?;
+        let payment = self.sign_payment_internal(channel_id, balance, include_funding)?;
         let header_json =
             serde_json::to_string(&payment).map_err(|e| format!("Failed to serialize: {}", e))?;
         Ok(base64::prelude::BASE64_STANDARD.encode(header_json))
@@ -2527,17 +2543,16 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         self.host.delete_channel(channel_id)
     }
 
-    /// Create a cooperative close request for a channel.
+    /// Sign a cooperative close request for a channel without recording it.
     ///
-    /// Creates a payment at the final balance that can be sent to the
-    /// server's close endpoint.
-    pub fn create_cooperative_close_request(
+    /// The caller should record any final accounting state explicitly after the
+    /// cooperative close is accepted.
+    pub fn sign_cooperative_close_request(
         &self,
         channel_id: &str,
         final_balance: u64,
     ) -> Result<Payment, String> {
-        // Use create_payment which validates and records the payment
-        self.create_payment(channel_id, final_balance)
+        self.sign_payment(channel_id, final_balance)
     }
 
     /// Process a cooperative close response from the server.
@@ -2566,8 +2581,8 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// The caller can inspect the `UnsignedBalanceUpdate`, then call
     /// `sign_balance_update()` to produce a `BalanceUpdateMessage`.
     ///
-    /// For most use cases, prefer `create_payment()` which handles signing
-    /// automatically via the host.
+    /// For most use cases, prefer `sign_payment()` which handles signing
+    /// automatically via the host without recording local state.
     pub fn create_unsigned_balance_update(
         &self,
         channel_id: &str,
@@ -2614,6 +2629,8 @@ mod tests {
     use super::*;
     #[cfg(feature = "wallet")]
     use crate::KeysetInfo;
+    #[cfg(feature = "wallet")]
+    use crate::{ConfigurableClientHost, MemoryClientStorage};
     #[cfg(feature = "wallet")]
     use std::cell::Cell;
     #[cfg(feature = "wallet")]
@@ -3033,6 +3050,117 @@ mod tests {
             .unwrap_err();
 
         assert!(err.contains("unit mismatch"));
+    }
+
+    #[cfg(feature = "wallet")]
+    fn payment_test_bridge() -> (
+        SpilmanClientBridge<ConfigurableClientHost<MemoryClientStorage>, NoopNetworking>,
+        String,
+    ) {
+        use crate::client_storage::{ClientChannelOpeningFromSwap, ClientStorage};
+        use crate::params::ChannelParameters;
+        use cashu::nuts::SecretKey;
+        use cashu::util::hex;
+
+        let sender_secret = SecretKey::generate();
+        let receiver_secret = SecretKey::generate();
+        let sender_pubkey = sender_secret.public_key();
+        let receiver_pubkey = receiver_secret.public_key();
+        let keyset_info = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16], 0);
+        let params = ChannelParameters::new_with_secret_key(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://mint.example".to_string(),
+            CurrencyUnit::Sat,
+            16,
+            16,
+            2_000_000_000,
+            1_700_000_000,
+            keyset_info.clone(),
+            0,
+            &sender_secret,
+        )
+        .unwrap();
+        let channel_id = params.get_channel_id();
+        let params_json = params.get_channel_id_params_json();
+        let keyset_info_json = serde_json::to_string(&keyset_info).unwrap();
+        let funding_proofs_json = proof_json(keyset_info.keyset_id, 16);
+
+        let mut host = ConfigurableClientHost::new_in_memory();
+        let sender_pubkey_hex = host
+            .add_key_from_hex(&sender_secret.to_secret_hex())
+            .unwrap();
+        host.storage_mut()
+            .save_opening_from_swap(
+                &channel_id,
+                ClientChannelOpeningFromSwap {
+                    params_json,
+                    channel_secret_hex: hex::encode(params.channel_secret),
+                    keyset_info_json,
+                    sender_pubkey_hex,
+                    receiver_pubkey_hex: receiver_pubkey.to_hex(),
+                    capacity: 16,
+                    funding_token_amount: 16,
+                    mint_url: "https://mint.example".to_string(),
+                    unit: "sat".to_string(),
+                    input_token: "cashuAtest".to_string(),
+                    change_secrets_json: "[]".to_string(),
+                    change_amount_raw: 0,
+                    created_at: 1_700_000_000,
+                },
+            )
+            .unwrap();
+        host.storage_mut()
+            .set_open(&channel_id, &funding_proofs_json)
+            .unwrap();
+
+        (SpilmanClientBridge::new(host, NoopNetworking), channel_id)
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn signing_payments_does_not_record_state() {
+        let (bridge, channel_id) = payment_test_bridge();
+
+        let payment = bridge.sign_payment(&channel_id, 5).unwrap();
+        assert_eq!(payment.balance, 5);
+        assert!(!payment.has_funding());
+        assert_eq!(
+            bridge
+                .get_channel_info(&channel_id)
+                .unwrap()
+                .current_balance,
+            0
+        );
+
+        let registration = bridge.sign_channel_registration(&channel_id).unwrap();
+        assert_eq!(registration.balance, 0);
+        assert!(registration.has_funding());
+        assert_eq!(
+            bridge
+                .get_channel_info(&channel_id)
+                .unwrap()
+                .current_balance,
+            0
+        );
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn explicit_recording_updates_state_and_allows_cooperative_decrease() {
+        let (bridge, channel_id) = payment_test_bridge();
+
+        let payment = bridge.sign_and_record_payment(&channel_id, 10).unwrap();
+        assert_eq!(payment.balance, 10);
+        let info = bridge.get_channel_info(&channel_id).unwrap();
+        assert_eq!(info.current_balance, 10);
+        assert_eq!(info.payment_count, 1);
+
+        let lower = bridge.sign_payment(&channel_id, 4).unwrap();
+        bridge.record_signed_payment(&lower).unwrap();
+        let info = bridge.get_channel_info(&channel_id).unwrap();
+        assert_eq!(info.current_balance, 4);
+        assert_eq!(info.payment_count, 2);
     }
 
     struct FailingLifecycleHost;

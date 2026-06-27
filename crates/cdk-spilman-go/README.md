@@ -54,7 +54,7 @@ result, err := bridge.OpenChannelFromToken(
 )
 
 // Create signed payment
-payment, err := bridge.CreatePayment(result.ChannelID, balance)
+payment, err := bridge.SignPayment(result.ChannelID, balance)
 ```
 
 ## API Reference
@@ -67,6 +67,7 @@ payment, err := bridge.CreatePayment(result.ChannelID, balance)
 ### Bridge Methods
 - `OpenChannelFromToken(...)` - Full two-phase funding flow
 - `RestoreFundingProofs(channelId)` - NUT-09 recovery
-- `CreatePayment(channelId, balance)`
-- `CreatePaymentWithFunding(channelId, balance)`
+- `SignPayment(channelId, balance)`
+- `SignAndRecordPayment(channelId, balance)`
+- `SignChannelRegistration(channelId)`
 - `ExecuteCooperativeClose(channelId, finalBalance)`

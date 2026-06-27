@@ -120,31 +120,38 @@ export class SpilmanClientBridge {
   }
 
   /**
-   * Creates a payment for a channel (without funding data).
+   * Signs a payment for a channel without funding data or local recording.
    */
-  createPayment(channelId: string, balance: bigint): string {
-    return this.inner.createPayment(channelId, balance);
+  signPayment(channelId: string, balance: bigint): string {
+    return this.inner.signPayment(channelId, balance);
   }
 
   /**
-   * Creates a payment with funding data (for first payment).
+   * Signs a payment and records it as the latest local channel state.
    */
-  createPaymentWithFunding(channelId: string, balance: bigint): string {
-    return this.inner.createPaymentWithFunding(channelId, balance);
+  signAndRecordPayment(channelId: string, balance: bigint): string {
+    return this.inner.signAndRecordPayment(channelId, balance);
   }
 
   /**
-   * Builds a complete X-Cashu-Channel payment header value.
+   * Signs the zero-balance channel registration payment with funding data.
    */
-  buildPaymentHeader(channelId: string, balance: bigint, includeFunding: boolean): string {
-    return this.inner.buildPaymentHeader(channelId, balance, includeFunding);
+  signChannelRegistration(channelId: string): string {
+    return this.inner.signChannelRegistration(channelId);
   }
 
   /**
-   * Creates a JSON request for cooperative closing.
+   * Signs and builds a complete X-Cashu-Channel payment header value without recording.
    */
-  createCooperativeCloseRequest(channelId: string, finalBalance: bigint): string {
-    return this.inner.createCooperativeCloseRequest(channelId, finalBalance);
+  signPaymentHeader(channelId: string, balance: bigint, includeFunding: boolean): string {
+    return this.inner.signPaymentHeader(channelId, balance, includeFunding);
+  }
+
+  /**
+   * Signs a JSON request for cooperative closing.
+   */
+  signCooperativeCloseRequest(channelId: string, finalBalance: bigint): string {
+    return this.inner.signCooperativeCloseRequest(channelId, finalBalance);
   }
 
   /**

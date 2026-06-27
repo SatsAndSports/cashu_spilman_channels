@@ -56,7 +56,7 @@ result = bridge.open_channel_from_token(
 )
 
 # Sign a payment
-payment = bridge.create_payment(result.channel_id, balance)
+payment = bridge.sign_payment(result.channel_id, balance)
 ```
 
 ## API Reference

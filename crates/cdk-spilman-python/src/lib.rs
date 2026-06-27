@@ -1530,40 +1530,48 @@ impl ClientBridge {
         })
     }
 
-    /// Create a payment for a channel (without funding data).
+    /// Sign a payment for a channel without funding data or local recording.
     ///
     /// Returns a JSON string with channel_id, balance, signature.
-    /// Use this for subsequent payments after the channel is registered.
+    /// Use `record_signed_payment` or `sign_and_record_payment` if this payment
+    /// should become the latest local state.
     ///
     /// Args:
     ///     channel_id: The channel ID
-    ///     balance: New cumulative balance (must increase monotonically)
+    ///     balance: Cumulative receiver balance
     ///
     /// Returns:
     ///     JSON string with the Payment struct
     #[pyo3(signature = (channel_id, balance))]
-    fn create_payment(&self, channel_id: &str, balance: u64) -> PyResult<String> {
+    fn sign_payment(&self, channel_id: &str, balance: u64) -> PyResult<String> {
         self.inner
-            .create_payment(channel_id, balance)
+            .sign_payment(channel_id, balance)
             .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
             .map_err(PyRuntimeError::new_err)
     }
 
-    /// Create a payment with funding data (for first payment).
+    /// Sign a payment and record it as the latest local channel state.
+    #[pyo3(signature = (channel_id, balance))]
+    fn sign_and_record_payment(&self, channel_id: &str, balance: u64) -> PyResult<String> {
+        self.inner
+            .sign_and_record_payment(channel_id, balance)
+            .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
+            .map_err(PyRuntimeError::new_err)
+    }
+
+    /// Sign the zero-balance channel registration payment with funding data.
     ///
     /// Returns a JSON string with channel_id, balance, signature, params, and funding_proofs.
-    /// Use this for the first payment when registering a channel with the server.
+    /// Use this when registering or re-registering a channel with the server.
     ///
     /// Args:
     ///     channel_id: The channel ID
-    ///     balance: New cumulative balance
-    ///
     /// Returns:
     ///     JSON string with the Payment struct including funding data
-    #[pyo3(signature = (channel_id, balance))]
-    fn create_payment_with_funding(&self, channel_id: &str, balance: u64) -> PyResult<String> {
+    #[pyo3(signature = (channel_id))]
+    fn sign_channel_registration(&self, channel_id: &str) -> PyResult<String> {
         self.inner
-            .create_payment_with_funding(channel_id, balance)
+            .sign_channel_registration(channel_id)
             .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
             .map_err(PyRuntimeError::new_err)
     }
@@ -1580,18 +1588,18 @@ impl ClientBridge {
     /// Returns:
     ///     Base64-encoded payment header string
     #[pyo3(signature = (channel_id, balance, include_funding))]
-    fn build_payment_header(
+    fn sign_payment_header(
         &self,
         channel_id: &str,
         balance: u64,
         include_funding: bool,
     ) -> PyResult<String> {
         self.inner
-            .build_payment_header(channel_id, balance, include_funding)
+            .sign_payment_header(channel_id, balance, include_funding)
             .map_err(PyRuntimeError::new_err)
     }
 
-    /// Create a cooperative close request for a channel.
+    /// Sign a cooperative close request for a channel.
     ///
     /// Args:
     ///     channel_id: The channel ID
@@ -1600,13 +1608,13 @@ impl ClientBridge {
     /// Returns:
     ///     JSON string with balance and signature (Payment struct)
     #[pyo3(signature = (channel_id, final_balance))]
-    fn create_cooperative_close_request(
+    fn sign_cooperative_close_request(
         &self,
         channel_id: &str,
         final_balance: u64,
     ) -> PyResult<String> {
         self.inner
-            .create_cooperative_close_request(channel_id, final_balance)
+            .sign_cooperative_close_request(channel_id, final_balance)
             .map(|p| serde_json::to_string(&p).expect("Payment serialization failed"))
             .map_err(PyRuntimeError::new_err)
     }

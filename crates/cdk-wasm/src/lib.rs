@@ -876,50 +876,60 @@ impl WasmSpilmanClientBridge {
             .map_err(|e| JsValue::from_str(&e.message))
     }
 
-    /// Create a payment for a channel (without funding data).
+    /// Sign a payment for a channel without funding data or local recording.
     /// Returns the Payment struct as a JSON string.
-    #[wasm_bindgen(js_name = createPayment)]
-    pub fn create_payment(&self, channel_id: &str, balance: u64) -> Result<String, JsValue> {
+    #[wasm_bindgen(js_name = signPayment)]
+    pub fn sign_payment(&self, channel_id: &str, balance: u64) -> Result<String, JsValue> {
         self.bridge
-            .create_payment(channel_id, balance)
+            .sign_payment(channel_id, balance)
             .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
             .map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Create a payment with funding data (for first payment).
+    /// Sign and record a payment for a channel.
     /// Returns the Payment struct as a JSON string.
-    #[wasm_bindgen(js_name = createPaymentWithFunding)]
-    pub fn create_payment_with_funding(
+    #[wasm_bindgen(js_name = signAndRecordPayment)]
+    pub fn sign_and_record_payment(
         &self,
         channel_id: &str,
         balance: u64,
     ) -> Result<String, JsValue> {
         self.bridge
-            .create_payment_with_funding(channel_id, balance)
+            .sign_and_record_payment(channel_id, balance)
             .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
             .map_err(|e| JsValue::from_str(&e))
     }
 
-    #[wasm_bindgen(js_name = buildPaymentHeader)]
-    pub fn build_payment_header(
+    /// Sign the zero-balance channel registration payment with funding data.
+    /// Returns the Payment struct as a JSON string.
+    #[wasm_bindgen(js_name = signChannelRegistration)]
+    pub fn sign_channel_registration(&self, channel_id: &str) -> Result<String, JsValue> {
+        self.bridge
+            .sign_channel_registration(channel_id)
+            .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[wasm_bindgen(js_name = signPaymentHeader)]
+    pub fn sign_payment_header(
         &self,
         channel_id: &str,
         balance: u64,
         include_funding: bool,
     ) -> Result<String, JsValue> {
         self.bridge
-            .build_payment_header(channel_id, balance, include_funding)
+            .sign_payment_header(channel_id, balance, include_funding)
             .map_err(|e| JsValue::from_str(&e))
     }
 
-    #[wasm_bindgen(js_name = createCooperativeCloseRequest)]
-    pub fn create_cooperative_close_request(
+    #[wasm_bindgen(js_name = signCooperativeCloseRequest)]
+    pub fn sign_cooperative_close_request(
         &self,
         channel_id: &str,
         final_balance: u64,
     ) -> Result<JsValue, JsValue> {
         self.bridge
-            .create_cooperative_close_request(channel_id, final_balance)
+            .sign_cooperative_close_request(channel_id, final_balance)
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
             .map_err(|e| JsValue::from_str(&e))
     }

@@ -85,25 +85,31 @@ func (b *ClientBridge) OpenChannelFromToken(token, receiverPubkeyHex, senderPubk
 	return clientBridgeOpenChannel(b.ptr, token, receiverPubkeyHex, senderPubkeyHex, expiryTimestamp, keysetInfoJSON, maxAmount)
 }
 
-// CreatePayment creates a payment for a channel (without funding data).
+// SignPayment signs a payment for a channel without funding data or local recording.
 // Returns JSON with the Payment struct.
-func (b *ClientBridge) CreatePayment(channelID string, balance uint64) (string, error) {
-	return clientBridgeCreatePayment(b.ptr, channelID, balance)
+func (b *ClientBridge) SignPayment(channelID string, balance uint64) (string, error) {
+	return clientBridgeSignPayment(b.ptr, channelID, balance)
 }
 
-// CreatePaymentWithFunding creates a payment with funding data (for first payment).
+// SignAndRecordPayment signs a payment and records it as the latest local state.
+// Returns JSON with the Payment struct.
+func (b *ClientBridge) SignAndRecordPayment(channelID string, balance uint64) (string, error) {
+	return clientBridgeSignAndRecordPayment(b.ptr, channelID, balance)
+}
+
+// SignChannelRegistration signs the zero-balance registration payment with funding data.
 // Returns JSON with the Payment struct including params and funding_proofs.
-func (b *ClientBridge) CreatePaymentWithFunding(channelID string, balance uint64) (string, error) {
-	return clientBridgeCreatePaymentWithFunding(b.ptr, channelID, balance)
+func (b *ClientBridge) SignChannelRegistration(channelID string) (string, error) {
+	return clientBridgeSignChannelRegistration(b.ptr, channelID)
 }
 
-// BuildPaymentHeader builds a complete X-Cashu-Channel payment header value.
+// SignPaymentHeader builds a complete X-Cashu-Channel payment header value without recording.
 // Returns a base64-encoded JSON string ready to use as the header value.
 //
 // If includeFunding is true, the header includes params and funding_proofs
 // (needed for the first request, or when the server doesn't know this channel yet).
-func (b *ClientBridge) BuildPaymentHeader(channelID string, balance uint64, includeFunding bool) (string, error) {
-	return clientBridgeBuildPaymentHeader(b.ptr, channelID, balance, includeFunding)
+func (b *ClientBridge) SignPaymentHeader(channelID string, balance uint64, includeFunding bool) (string, error) {
+	return clientBridgeSignPaymentHeader(b.ptr, channelID, balance, includeFunding)
 }
 
 // GetChannelInfo returns information about a stored channel.
@@ -139,9 +145,9 @@ func (b *ClientBridge) DeleteChannel(channelID string) {
 	C.spilman_client_bridge_delete_channel(b.ptr, cID)
 }
 
-// CreateCooperativeCloseRequest creates a JSON request for cooperative closing.
-func (b *ClientBridge) CreateCooperativeCloseRequest(channelID string, finalBalance uint64) (string, error) {
-	return clientBridgeCreateCooperativeCloseRequest(b.ptr, channelID, finalBalance)
+// SignCooperativeCloseRequest creates a JSON request for cooperative closing.
+func (b *ClientBridge) SignCooperativeCloseRequest(channelID string, finalBalance uint64) (string, error) {
+	return clientBridgeSignCooperativeCloseRequest(b.ptr, channelID, finalBalance)
 }
 
 // ProcessCooperativeCloseResponse finalizes the channel closure based on server response.

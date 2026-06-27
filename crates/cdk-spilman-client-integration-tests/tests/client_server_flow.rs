@@ -14,8 +14,8 @@ use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
 use cdk::Mint;
 use cdk_spilman::{
     build_cashu_b_token, parse_keyset_info_from_json, ClientChannelState, ClientStorage,
-    ConfigurableClientHost, Payment, ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge,
-    SpilmanClientNetworking, SqliteClientStorage,
+    ConfigurableClientHost, Payment, PaymentSuccess, ReqwestClientNetworking, SpilmanBridge,
+    SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SqliteClientStorage,
 };
 use cdk_spilman_client_integration_tests::{
     InMemoryMintNetworking, TestMintHelper, TestServerHost,
@@ -41,6 +41,57 @@ async fn assert_proofs_state(mint: &Mint, proofs: &[Proof], expected: State) {
     for proof_state in response.states {
         assert_eq!(proof_state.state, expected);
     }
+}
+
+fn process_payment(
+    server_bridge: &SpilmanBridge<TestServerHost, ()>,
+    payment: &Payment,
+) -> PaymentSuccess {
+    server_bridge
+        .process_payment(
+            &payment.channel_id,
+            payment.balance,
+            &payment.signature,
+            payment.params.as_ref(),
+            payment.funding_proofs.as_deref(),
+            &(),
+        )
+        .expect("server process payment")
+}
+
+fn register_channel<H, N>(
+    client_bridge: &SpilmanClientBridge<H, N>,
+    server_bridge: &SpilmanBridge<TestServerHost, ()>,
+    channel_id: &str,
+) -> PaymentSuccess
+where
+    H: SpilmanClientHost,
+    N: SpilmanClientNetworking,
+{
+    let registration = client_bridge
+        .sign_channel_registration(channel_id)
+        .expect("sign channel registration");
+    assert_eq!(registration.balance, 0);
+    assert!(registration.has_funding());
+    process_payment(server_bridge, &registration)
+}
+
+fn pay_channel<H, N>(
+    client_bridge: &SpilmanClientBridge<H, N>,
+    server_bridge: &SpilmanBridge<TestServerHost, ()>,
+    channel_id: &str,
+    balance: u64,
+) -> PaymentSuccess
+where
+    H: SpilmanClientHost,
+    N: SpilmanClientNetworking,
+{
+    let payment = client_bridge
+        .sign_and_record_payment(channel_id, balance)
+        .expect("sign and record payment");
+    assert_eq!(payment.balance, balance);
+    assert!(!payment.has_funding());
+    process_payment(server_bridge, &payment)
 }
 
 #[derive(Debug)]
@@ -195,35 +246,17 @@ async fn test_client_creates_payment_server_processes() {
         open_result.channel_id, open_result.capacity
     );
 
-    // === Client creates first payment with funding ===
-    let payment1: Payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment 1");
-
-    assert_eq!(payment1.channel_id, open_result.channel_id);
-    assert_eq!(payment1.balance, 10);
-    assert!(payment1.has_funding());
-    eprintln!("Payment 1 created: balance={}", payment1.balance);
-
-    // === Server processes first payment ===
-    let result1 = server_bridge
-        .process_payment(
-            &payment1.channel_id,
-            payment1.balance,
-            &payment1.signature,
-            payment1.params.as_ref(),
-            payment1.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server process payment 1");
-
-    assert_eq!(result1.channel_id, open_result.channel_id);
+    // === Client registers channel funding, then creates first payment ===
+    let registration = register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    assert_eq!(registration.channel_id, open_result.channel_id);
+    assert_eq!(registration.balance, 0);
+    let result1 = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
     assert_eq!(result1.balance, 10);
     eprintln!("Server processed payment 1: balance={}", result1.balance);
 
     // === Client creates second payment (no funding needed) ===
     let payment2: Payment = client_bridge
-        .create_payment(&open_result.channel_id, 25)
+        .sign_and_record_payment(&open_result.channel_id, 25)
         .expect("create payment 2");
 
     assert_eq!(payment2.balance, 25);
@@ -308,25 +341,13 @@ async fn test_balance_can_decrease() {
         )
         .expect("open channel");
 
-    // Pay 50 first
-    let payment1 = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 50)
-        .unwrap();
-    server_bridge
-        .process_payment(
-            &payment1.channel_id,
-            payment1.balance,
-            &payment1.signature,
-            payment1.params.as_ref(),
-            payment1.funding_proofs.as_deref(),
-            &(),
-        )
-        .unwrap();
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 50);
 
     // Now create a payment with LOWER balance (e.g., cooperative close refund scenario)
     // The client should allow this (we removed monotonic enforcement)
     let payment2 = client_bridge
-        .create_payment(&open_result.channel_id, 30)
+        .sign_payment(&open_result.channel_id, 30)
         .expect("should allow decreased balance");
 
     assert_eq!(payment2.balance, 30);
@@ -385,7 +406,7 @@ async fn test_balance_cannot_exceed_capacity() {
     eprintln!("Channel capacity: {}", open_result.capacity);
 
     // Try to create payment exceeding capacity
-    let result = client_bridge.create_payment(&open_result.channel_id, open_result.capacity + 100);
+    let result = client_bridge.sign_payment(&open_result.channel_id, open_result.capacity + 100);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -485,25 +506,8 @@ async fn test_open_channel_from_token_auto() {
         open_result.channel_id, open_result.capacity
     );
 
-    // === Client creates payment with funding ===
-    let payment: Payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-
-    assert_eq!(payment.balance, 10);
-    assert!(payment.has_funding());
-
-    // === Server processes payment ===
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server process payment");
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -551,19 +555,8 @@ async fn test_open_channel_from_proofs_auto() {
         .expect("open_channel_from_proofs_auto should succeed");
     assert_proofs_state(&mint, &proofs, State::Spent).await;
 
-    let payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server should accept proof-opened channel payment");
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -610,19 +603,8 @@ async fn test_open_channel_from_proofs_with_keyset_id() {
         .expect("open_channel_from_proofs_with_keyset_id should succeed");
     assert_proofs_state(&mint, &proofs, State::Spent).await;
 
-    let payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server should accept explicitly-keyed proof-opened payment");
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -705,19 +687,8 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
     assert_eq!(open_result.keyset_id, output_keyset.to_string());
     assert_proofs_state(&mint, &input_proofs, State::Spent).await;
 
-    let payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server should accept channel funded with active output keyset");
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -807,19 +778,8 @@ async fn test_open_channel_from_proofs_auto_retries_after_inactive_output_keyset
         Some(ClientChannelState::Open)
     );
 
-    let payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server should accept retried channel payment");
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
@@ -1080,24 +1040,9 @@ async fn test_reqwest_client_networking_http_round_trip() {
         open_result.channel_id, open_result.capacity
     );
 
-    // 7. Client creates payment with funding
-    let payment: Payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
-        .expect("create payment");
-    assert_eq!(payment.balance, 10);
-    assert!(payment.has_funding());
-
-    // 8. Server processes the payment
-    let result = server_bridge
-        .process_payment(
-            &payment.channel_id,
-            payment.balance,
-            &payment.signature,
-            payment.params.as_ref(),
-            payment.funding_proofs.as_deref(),
-            &(),
-        )
-        .expect("server should accept payment from HTTP-opened channel");
+    // 7. Client registers channel funding and creates payment
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
     eprintln!("Server verified payment from HTTP-opened channel");
@@ -1171,20 +1116,8 @@ async fn test_sqlite_client_storage_persists_channel_and_payments() {
             channel_id, open_result.capacity
         );
 
-        let payment = client_bridge
-            .create_payment_with_funding(&channel_id, 10)
-            .expect("create first payment");
-
-        let result = server_bridge
-            .process_payment(
-                &payment.channel_id,
-                payment.balance,
-                &payment.signature,
-                payment.params.as_ref(),
-                payment.funding_proofs.as_deref(),
-                &(),
-            )
-            .expect("server should accept first payment");
+        register_channel(&client_bridge, &server_bridge, &channel_id);
+        let result = pay_channel(&client_bridge, &server_bridge, &channel_id, 10);
 
         assert_eq!(result.balance, 10);
         eprintln!("SQLite session 1: server accepted payment balance=10");
@@ -1212,7 +1145,7 @@ async fn test_sqlite_client_storage_persists_channel_and_payments() {
         assert_eq!(info.state, cdk_spilman::ClientChannelState::Open);
 
         let payment = client_bridge
-            .create_payment(&channel_id, 25)
+            .sign_and_record_payment(&channel_id, 25)
             .expect("create second payment after reopen");
         assert_eq!(payment.balance, 25);
 

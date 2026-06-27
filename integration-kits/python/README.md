@@ -82,7 +82,7 @@ result = client.open_channel_from_token(
     token, receiver_pubkey, sender_pubkey, expiry, keyset_info, max_amount
 )
 
-header = client.build_payment_header(result.channel_id, balance, include_funding=True)
-close_req = client.create_cooperative_close_request(result.channel_id, final_balance)
+header = client.sign_payment_header(result.channel_id, balance, include_funding=True)
+close_req = client.sign_cooperative_close_request(result.channel_id, final_balance)
 client.process_cooperative_close_response(close_response_json)
 ```

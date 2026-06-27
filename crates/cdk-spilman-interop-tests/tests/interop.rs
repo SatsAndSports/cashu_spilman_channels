@@ -2092,13 +2092,13 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // Create payment (tests signature creation)
     // ====================================================================
 
-    // Use create_payment_with_funding for the first payment
+    // Use zero-balance channel registration for funding
     let payment = client_bridge
-        .create_payment_with_funding(&open_result.channel_id, 10)
+        .sign_channel_registration(&open_result.channel_id)
         .map_err(anyhow::Error::msg)?;
 
     assert_eq!(payment.channel_id, open_result.channel_id);
-    assert_eq!(payment.balance, 10);
+    assert_eq!(payment.balance, 0);
     assert!(!payment.signature.is_empty());
     assert!(payment.has_funding());
 
@@ -2107,7 +2107,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // ====================================================================
 
     let header_with_funding = client_bridge
-        .build_payment_header(&open_result.channel_id, 10, true)
+        .sign_payment_header(&open_result.channel_id, 0, true)
         .map_err(anyhow::Error::msg)?;
 
     let decoded = base64_decode(&header_with_funding).map_err(anyhow::Error::msg)?;
@@ -2117,7 +2117,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         header_json["channel_id"].as_str().unwrap(),
         open_result.channel_id
     );
-    assert_eq!(header_json["balance"].as_u64().unwrap(), 10);
+    assert_eq!(header_json["balance"].as_u64().unwrap(), 0);
     assert!(header_json["signature"].as_str().is_some());
     assert!(header_json["params"].is_object());
     assert!(header_json["funding_proofs"].is_array());
@@ -2127,7 +2127,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
     // ====================================================================
 
     let header_no_funding = client_bridge
-        .build_payment_header(&open_result.channel_id, 20, false)
+        .sign_payment_header(&open_result.channel_id, 20, false)
         .map_err(anyhow::Error::msg)?;
 
     let decoded2 = base64_decode(&header_no_funding).map_err(anyhow::Error::msg)?;
@@ -2164,7 +2164,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
     assert_eq!(payment_result.channel_id, open_result.channel_id);
-    assert_eq!(payment_result.balance, 10);
+    assert_eq!(payment_result.balance, 0);
     assert_eq!(payment_result.capacity, open_result.capacity);
 
     let payment_result2 = server_bridge
@@ -2217,7 +2217,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             balance,
             amount_due,
         } => {
-            assert_eq!(balance, 10);
+            assert_eq!(balance, 0);
             assert_eq!(amount_due, 15);
         }
         other => panic!("Unexpected error: {:?}", other),
@@ -2232,7 +2232,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing channel info after mark_channel_unusable"))?;
     assert_eq!(info.state, ClientChannelState::Closing);
     let err = client_bridge
-        .create_payment(&open_result.channel_id, 21)
+        .sign_payment(&open_result.channel_id, 21)
         .expect_err("closing channel should reject new payments");
     assert!(err.contains("not usable for payments"));
 

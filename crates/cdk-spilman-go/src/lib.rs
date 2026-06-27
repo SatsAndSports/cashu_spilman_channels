@@ -1541,9 +1541,9 @@ pub unsafe extern "C" fn spilman_client_bridge_open_channel_from_token(
     }
 }
 
-/// Create a payment for a channel (without funding data).
+/// Sign a payment for a channel without funding data or local recording.
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_create_payment(
+pub unsafe extern "C" fn spilman_client_bridge_sign_payment(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
     balance: u64,
@@ -1551,7 +1551,7 @@ pub unsafe extern "C" fn spilman_client_bridge_create_payment(
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
 
-    match instance.bridge.create_payment(id, balance) {
+    match instance.bridge.sign_payment(id, balance) {
         Ok(payment) => {
             let json = serde_json::to_string(&payment).unwrap();
             CResult::success(json)
@@ -1560,9 +1560,9 @@ pub unsafe extern "C" fn spilman_client_bridge_create_payment(
     }
 }
 
-/// Create a payment with funding data (for first payment).
+/// Sign a payment and record it as the latest local channel state.
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_create_payment_with_funding(
+pub unsafe extern "C" fn spilman_client_bridge_sign_and_record_payment(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
     balance: u64,
@@ -1570,7 +1570,25 @@ pub unsafe extern "C" fn spilman_client_bridge_create_payment_with_funding(
     let instance = &*ptr;
     let id = CStr::from_ptr(channel_id).to_str().unwrap();
 
-    match instance.bridge.create_payment_with_funding(id, balance) {
+    match instance.bridge.sign_and_record_payment(id, balance) {
+        Ok(payment) => {
+            let json = serde_json::to_string(&payment).unwrap();
+            CResult::success(json)
+        }
+        Err(e) => CResult::error(e),
+    }
+}
+
+/// Sign the zero-balance channel registration payment with funding data.
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_sign_channel_registration(
+    ptr: *mut ClientBridgeInstance,
+    channel_id: *const c_char,
+) -> CResult {
+    let instance = &*ptr;
+    let id = CStr::from_ptr(channel_id).to_str().unwrap();
+
+    match instance.bridge.sign_channel_registration(id) {
         Ok(payment) => {
             let json = serde_json::to_string(&payment).unwrap();
             CResult::success(json)
@@ -1580,7 +1598,7 @@ pub unsafe extern "C" fn spilman_client_bridge_create_payment_with_funding(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_build_payment_header(
+pub unsafe extern "C" fn spilman_client_bridge_sign_payment_header(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
     balance: u64,
@@ -1591,7 +1609,7 @@ pub unsafe extern "C" fn spilman_client_bridge_build_payment_header(
 
     match instance
         .bridge
-        .build_payment_header(id, balance, include_funding != 0)
+        .sign_payment_header(id, balance, include_funding != 0)
     {
         Ok(header) => CResult::success(header),
         Err(e) => CResult::error(e),
@@ -1654,7 +1672,7 @@ pub unsafe extern "C" fn spilman_client_bridge_mark_channel_unusable(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn spilman_client_bridge_create_cooperative_close_request(
+pub unsafe extern "C" fn spilman_client_bridge_sign_cooperative_close_request(
     ptr: *mut ClientBridgeInstance,
     channel_id: *const c_char,
     final_balance: u64,
@@ -1664,7 +1682,7 @@ pub unsafe extern "C" fn spilman_client_bridge_create_cooperative_close_request(
 
     match instance
         .bridge
-        .create_cooperative_close_request(id, final_balance)
+        .sign_cooperative_close_request(id, final_balance)
     {
         Ok(payment) => {
             let json = serde_json::to_string(&payment).unwrap();

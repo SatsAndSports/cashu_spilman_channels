@@ -532,32 +532,32 @@ class TestClientBridge:
         # Step 3: Create payments
         # ================================================================
 
-        payment_json = client_bridge.create_payment(result.channel_id, 10)
+        payment_json = client_bridge.sign_payment(result.channel_id, 10)
         payment = json.loads(payment_json)
 
         assert payment["channel_id"] == result.channel_id, "Payment channel_id mismatch"
         assert payment["balance"] == 10, "Payment balance mismatch"
         assert "signature" in payment, "Payment missing signature"
-        print("create_payment returned valid JSON")
+        print("sign_payment returned valid JSON")
 
         # ================================================================
         # Step 4: Build payment headers
         # ================================================================
 
         # Header WITH funding (first request to server)
-        header_with_funding = client_bridge.build_payment_header(result.channel_id, 10, True)
+        header_with_funding = client_bridge.sign_payment_header(result.channel_id, 0, True)
         decoded = base64.b64decode(header_with_funding)
         header_json = json.loads(decoded)
 
         assert header_json["channel_id"] == result.channel_id, "Header channel_id mismatch"
-        assert header_json["balance"] == 10, "Header balance mismatch"
+        assert header_json["balance"] == 0, "Header balance mismatch"
         assert "signature" in header_json, "Header missing signature"
         assert "params" in header_json, "Header with funding should include params"
         assert "funding_proofs" in header_json, "Header with funding should include funding_proofs"
         print("Payment header (with funding) is valid")
 
         # Header WITHOUT funding (subsequent requests)
-        header_no_funding = client_bridge.build_payment_header(result.channel_id, 20, False)
+        header_no_funding = client_bridge.sign_payment_header(result.channel_id, 20, False)
         decoded2 = base64.b64decode(header_no_funding)
         header_json2 = json.loads(decoded2)
 
@@ -577,7 +577,7 @@ class TestClientBridge:
         payment_result = server_bridge.process_payment(decoded.decode(), '{"type":"test"}')
 
         assert payment_result.channel_id == result.channel_id, "Server channel_id mismatch"
-        assert payment_result.balance == 10, f"Server balance mismatch: expected 10, got {payment_result.balance}"
+        assert payment_result.balance == 0, f"Server balance mismatch: expected 0, got {payment_result.balance}"
         assert payment_result.capacity == result.capacity, (
             f"Server capacity mismatch: expected {result.capacity}, got {payment_result.capacity}"
         )

@@ -68,7 +68,7 @@ export async function runClient(args: string[]) {
   console.log(`Channel ${cid.slice(0, 8)} ready! Sending requests...`);
   for (let i = 0; i < messages.length; i++) {
     balance += messages[i].length;
-    const header = bridge.buildPaymentHeader(cid, BigInt(balance), i === 0);
+    const header = bridge.signPaymentHeader(cid, BigInt(balance), i === 0);
     const r = await fetch(`${SERVER_URL}/ascii`, {
       method: "POST", body: JSON.stringify({ message: messages[i] }),
       headers: { "Content-Type": "application/json", "X-Cashu-Channel": header }
@@ -86,7 +86,7 @@ export async function runClient(args: string[]) {
   if (shouldClose) {
     console.log("\nClosing channel...");
     const status = await (await fetch(`${SERVER_URL}/channel/${cid}/status`)).json() as any;
-    const closeReq = bridge.createCooperativeCloseRequest(cid, BigInt(status.amount_due));
+    const closeReq = bridge.signCooperativeCloseRequest(cid, BigInt(status.amount_due));
     const cResp = await fetch(`${SERVER_URL}/channel/${cid}/close`, {
       method: "POST", body: JSON.stringify(closeReq), headers: { "Content-Type": "application/json" }
     });

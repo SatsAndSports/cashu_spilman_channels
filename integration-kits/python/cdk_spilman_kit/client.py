@@ -47,13 +47,13 @@ class SpilmanClient:
         """
         return self.bridge.restore_funding_proofs(channel_id)
 
-    def build_payment_header(self, channel_id: str, balance: int, include_funding: bool = False) -> str:
-        """Builds the base64-encoded payment header."""
-        return self.bridge.build_payment_header(channel_id, balance, include_funding)
+    def sign_payment_header(self, channel_id: str, balance: int, include_funding: bool = False) -> str:
+        """Signs and builds the base64-encoded payment header without recording."""
+        return self.bridge.sign_payment_header(channel_id, balance, include_funding)
 
-    def create_cooperative_close_request(self, channel_id: str, final_balance: int) -> str:
-        """Creates a signed close request for the server."""
-        return self.bridge.create_cooperative_close_request(channel_id, final_balance)
+    def sign_cooperative_close_request(self, channel_id: str, final_balance: int) -> str:
+        """Signs a close request for the server."""
+        return self.bridge.sign_cooperative_close_request(channel_id, final_balance)
 
     def process_cooperative_close_response(self, response_json: str):
         """Finalizes the channel closure locally."""
