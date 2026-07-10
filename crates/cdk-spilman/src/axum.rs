@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use super::configurable_host::ConfigurableHost;
 use super::{
-    BridgeError, ChannelState, ClosePreparationError, SpilmanAsyncNetworking, SpilmanBridge,
-    SpilmanHost,
+    BridgeError, ChannelState, ClosePreparationError, SpilmanAsyncKeysetRefresher,
+    SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost,
 };
 
 /// Shared state required by the Spilman management routes.
@@ -60,7 +60,7 @@ pub fn configurable_management_router<S, N>(
 ) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
 {
     Router::new()
         .route("/params", get(get_configurable_params::<N>))
@@ -83,7 +83,7 @@ async fn post_configurable_channel_close<N>(
     Json(body): Json<CloseRequest>,
 ) -> Response
 where
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
 {
     if let Some(closed_data) = s.host.get_closed_data(&channel_id) {
         if body.balance == closed_data.closed_amount {
@@ -118,7 +118,7 @@ async fn post_configurable_unilateral_close<N>(
     Path(channel_id): Path<String>,
 ) -> Response
 where
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
 {
     if let Some(closed_data) = s.host.get_closed_data(&channel_id) {
         return Json(serde_json::json!({
@@ -154,7 +154,7 @@ async fn get_configurable_params<N>(
     State(s): State<SpilmanState<ConfigurableHost, N, String>>,
 ) -> Json<serde_json::Value>
 where
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
 {
     let active_pricing = s.host.get_active_pricing();
     let pricing_json: serde_json::Value = active_pricing
@@ -186,7 +186,7 @@ async fn post_channel_register<H, N, C>(
 ) -> Response
 where
     H: SpilmanHost<C> + Send + Sync + 'static,
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
     C: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
     let channel_id =
@@ -261,7 +261,7 @@ async fn get_configurable_status_handler<N>(
     Path(channel_id): Path<String>,
 ) -> Response
 where
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
 {
     let funding = match s.host.get_funding_data(&channel_id) {
         Some(f) => f,
@@ -305,7 +305,7 @@ async fn post_channel_close<H, N, C>(
 ) -> Response
 where
     H: SpilmanHost<C> + Send + Sync + 'static,
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
     C: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
     // Specialized idempotency for ConfigurableHost
@@ -331,7 +331,7 @@ where
 
     match s
         .bridge
-        .execute_cooperative_close_async(&close_body.to_string(), &*s.networking)
+        .execute_cooperative_close_async(&close_body.to_string(), &*s.networking, &*s.networking)
         .await
     {
         Ok(result) => {
@@ -360,7 +360,7 @@ async fn post_unilateral_close<H, N, C>(
 ) -> Response
 where
     H: SpilmanHost<C> + Send + Sync + 'static,
-    N: SpilmanAsyncNetworking + Send + Sync + 'static,
+    N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
     C: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
     if s.host.get_channel_state(&channel_id) == ChannelState::Closed {
@@ -374,7 +374,7 @@ where
 
     match s
         .bridge
-        .execute_unilateral_close_async(&channel_id, &*s.networking)
+        .execute_unilateral_close_async(&channel_id, &*s.networking, &*s.networking)
         .await
     {
         Ok(result) => Json(serde_json::json!({

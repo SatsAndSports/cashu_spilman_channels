@@ -224,6 +224,7 @@ trait SpilmanHost<C = String> {
 
     // Keyset cache
     fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
+    fn has_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> bool;
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String>;
 
     // Cryptographic operations (host owns the secret key)

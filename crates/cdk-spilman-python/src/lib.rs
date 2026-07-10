@@ -18,7 +18,7 @@ use spilman_core::{
     ClientChannelOpeningFromSwap, ClientChannelState, ClientOpeningFailure, ClientPaymentState,
     ClosingData, SpilmanBridge as RustSpilmanBridge,
     SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
-    SpilmanHost,
+    SpilmanHost, SpilmanKeysetRefresher, SpilmanMintClient,
 };
 
 // ============================================================================
@@ -544,7 +544,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 }
 
-impl spilman_core::SpilmanNetworking for PySpilmanHost {
+impl SpilmanMintClient for PySpilmanHost {
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
         Python::with_gil(|py| {
             match self
@@ -556,8 +556,10 @@ impl spilman_core::SpilmanNetworking for PySpilmanHost {
             }
         })
     }
+}
 
-    fn refresh_all_keysets(&self, mint: &str) -> Result<(), String> {
+impl SpilmanKeysetRefresher for PySpilmanHost {
+    fn refresh(&self, mint: &str) -> Result<(), String> {
         Python::with_gil(|py| {
             // Check if the method exists on the Python host
             if self.py_host.getattr(py, "refresh_all_keysets").is_err() {
@@ -752,7 +754,7 @@ impl SpilmanBridge {
     /// 1. Validates the payment signature and checks balance == amount_due
     /// 2. Creates the fully-signed swap request
     /// 3. Submits the swap to the mint via host.call_mint_swap()
-    /// 4. If swap fails, calls host.refresh_all_keysets() and retries once
+    /// 4. If swap fails, refreshes the host keyset cache and retries once
     /// 5. Unblinds signatures and verifies DLEQ proofs
     /// 6. Marks the channel as closed via host.mark_channel_closed()
     ///
@@ -767,7 +769,7 @@ impl SpilmanBridge {
     ///     RuntimeError: With JSON-encoded CloseError on failure
     fn execute_cooperative_close(&self, payment_json: &str) -> PyResult<CloseSuccess> {
         self.inner
-            .execute_cooperative_close(payment_json, self.inner.host())
+            .execute_cooperative_close(payment_json, self.inner.host(), self.inner.host())
             .map(CloseSuccess::from)
             .map_err(|e| {
                 let error_json = serde_json::to_string(&e).unwrap_or_else(|_| e.to_string());
@@ -781,7 +783,7 @@ impl SpilmanBridge {
     /// 1. Retrieves the stored balance and signature from the host
     /// 2. Creates the fully-signed swap request
     /// 3. Submits the swap to the mint via host.call_mint_swap()
-    /// 4. If swap fails, calls host.refresh_all_keysets() and retries once
+    /// 4. If swap fails, refreshes the host keyset cache and retries once
     /// 5. Unblinds signatures and verifies DLEQ proofs
     /// 6. Marks the channel as closed via host.mark_channel_closed()
     ///
@@ -795,7 +797,7 @@ impl SpilmanBridge {
     ///     RuntimeError: With JSON-encoded CloseError on failure
     fn execute_unilateral_close(&self, channel_id: &str) -> PyResult<CloseSuccess> {
         self.inner
-            .execute_unilateral_close(channel_id, self.inner.host())
+            .execute_unilateral_close(channel_id, self.inner.host(), self.inner.host())
             .map(CloseSuccess::from)
             .map_err(|e| {
                 let error_json = serde_json::to_string(&e).unwrap_or_else(|_| e.to_string());

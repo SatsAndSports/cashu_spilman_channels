@@ -13,9 +13,9 @@ use cdk_spilman::{
     BridgeError, BridgeErrorResponse, ChannelFunding, ChannelParameters, ChannelPolicy,
     ChannelState, ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState,
     ClientOpeningFailure, ClientPaymentState, ClosingData, EstablishedChannel, PaymentProof,
-    SpilmanAsyncNetworking, SpilmanBridge, SpilmanClientAsyncNetworking,
-    SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost as RustSpilmanClientHost,
-    SpilmanClientNetworking, SpilmanHost,
+    SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanBridge,
+    SpilmanClientAsyncNetworking, SpilmanClientBridge as RustSpilmanClientBridge,
+    SpilmanClientHost as RustSpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
 };
 
 #[wasm_bindgen(start)]
@@ -421,7 +421,7 @@ impl SpilmanHost<String> for WasmSpilmanHostProxy {
 
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
-impl SpilmanAsyncNetworking for WasmSpilmanHostProxy {
+impl SpilmanAsyncMintClient for WasmSpilmanHostProxy {
     async fn call_mint_swap(
         &self,
         mint_url: &str,
@@ -433,7 +433,12 @@ impl SpilmanAsyncNetworking for WasmSpilmanHostProxy {
             .as_string()
             .ok_or_else(|| "Result not a string".to_string())
     }
-    async fn refresh_all_keysets(&self, mint: &str) -> Result<(), String> {
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl SpilmanAsyncKeysetRefresher for WasmSpilmanHostProxy {
+    async fn refresh(&self, mint: &str) -> Result<(), String> {
         let _ = JsFuture::from(self.js_host.refresh_all_keysets(mint))
             .await
             .map_err(js_error_to_string)?;
@@ -443,7 +448,7 @@ impl SpilmanAsyncNetworking for WasmSpilmanHostProxy {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
-impl SpilmanAsyncNetworking for WasmSpilmanHostProxy {
+impl SpilmanAsyncMintClient for WasmSpilmanHostProxy {
     async fn call_mint_swap(
         &self,
         _mint_url: &str,
@@ -451,7 +456,12 @@ impl SpilmanAsyncNetworking for WasmSpilmanHostProxy {
     ) -> Result<String, String> {
         Err("WASM proxy only works on wasm32".to_string())
     }
-    async fn refresh_all_keysets(&self, _mint: &str) -> Result<(), String> {
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl SpilmanAsyncKeysetRefresher for WasmSpilmanHostProxy {
+    async fn refresh(&self, _mint: &str) -> Result<(), String> {
         Err("WASM proxy only works on wasm32".to_string())
     }
 }
@@ -797,7 +807,7 @@ impl WasmSpilmanBridge {
     #[wasm_bindgen(js_name = executeCooperativeClose)]
     pub async fn execute_cooperative_close(&self, payment_json: &str) -> Result<JsValue, JsValue> {
         self.bridge
-            .execute_cooperative_close_async(payment_json, self.bridge.host())
+            .execute_cooperative_close_async(payment_json, self.bridge.host(), self.bridge.host())
             .await
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
             .map_err(|e| {
@@ -809,7 +819,7 @@ impl WasmSpilmanBridge {
     #[wasm_bindgen(js_name = executeUnilateralClose)]
     pub async fn execute_unilateral_close(&self, channel_id: &str) -> Result<JsValue, JsValue> {
         self.bridge
-            .execute_unilateral_close_async(channel_id, self.bridge.host())
+            .execute_unilateral_close_async(channel_id, self.bridge.host(), self.bridge.host())
             .await
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
             .map_err(|e| {

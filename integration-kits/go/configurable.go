@@ -73,16 +73,22 @@ func LoadFromYaml(configPath, secretKeyHex string) (*ConfigurableSpilman, error)
 		Bridge: bridge,
 	}
 
-	// Initial keyset refresh (non-blocking)
-	go ctx.InitializeKeysets()
+	// Initial keyset refresh. Server readiness requires /channel/params to expose
+	// active pricing/keysets immediately after startup.
+	if err := ctx.InitializeKeysets(); err != nil {
+		return nil, err
+	}
 
 	return ctx, nil
 }
 
-func (c *ConfigurableSpilman) InitializeKeysets() {
+func (c *ConfigurableSpilman) InitializeKeysets() error {
 	for mintUrl := range c.Config.Mints {
-		c.Host.RefreshAllKeysets(mintUrl)
+		if err := c.Host.RefreshAllKeysets(mintUrl); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (c *ConfigurableSpilman) Free() {

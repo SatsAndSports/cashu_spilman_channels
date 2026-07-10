@@ -7,12 +7,12 @@ use std::sync::Arc;
 use cdk::error::ErrorResponse;
 use cdk::mint::Mint;
 use cdk::nuts::SwapRequest;
-use cdk_spilman::{SpilmanClientNetworking, SpilmanNetworking};
+use cdk_spilman::{SpilmanClientNetworking, SpilmanKeysetRefresher, SpilmanMintClient};
 
 /// Networking implementation that calls an in-memory mint directly.
 ///
-/// Implements both `SpilmanClientNetworking` (for client) and
-/// `SpilmanNetworking` (for server close operations).
+/// Implements client networking plus server-side mint client and keyset
+/// refresher traits.
 ///
 /// This uses `block_in_place` to safely execute async code from sync trait methods.
 #[derive(Debug)]
@@ -109,12 +109,14 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
     }
 }
 
-impl SpilmanNetworking for InMemoryMintNetworking {
+impl SpilmanMintClient for InMemoryMintNetworking {
     fn call_mint_swap(&self, _mint_url: &str, swap_request_json: &str) -> Result<String, String> {
         self.do_swap(swap_request_json)
     }
+}
 
-    fn refresh_all_keysets(&self, _mint: &str) -> Result<(), String> {
+impl SpilmanKeysetRefresher for InMemoryMintNetworking {
+    fn refresh(&self, _mint: &str) -> Result<(), String> {
         // No-op for in-memory mint - keysets are always fresh
         Ok(())
     }

@@ -161,28 +161,36 @@ pub trait SpilmanHost<C = String> {
     ) -> Result<String, String>;
 }
 
-/// Sync networking hooks for the Spilman bridge
-pub trait SpilmanNetworking {
+/// Sync mint HTTP hooks for the Spilman bridge.
+pub trait SpilmanMintClient {
     /// Call the mint's /v1/swap endpoint
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
-
-    /// Refresh the keyset cache for a mint
-    fn refresh_all_keysets(&self, mint: &str) -> Result<(), String>;
 }
 
-/// Async networking hooks for the Spilman bridge
+/// Sync keyset cache refresh hook for the Spilman bridge.
+pub trait SpilmanKeysetRefresher {
+    /// Refresh the keyset cache for a mint.
+    fn refresh(&self, mint: &str) -> Result<(), String>;
+}
+
+/// Async mint HTTP hooks for the Spilman bridge.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait SpilmanAsyncNetworking {
+pub trait SpilmanAsyncMintClient {
     /// Call the mint's /v1/swap endpoint
     async fn call_mint_swap(
         &self,
         mint_url: &str,
         swap_request_json: &str,
     ) -> Result<String, String>;
+}
 
-    /// Refresh the keyset cache for a mint
-    async fn refresh_all_keysets(&self, mint: &str) -> Result<(), String>;
+/// Async keyset cache refresh hook for the Spilman bridge.
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait SpilmanAsyncKeysetRefresher {
+    /// Refresh the keyset cache for a mint.
+    async fn refresh(&self, mint: &str) -> Result<(), String>;
 }
 
 /// Bridge for processing Spilman payments
@@ -1696,32 +1704,32 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Ok((params.mint, params.unit))
     }
 
-    fn ensure_close_keysets_cached<N: SpilmanNetworking>(
+    fn ensure_close_keysets_cached<R: SpilmanKeysetRefresher>(
         &self,
         channel_id: &str,
-        net: &N,
+        keyset_refresher: &R,
     ) -> Result<(), CloseError> {
         let (mint, unit) = self
             .close_mint_unit_for_channel(channel_id)
             .map_err(CloseError::from_preparation_error)?;
         if !self.host.has_keysets_for_unit(&mint, &unit) {
-            net.refresh_all_keysets(&mint).map_err(|e| {
+            keyset_refresher.refresh(&mint).map_err(|e| {
                 CloseError::storage_failed(format!("refresh keysets before close: {e}"))
             })?;
         }
         Ok(())
     }
 
-    async fn ensure_close_keysets_cached_async<N: SpilmanAsyncNetworking>(
+    async fn ensure_close_keysets_cached_async<R: SpilmanAsyncKeysetRefresher>(
         &self,
         channel_id: &str,
-        net: &N,
+        keyset_refresher: &R,
     ) -> Result<(), CloseError> {
         let (mint, unit) = self
             .close_mint_unit_for_channel(channel_id)
             .map_err(CloseError::from_preparation_error)?;
         if !self.host.has_keysets_for_unit(&mint, &unit) {
-            net.refresh_all_keysets(&mint).await.map_err(|e| {
+            keyset_refresher.refresh(&mint).await.map_err(|e| {
                 CloseError::storage_failed(format!("refresh keysets before close: {e}"))
             })?;
         }
@@ -2113,10 +2121,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
     }
 
-    pub fn execute_close_for_closing_channel<N: SpilmanNetworking>(
+    pub fn execute_close_for_closing_channel<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         channel_id: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         if self.host.get_channel_state(channel_id) != ChannelState::Closing {
             return Err(CloseError::ValidationFailed {
@@ -2137,7 +2146,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
-        self.ensure_close_keysets_cached(channel_id, net)?;
+        self.ensure_close_keysets_cached(channel_id, keyset_refresher)?;
         // Closing a channel spends the stored channel funding proofs through a
         // mint swap, splitting value between receiver and sender outputs.  The
         // close outputs must be created for an active mint keyset.  Hosts cache
@@ -2149,7 +2158,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         // retries once only if the selected keyset id changed.  If refresh still
         // chooses the same keyset, retrying would submit the same stale swap
         // again, so the helper returns the first mint rejection.
-        let result = with_active_keyset_retry(
+        let result: Result<
+            crate::KeysetRetrySuccess<PreparedClose, String>,
+            KeysetRetryError<PreparedClose, CloseError, String>,
+        > = with_active_keyset_retry(
             // Select the output keyset from the host's cached mint keyset data.
             // Close intentionally uses the first active keyset for the channel's
             // mint/unit instead of preferring the original funding keyset.
@@ -2169,7 +2181,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 .map_err(CloseError::from_preparation_error)
             },
             // Submit the prepared swap request to the mint.
-            |prep| net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string()),
+            |prep| mint_client.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string()),
             // Retry only keyset-class mint errors and remember the original
             // rejection so error mapping can distinguish first vs retry failure.
             |error| {
@@ -2183,14 +2195,14 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     false
                 }
             },
-            // Preserve historical close behavior: ask the networking layer to
-            // refresh all keysets for the mint, but ignore refresh errors.  If
-            // refresh fails or still yields the same keyset, the helper skips the
-            // retry and the original mint rejection is returned.
+            // Preserve historical close behavior: ask the keyset refresher to
+            // refresh all keysets for the mint, but ignore refresh errors. If
+            // refresh fails or still yields the same keyset, the helper skips
+            // the retry and the original mint rejection is returned.
             || {
                 let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
                 if let Some(mint_url) = mint_url.as_deref() {
-                    let _ = net.refresh_all_keysets(mint_url);
+                    let _ = keyset_refresher.refresh(mint_url);
                 }
                 Ok(())
             },
@@ -2219,10 +2231,14 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         )
     }
 
-    pub async fn execute_close_for_closing_channel_async<N: SpilmanAsyncNetworking>(
+    pub async fn execute_close_for_closing_channel_async<
+        M: SpilmanAsyncMintClient,
+        R: SpilmanAsyncKeysetRefresher,
+    >(
         &self,
         channel_id: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         if self.host.get_channel_state(channel_id) != ChannelState::Closing {
             return Err(CloseError::ValidationFailed {
@@ -2243,12 +2259,15 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 })?;
         let first_rejection = std::sync::Mutex::new(None::<String>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
-        self.ensure_close_keysets_cached_async(channel_id, net)
+        self.ensure_close_keysets_cached_async(channel_id, keyset_refresher)
             .await?;
         // Async variant of the same close-swap retry policy used above.  The
         // cache is pre-warmed if empty, then selection stays cache-only until a
         // retryable keyset rejection causes the helper to refresh and reselect.
-        let result = with_active_keyset_retry_async(
+        let result: Result<
+            crate::KeysetRetrySuccess<PreparedClose, String>,
+            KeysetRetryError<PreparedClose, CloseError, String>,
+        > = with_active_keyset_retry_async(
             // Select active close output keyset from host cache.
             || {
                 self.select_close_output_keyset_for_channel(channel_id)
@@ -2266,7 +2285,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             },
             // Submit via async networking.
             |prep| async move {
-                net.call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
+                mint_client
+                    .call_mint_swap(&prep.mint_url, &prep.swap_request.to_string())
                     .await
             },
             // Restrict retries to safe keyset rejections and remember the first
@@ -2282,14 +2302,14 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     false
                 }
             },
-            // Delegate keyset refresh to the networking layer.  As in the sync
-            // path, refresh failures are intentionally ignored and will normally
+            // Delegate keyset refresh to the refresher. As in the sync path,
+            // refresh failures are intentionally ignored and will normally
             // surface as unchanged-keyset/original-rejection behavior.
             || {
                 let mint_url = retry_mint_url.lock().ok().and_then(|guard| guard.clone());
                 async move {
                     if let Some(mint_url) = mint_url {
-                        let _ = net.refresh_all_keysets(&mint_url).await;
+                        let _ = keyset_refresher.refresh(&mint_url).await;
                     }
                     Ok(())
                 }
@@ -2319,10 +2339,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         )
     }
 
-    pub fn execute_cooperative_close<N: SpilmanNetworking>(
+    pub fn execute_cooperative_close<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         json: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         let prep = self
             .prepare_cooperative_close_for_execution(json)
@@ -2345,13 +2366,17 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 },
             )
             .map_err(CloseError::storage_failed)?;
-        self.execute_close_for_closing_channel(&prep.channel_id, net)
+        self.execute_close_for_closing_channel(&prep.channel_id, mint_client, keyset_refresher)
     }
 
-    pub async fn execute_cooperative_close_async<N: SpilmanAsyncNetworking>(
+    pub async fn execute_cooperative_close_async<
+        M: SpilmanAsyncMintClient,
+        R: SpilmanAsyncKeysetRefresher,
+    >(
         &self,
         json: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         let prep = self
             .prepare_cooperative_close_for_execution(json)
@@ -2374,14 +2399,19 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 },
             )
             .map_err(CloseError::storage_failed)?;
-        self.execute_close_for_closing_channel_async(&prep.channel_id, net)
-            .await
+        self.execute_close_for_closing_channel_async(
+            &prep.channel_id,
+            mint_client,
+            keyset_refresher,
+        )
+        .await
     }
 
-    pub fn execute_unilateral_close<N: SpilmanNetworking>(
+    pub fn execute_unilateral_close<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         channel_id: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         let prep = self
             .prepare_unilateral_close_for_execution(channel_id)
@@ -2402,13 +2432,17 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         self.host
             .mark_channel_closing(channel_id, expiry_timestamp, p)
             .map_err(CloseError::storage_failed)?;
-        self.execute_close_for_closing_channel(channel_id, net)
+        self.execute_close_for_closing_channel(channel_id, mint_client, keyset_refresher)
     }
 
-    pub async fn execute_unilateral_close_async<N: SpilmanAsyncNetworking>(
+    pub async fn execute_unilateral_close_async<
+        M: SpilmanAsyncMintClient,
+        R: SpilmanAsyncKeysetRefresher,
+    >(
         &self,
         channel_id: &str,
-        net: &N,
+        mint_client: &M,
+        keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
         let prep = self
             .prepare_unilateral_close_for_execution(channel_id)
@@ -2429,7 +2463,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         self.host
             .mark_channel_closing(channel_id, expiry_timestamp, p)
             .map_err(CloseError::storage_failed)?;
-        self.execute_close_for_closing_channel_async(channel_id, net)
+        self.execute_close_for_closing_channel_async(channel_id, mint_client, keyset_refresher)
             .await
     }
 }
@@ -2507,11 +2541,14 @@ mod tests {
             Err("N/A".into())
         }
     }
-    impl SpilmanNetworking for MockHost {
+    impl SpilmanMintClient for MockHost {
         fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
             Err("N/A".into())
         }
-        fn refresh_all_keysets(&self, _: &str) -> Result<(), String> {
+    }
+
+    impl SpilmanKeysetRefresher for MockHost {
+        fn refresh(&self, _: &str) -> Result<(), String> {
             Err("N/A".into())
         }
     }

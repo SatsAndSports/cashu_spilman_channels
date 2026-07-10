@@ -11,7 +11,8 @@ use cdk_spilman::{
     self, BridgeError, BridgeErrorResponse, ChannelFunding, ChannelPolicy, ChannelState,
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientOpeningFailure,
     ClientPaymentState, ClosingData, PaymentProof, SpilmanBridge, SpilmanClientBridge,
-    SpilmanClientHost, SpilmanClientNetworking, SpilmanHost, SpilmanNetworking,
+    SpilmanClientHost, SpilmanClientNetworking, SpilmanHost, SpilmanKeysetRefresher,
+    SpilmanMintClient,
 };
 pub use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -522,7 +523,7 @@ impl SpilmanHost<String> for CGoSpilmanHost {
     }
 }
 
-impl SpilmanNetworking for CGoSpilmanHost {
+impl SpilmanMintClient for CGoSpilmanHost {
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
         let mint_c = CString::new(mint_url).unwrap();
         let req_c = CString::new(swap_request_json).unwrap();
@@ -544,8 +545,10 @@ impl SpilmanNetworking for CGoSpilmanHost {
             }
         }
     }
+}
 
-    fn refresh_all_keysets(&self, mint: &str) -> Result<(), String> {
+impl SpilmanKeysetRefresher for CGoSpilmanHost {
+    fn refresh(&self, mint: &str) -> Result<(), String> {
         let mint_c = CString::new(mint).unwrap();
         let ok = (self.callbacks.refresh_all_keysets)(self.callbacks.user_data, mint_c.as_ptr());
         if ok != 0 {
@@ -695,10 +698,11 @@ pub unsafe extern "C" fn spilman_bridge_execute_cooperative_close(
     let instance = &*ptr;
     let payment_str = CStr::from_ptr(payment_json).to_str().unwrap();
 
-    match instance
-        .bridge
-        .execute_cooperative_close(payment_str, instance.bridge.host())
-    {
+    match instance.bridge.execute_cooperative_close(
+        payment_str,
+        instance.bridge.host(),
+        instance.bridge.host(),
+    ) {
         Ok(result) => {
             let json = serde_json::to_string(&result).unwrap();
             CResult::success(json)
@@ -721,10 +725,11 @@ pub unsafe extern "C" fn spilman_bridge_execute_unilateral_close(
     let instance = &*ptr;
     let channel_id_str = CStr::from_ptr(channel_id).to_str().unwrap();
 
-    match instance
-        .bridge
-        .execute_unilateral_close(channel_id_str, instance.bridge.host())
-    {
+    match instance.bridge.execute_unilateral_close(
+        channel_id_str,
+        instance.bridge.host(),
+        instance.bridge.host(),
+    ) {
         Ok(result) => {
             let json = serde_json::to_string(&result).unwrap();
             CResult::success(json)

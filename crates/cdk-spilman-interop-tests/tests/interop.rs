@@ -32,7 +32,8 @@ use cdk_spilman::{
     complete_funding_swap, compute_channel_from_token, create_funding_swap, ChannelFunding,
     ChannelParameters, ChannelPolicy, ChannelState, CloseError, ClosingData, CommitmentOutputs,
     DeterministicOutputsForOneContext, EstablishedChannel, FundingSpendKind, KeysetInfo,
-    PaymentProof, SpilmanBridge, SpilmanChannelSender, SpilmanHost, SpilmanNetworking,
+    PaymentProof, SpilmanBridge, SpilmanChannelSender, SpilmanHost, SpilmanKeysetRefresher,
+    SpilmanMintClient,
 };
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -1979,7 +1980,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         }
     }
 
-    impl SpilmanNetworking for TestServerHost {
+    impl SpilmanMintClient for TestServerHost {
         fn call_mint_swap(
             &self,
             _mint_url: &str,
@@ -1987,7 +1988,10 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         ) -> Result<String, String> {
             Err("not used in this test".to_string())
         }
-        fn refresh_all_keysets(&self, _mint: &str) -> Result<(), String> {
+    }
+
+    impl SpilmanKeysetRefresher for TestServerHost {
+        fn refresh(&self, _mint: &str) -> Result<(), String> {
             Ok(())
         }
     }
@@ -2619,10 +2623,7 @@ mod close_balance_tests {
         }
     }
 
-    impl SpilmanNetworking for OverpaymentTestHost {
-        fn refresh_all_keysets(&self, _mint: &str) -> Result<(), String> {
-            Ok(())
-        }
+    impl SpilmanMintClient for OverpaymentTestHost {
         fn call_mint_swap(
             &self,
             _mint_url: &str,
@@ -2639,6 +2640,12 @@ mod close_balance_tests {
             .map_err(|e| serde_json::json!({"detail": e.to_string(), "code": 0}).to_string())?;
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize swap response: {}", e))
+        }
+    }
+
+    impl SpilmanKeysetRefresher for OverpaymentTestHost {
+        fn refresh(&self, _mint: &str) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -2899,9 +2906,9 @@ async fn test_cooperative_close_with_overpayment() -> anyhow::Result<()> {
     })
     .to_string();
 
-    let result = s
-        .bridge
-        .execute_cooperative_close(&payment_json, s.bridge.host());
+    let result =
+        s.bridge
+            .execute_cooperative_close(&payment_json, s.bridge.host(), s.bridge.host());
     let success = result.expect("Cooperative close should succeed");
 
     assert_eq!(s.bridge.host().swap_call_count.get(), 1);
@@ -2937,7 +2944,7 @@ async fn test_unilateral_close_uses_latest_payment_balance() -> anyhow::Result<(
 
     let result = s
         .bridge
-        .execute_unilateral_close(&s.channel_id, s.bridge.host());
+        .execute_unilateral_close(&s.channel_id, s.bridge.host(), s.bridge.host());
     let success = result.expect("Unilateral close should succeed");
 
     assert_eq!(s.bridge.host().swap_call_count.get(), 1);
@@ -3128,12 +3135,7 @@ mod retry_tests {
         }
     }
 
-    impl SpilmanNetworking for RetryTestHost {
-        fn refresh_all_keysets(&self, _mint: &str) -> Result<(), String> {
-            *self.active_keyset_ids.borrow_mut() = vec![self.fresh_keyset_id];
-            self.refresh_count.set(self.refresh_count.get() + 1);
-            Ok(())
-        }
+    impl SpilmanMintClient for RetryTestHost {
         fn call_mint_swap(
             &self,
             _mint_url: &str,
@@ -3163,6 +3165,14 @@ mod retry_tests {
             })?;
             serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize swap response: {}", e))
+        }
+    }
+
+    impl SpilmanKeysetRefresher for RetryTestHost {
+        fn refresh(&self, _mint: &str) -> Result<(), String> {
+            *self.active_keyset_ids.borrow_mut() = vec![self.fresh_keyset_id];
+            self.refresh_count.set(self.refresh_count.get() + 1);
+            Ok(())
         }
     }
 
@@ -3382,9 +3392,9 @@ async fn test_cooperative_close_full_retry_with_real_mint() -> anyhow::Result<()
     })
     .to_string();
 
-    let result = s
-        .bridge
-        .execute_cooperative_close(&payment_json, s.bridge.host());
+    let result =
+        s.bridge
+            .execute_cooperative_close(&payment_json, s.bridge.host(), s.bridge.host());
     let success = result.expect("Cooperative close should succeed after retry");
 
     assert_eq!(s.bridge.host().swap_call_count.get(), 2);
@@ -3454,7 +3464,7 @@ struct JsonFailingNetworking {
     refresh_count: std::cell::Cell<u32>,
 }
 
-impl SpilmanNetworking for JsonFailingNetworking {
+impl SpilmanMintClient for JsonFailingNetworking {
     fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
         let attempt = self.swap_call_count.get();
         self.swap_call_count.set(attempt + 1);
@@ -3464,8 +3474,10 @@ impl SpilmanNetworking for JsonFailingNetworking {
             _ => Err(r#"{"code":12001,"detail":"Unknown Keyset"}"#.to_string()),
         }
     }
+}
 
-    fn refresh_all_keysets(&self, _: &str) -> Result<(), String> {
+impl SpilmanKeysetRefresher for JsonFailingNetworking {
+    fn refresh(&self, _: &str) -> Result<(), String> {
         self.refresh_count.set(self.refresh_count.get() + 1);
         Ok(())
     }
@@ -3489,7 +3501,7 @@ async fn test_cooperative_close_same_keyset_skip_preserves_structured_mint_error
 
     let err = s
         .bridge
-        .execute_cooperative_close(&payment_json, &net)
+        .execute_cooperative_close(&payment_json, &net, &net)
         .expect_err("close should fail after same-keyset retry is skipped");
 
     assert_eq!(net.swap_call_count.get(), 1);
@@ -3517,7 +3529,7 @@ async fn test_unilateral_close_full_retry_with_real_mint() -> anyhow::Result<()>
 
     let result = s
         .bridge
-        .execute_unilateral_close(&s.channel_id, s.bridge.host());
+        .execute_unilateral_close(&s.channel_id, s.bridge.host(), s.bridge.host());
     let success = result.expect("Unilateral close should succeed after retry");
 
     assert_eq!(s.bridge.host().swap_call_count.get(), 2);
@@ -3722,7 +3734,7 @@ impl SelectiveRetryTestNetworking {
     }
 }
 
-impl SpilmanNetworking for SelectiveRetryTestNetworking {
+impl SpilmanMintClient for SelectiveRetryTestNetworking {
     fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
         self.swap_call_count.set(self.swap_call_count.get() + 1);
         Err(format!(
@@ -3730,8 +3742,10 @@ impl SpilmanNetworking for SelectiveRetryTestNetworking {
             self.error_code, self.error_detail
         ))
     }
+}
 
-    fn refresh_all_keysets(&self, _: &str) -> Result<(), String> {
+impl SpilmanKeysetRefresher for SelectiveRetryTestNetworking {
+    fn refresh(&self, _: &str) -> Result<(), String> {
         self.refresh_count.set(self.refresh_count.get() + 1);
         Ok(())
     }
@@ -3755,7 +3769,7 @@ async fn test_close_no_retry_on_token_spent_error() -> anyhow::Result<()> {
 
     let err = s
         .bridge
-        .execute_cooperative_close(&payment_json, &net)
+        .execute_cooperative_close(&payment_json, &net, &net)
         .expect_err("close should fail immediately without retry");
 
     // Should only call swap once (no retry)
@@ -3805,7 +3819,7 @@ async fn test_close_keyset_error_skips_retry_when_keyset_unchanged() -> anyhow::
 
     let err = s
         .bridge
-        .execute_cooperative_close(&payment_json, &net)
+        .execute_cooperative_close(&payment_json, &net, &net)
         .expect_err("close should fail after same-keyset retry is skipped");
 
     // Should call swap once; refresh still chose the same output keyset.
@@ -3844,14 +3858,16 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
         refresh_count: std::cell::Cell<u32>,
     }
 
-    impl SpilmanNetworking for UnparseableErrorNetworking {
+    impl SpilmanMintClient for UnparseableErrorNetworking {
         fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
             self.swap_call_count.set(self.swap_call_count.get() + 1);
             // Return a plain string error without JSON structure
             Err("Internal server error".to_string())
         }
+    }
 
-        fn refresh_all_keysets(&self, _: &str) -> Result<(), String> {
+    impl SpilmanKeysetRefresher for UnparseableErrorNetworking {
+        fn refresh(&self, _: &str) -> Result<(), String> {
             self.refresh_count.set(self.refresh_count.get() + 1);
             Ok(())
         }
@@ -3871,7 +3887,7 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
 
     let err = s
         .bridge
-        .execute_cooperative_close(&payment_json, &net)
+        .execute_cooperative_close(&payment_json, &net, &net)
         .expect_err("close should fail immediately without retry");
 
     // Should only call swap once (no retry for unparseable errors)
@@ -3917,7 +3933,7 @@ async fn test_close_no_retry_on_verification_error() -> anyhow::Result<()> {
 
     let err = s
         .bridge
-        .execute_cooperative_close(&payment_json, &net)
+        .execute_cooperative_close(&payment_json, &net, &net)
         .expect_err("close should fail immediately without retry");
 
     assert_eq!(
@@ -3990,9 +4006,9 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
     // to inactive, so the first swap fails with 12002 (inactive keyset), then
     // refresh_all_keysets switches to keyset B, and the retry succeeds.
     eprintln!("[selective-retry] Attempting first close (should succeed with retry)...");
-    let result1 = s
-        .bridge
-        .execute_cooperative_close(&payment_json, s.bridge.host());
+    let result1 =
+        s.bridge
+            .execute_cooperative_close(&payment_json, s.bridge.host(), s.bridge.host());
 
     let after_first_close_swap_count = s.bridge.host().swap_call_count.get();
     let after_first_close_refresh_count = s.bridge.host().refresh_count.get();
@@ -4038,9 +4054,9 @@ async fn test_selective_retry_no_retry_on_double_spend() -> anyhow::Result<()> {
     // The proofs have already been spent by the first close.
     eprintln!("[selective-retry] Attempting second close (should fail with 11001, no retry)...");
 
-    let result2 = s
-        .bridge
-        .execute_cooperative_close(&payment_json, s.bridge.host());
+    let result2 =
+        s.bridge
+            .execute_cooperative_close(&payment_json, s.bridge.host(), s.bridge.host());
 
     let after_second_close_swap_count = s.bridge.host().swap_call_count.get();
     let after_second_close_refresh_count = s.bridge.host().refresh_count.get();

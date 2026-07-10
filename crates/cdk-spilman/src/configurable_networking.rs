@@ -3,8 +3,9 @@
 //! Provides:
 //! - [`ReqwestClientNetworking`] — a sync [`SpilmanClientNetworking`] implementation
 //!   for client-side mint communication (swap, restore, keyset queries).
-//! - [`ReqwestNetworking`] — an async [`SpilmanAsyncNetworking`] implementation
-//!   for server-side mint communication (swap, keyset refresh).
+//! - [`ReqwestNetworking`] — async [`SpilmanAsyncMintClient`] and
+//!   [`SpilmanAsyncKeysetRefresher`] implementations for server-side mint
+//!   communication and keyset cache refresh.
 //! - Keyset fetching helpers for populating a [`ConfigurableHost`] cache.
 //!
 //! Gated behind the `configurable-host-reqwest` feature.
@@ -13,7 +14,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::configurable_host::{ConfigurableHost, KeysetCacheEntry};
-use crate::{SpilmanAsyncNetworking, SpilmanClientNetworking};
+use crate::{SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanClientNetworking};
 use cashu::nuts::{CurrencyUnit, Id};
 
 /// Keyset with full key data, as fetched from a mint.
@@ -252,11 +253,11 @@ impl SpilmanClientNetworking for ReqwestClientNetworking {
     }
 }
 
-/// Ready-made [`SpilmanAsyncNetworking`] implementation using `reqwest`.
+/// Ready-made async mint HTTP and keyset refresh implementation using `reqwest`.
 ///
 /// Wraps a shared [`ConfigurableHost`] and provides:
 /// - `call_mint_swap` — POST to `/v1/swap`
-/// - `refresh_all_keysets` — re-fetches and caches all keysets
+/// - `refresh` — re-fetches and caches all keysets
 ///
 /// # Example
 ///
@@ -278,7 +279,7 @@ impl ReqwestNetworking {
 }
 
 #[async_trait]
-impl SpilmanAsyncNetworking for ReqwestNetworking {
+impl SpilmanAsyncMintClient for ReqwestNetworking {
     async fn call_mint_swap(
         &self,
         mint_url: &str,
@@ -324,8 +325,11 @@ impl SpilmanAsyncNetworking for ReqwestNetworking {
             .await
             .map_err(|e| format!("Failed to read swap response: {e}"))
     }
+}
 
-    async fn refresh_all_keysets(&self, mint: &str) -> Result<(), String> {
+#[async_trait]
+impl SpilmanAsyncKeysetRefresher for ReqwestNetworking {
+    async fn refresh(&self, mint: &str) -> Result<(), String> {
         tracing::info!("Refreshing keysets from {mint}...");
         fetch_and_cache_keysets(&self.host, mint).await?;
         tracing::info!("Keyset refresh complete for {mint}");
