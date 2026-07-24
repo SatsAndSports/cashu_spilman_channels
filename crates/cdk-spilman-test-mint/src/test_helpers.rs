@@ -48,7 +48,9 @@ pub async fn create_test_mint() -> Result<Mint> {
         .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Known(KnownMethod::Bolt11),
-            MintMeltLimits::new(1, 10_000),
+            // Effectively unlimited: Amount is u64-backed, so no quote can
+            // exceed this. Tests should not have to batch around a quote cap.
+            MintMeltLimits::new(1, u64::MAX),
             Arc::new(ln_fake_backend),
         )
         .await?;
