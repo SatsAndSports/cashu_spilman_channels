@@ -608,10 +608,10 @@ pub unsafe extern "C" fn spilman_bridge_process_payment(
 
 /// Validate a payment without recording it.
 ///
-/// Performs all validation (parsing, channel verification, balance checks,
-/// signature verification) but does NOT call record_payment.
-///
-/// For new channels, funding data IS saved (idempotent).
+/// Performs validation for already registered channels (parsing, balance checks,
+/// signature verification) but does NOT call save_funding or record_payment.
+/// Unknown channels return an unknown-channel error; call fund_channel first to
+/// register new funding.
 ///
 /// Returns JSON-serialized PaymentValidationResult on success, or error string on failure.
 #[no_mangle]

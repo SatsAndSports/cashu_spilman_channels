@@ -147,6 +147,13 @@ usage and will reject (402) if insufficient. It does not reserve the new usage.
 If actual usage exceeds balance, it will be recorded and the **next** request
 will be rejected until topped up.
 
+For applications that need to separate validation from persistence, use
+`validate_new_channel_funding` to check first-use channel funding without
+mutating storage, then call `record_validated_new_channel` once the host is ready
+to commit it. `validate_payment` itself is side-effect-free and only validates
+channels that are already recorded; high-level `fund_channel` and
+`process_payment` remain validate-and-record convenience wrappers.
+
 ---
 
 ## State Management

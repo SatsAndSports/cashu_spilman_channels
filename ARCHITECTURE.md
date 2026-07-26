@@ -194,6 +194,8 @@ The Spilman logic is implemented as a structured **Protocol Bridge** (`SpilmanBr
 
 The bridge is **keyless and stateless**. It delegates policy decisions (pricing, storage) and cryptographic operations (ECDH, signing) to the host application via the `SpilmanHost` trait. The host owns the private key; the bridge remains keyless.
 
+Server-side funding validation is available as an explicit validate/record flow. `validate_new_channel_funding` checks channel parameters, funding proofs, policy, and the sender signature without mutating storage. `record_validated_new_channel` commits that validated funding through the host. High-level entry points such as `fund_channel` and `process_payment` remain convenience wrappers that validate then record when they receive first-use funding. Low-level `validate_payment` is side-effect-free and only validates already recorded channels.
+
 ```rust
 trait SpilmanHost<C = String> {
     // Policy
