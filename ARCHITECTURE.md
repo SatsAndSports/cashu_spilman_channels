@@ -168,6 +168,8 @@ By delegating these concerns to a "Host" while keeping the protocol logic in the
 
 A channel stuck in `OpeningFromSwap` can be recovered using the `restore_funding_proofs` method, which uses NUT-09 to fetch the signatures if the swap actually succeeded on the mint's side. If the swap never reached the mint, the original `input_token` remains unspent and can be reclaimed.
 
+Client opening is also available as a Sans-IO-style prepare/complete flow. `prepare_open_channel_from_token` and `prepare_open_channel_from_proofs_with_input_keysets` construct the deterministic channel parameters, opening record, and mint swap request without performing network I/O or storage mutation. The caller then persists the opening record, submits the swap to the mint, completes the mint response, optionally verifies NUT-09 restore, and explicitly marks the channel open. The high-level bridge methods are convenience wrappers around this sequence.
+
 Transitions:
 - `→ Open`: Client funds a channel and registers it via the funding endpoint.
 - `Open → Open`: Normal payment — balance increases, usage is recorded.

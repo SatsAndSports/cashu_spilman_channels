@@ -166,6 +166,17 @@ will be rejected until topped up.
 
 The client-side implementation uses a two-phase opening process to prevent fund loss. If a network failure occurs after the funding swap is submitted, the channel may be stuck in the `OpeningFromSwap` state.
 
+For applications that need to own async runtime behavior, persistence, retries, or proof reservations, the Rust client bridge exposes a Sans-IO-style opening flow:
+
+1. **Prepare** with `prepare_open_channel_from_token` or `prepare_open_channel_from_proofs_with_input_keysets`. This builds channel parameters, the opening record, and the mint swap request without network I/O or storage mutation.
+2. **Persist** the opening record before submitting the swap.
+3. **Submit** the prepared swap request to the mint using application-owned networking.
+4. **Complete** the swap response with `complete_prepared_open_channel`.
+5. **Verify/recover** with `funding_restore_request_for_prepared_open` and `complete_funding_restore_for_prepared_open` when desired.
+6. **Commit** the result with `mark_completed_open`.
+
+The high-level `open_channel_from_*` methods remain convenience wrappers around this same sequence.
+
 Use the `restore_funding_proofs` method to recover:
 
 1. **Attempt Restore**: Re-fetches the signatures from the mint via NUT-09.
