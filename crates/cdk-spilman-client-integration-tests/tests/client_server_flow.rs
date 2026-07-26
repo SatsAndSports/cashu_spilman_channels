@@ -13,9 +13,10 @@ use cashu::nuts::SecretKey;
 use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
 use cdk::Mint;
 use cdk_spilman::{
-    build_cashu_b_token, parse_keyset_info_from_json, ClientChannelState, ClientStorage,
-    ConfigurableClientHost, Payment, PaymentSuccess, ReqwestClientNetworking, SpilmanBridge,
-    SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SqliteClientStorage,
+    build_cashu_b_token, parse_keyset_info_from_json, BridgeError, ClientChannelState,
+    ClientStorage, ConfigurableClientHost, Payment, PaymentSuccess, ReqwestClientNetworking,
+    SpilmanBridge, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
+    SqliteClientStorage,
 };
 use cdk_spilman_client_integration_tests::{
     InMemoryMintNetworking, TestMintHelper, TestServerHost,
@@ -74,6 +75,84 @@ where
     assert_eq!(registration.balance, 0);
     assert!(registration.has_funding());
     process_payment(server_bridge, &registration)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validate_unknown_channel_funding_has_no_storage_side_effects() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        mint_helper.keyset_id(),
+        keyset_info_json.clone(),
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_networking = InMemoryMintNetworking::new(mint_helper.mint());
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+    let proofs = mint_helper.mint_proofs(500).await.unwrap();
+    let token = build_cashu_b_token(
+        "https://test-mint",
+        "sat",
+        &serde_json::to_string(&proofs).unwrap(),
+    )
+    .expect("build token");
+    let open_result = client_bridge
+        .open_channel_from_token(
+            &token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &keyset_info_json,
+            64,
+        )
+        .expect("open channel");
+    let registration = client_bridge
+        .sign_channel_registration(&open_result.channel_id)
+        .expect("sign registration");
+
+    let validated = server_bridge
+        .validate_new_channel_funding(
+            &registration.channel_id,
+            registration.params.as_ref().expect("params"),
+            registration.funding_proofs.as_deref().expect("proofs"),
+            registration.balance,
+            &registration.signature,
+        )
+        .expect("validate funding");
+    assert_eq!(validated.channel_id, open_result.channel_id);
+    assert_eq!(validated.capacity, open_result.capacity);
+    assert!(server_bridge
+        .host()
+        .get_funding(&open_result.channel_id)
+        .is_none());
+
+    let err = server_bridge
+        .validate_payment(
+            &registration.channel_id,
+            registration.balance,
+            &registration.signature,
+            &(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, BridgeError::UnknownChannel));
+    assert!(server_bridge
+        .host()
+        .get_funding(&open_result.channel_id)
+        .is_none());
+
+    process_payment(&server_bridge, &registration);
+    assert!(server_bridge
+        .host()
+        .get_funding(&open_result.channel_id)
+        .is_some());
 }
 
 fn pay_channel<H, N>(

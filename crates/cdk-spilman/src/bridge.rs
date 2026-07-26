@@ -565,6 +565,15 @@ pub struct FundChannelResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ValidatedNewChannel {
+    pub channel_id: String,
+    pub balance: u64,
+    pub capacity: u64,
+    pub sender_signature: String,
+    pub funding: ChannelFunding,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CloseSuccess {
     pub channel_id: String,
     pub total_value: u64,
@@ -995,14 +1004,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         funding_proofs: Option<&[Proof]>,
         context: &C,
     ) -> Result<PaymentSuccess, BridgeError> {
-        let val = self.validate_payment(
-            channel_id,
-            balance,
-            signature,
-            params,
-            funding_proofs,
-            context,
-        )?;
+        self.validate_payment_request(channel_id, signature)?;
+        if self.host.get_funding(channel_id).is_none() {
+            let validated = self.validate_new_channel_funding(
+                channel_id,
+                params.ok_or(BridgeError::UnknownChannel)?,
+                funding_proofs.ok_or(BridgeError::UnknownChannel)?,
+                balance,
+                signature,
+            )?;
+            self.record_validated_new_channel(&validated);
+        }
+        let val = self.validate_payment(channel_id, balance, signature, context)?;
         self.host.record_payment(
             &val.channel_id,
             PaymentProof {
@@ -1057,52 +1070,29 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         balance: u64,
         signature: &str,
-        params: Option<&serde_json::Value>,
-        funding_proofs: Option<&[Proof]>,
         context: &C,
     ) -> Result<PaymentValidationResult, BridgeError> {
-        if channel_id.is_empty() {
-            return Err(BridgeError::InvalidRequest("missing channel_id".into()));
-        }
-        if signature.is_empty() {
-            return Err(BridgeError::InvalidRequest("missing signature".into()));
-        }
-        match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed => return Err(BridgeError::ChannelClosed),
-            ChannelState::Closing => return Err(BridgeError::ChannelClosing),
-            ChannelState::Open => {}
-        }
-        let (funding, is_new) = match self.host.get_funding(channel_id) {
-            Some(f) => (f, false),
-            None => (
-                self.validate_and_save_new_channel(
-                    channel_id,
-                    params.ok_or(BridgeError::UnknownChannel)?,
-                    funding_proofs.ok_or(BridgeError::UnknownChannel)?,
-                    balance,
-                    signature,
-                )?,
-                true,
-            ),
-        };
+        self.validate_payment_request(channel_id, signature)?;
+        let funding = self
+            .host
+            .get_funding(channel_id)
+            .ok_or(BridgeError::UnknownChannel)?;
         let params_val: serde_json::Value = serde_json::from_str(&funding.params_json)
             .map_err(|e| BridgeError::Internal(e.to_string()))?;
         let capacity = params_val["capacity"].as_u64().unwrap_or(0);
-        if !is_new {
-            if balance > capacity {
-                return Err(BridgeError::BalanceExceedsCapacity { balance, capacity });
-            }
-            self.verify_signature(
-                &funding.params_json,
-                &funding.funding_proofs_json,
-                &funding.channel_secret_hex,
-                &funding.keyset_info_json,
-                channel_id,
-                balance,
-                signature,
-            )
-            .map_err(BridgeError::InvalidSignature)?;
+        if balance > capacity {
+            return Err(BridgeError::BalanceExceedsCapacity { balance, capacity });
         }
+        self.verify_signature(
+            &funding.params_json,
+            &funding.funding_proofs_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+            channel_id,
+            balance,
+            signature,
+        )
+        .map_err(BridgeError::InvalidSignature)?;
         let amount_due = self.host.get_amount_due(channel_id, Some(context));
         if balance < amount_due {
             return Err(BridgeError::InsufficientBalance {
@@ -1126,14 +1116,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     ) -> Result<PaymentValidationResult, BridgeError> {
         let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
-        self.validate_payment(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.validate_payment(&p.channel_id, p.balance, &p.signature, context)
     }
 
     pub fn validate_payment_via_base64_header(
@@ -1142,38 +1125,21 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         context: &C,
     ) -> Result<PaymentValidationResult, BridgeError> {
         let p = Self::decode_payment_header(base64_header)?;
-        self.validate_payment(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.validate_payment(&p.channel_id, p.balance, &p.signature, context)
     }
 
     /// Verify that a payment covers the current amount due.
     ///
     /// This performs full validation (including signature checks) and returns the
-    /// computed amount_due on success. It does NOT record usage, but may save
-    /// funding data for new channels (same behavior as validate_payment).
+    /// computed amount_due on success. It does not record usage or save funding.
     pub fn verify_payment_covers_amount_due(
         &self,
         channel_id: &str,
         balance: u64,
         signature: &str,
-        params: Option<&serde_json::Value>,
-        funding_proofs: Option<&[Proof]>,
         context: &C,
     ) -> Result<u64, BridgeError> {
-        let val = self.validate_payment(
-            channel_id,
-            balance,
-            signature,
-            params,
-            funding_proofs,
-            context,
-        )?;
+        let val = self.validate_payment(channel_id, balance, signature, context)?;
         Ok(val.amount_due)
     }
 
@@ -1184,14 +1150,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     ) -> Result<u64, BridgeError> {
         let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
-        self.verify_payment_covers_amount_due(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.verify_payment_covers_amount_due(&p.channel_id, p.balance, &p.signature, context)
     }
 
     pub fn verify_payment_covers_amount_due_via_base64_header(
@@ -1200,14 +1159,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         context: &C,
     ) -> Result<u64, BridgeError> {
         let p = Self::decode_payment_header(base64_header)?;
-        self.verify_payment_covers_amount_due(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.verify_payment_covers_amount_due(&p.channel_id, p.balance, &p.signature, context)
     }
 
     /// Return true if the payment covers the amount due.
@@ -1219,18 +1171,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         balance: u64,
         signature: &str,
-        params: Option<&serde_json::Value>,
-        funding_proofs: Option<&[Proof]>,
         context: &C,
     ) -> Result<bool, BridgeError> {
-        match self.verify_payment_covers_amount_due(
-            channel_id,
-            balance,
-            signature,
-            params,
-            funding_proofs,
-            context,
-        ) {
+        match self.verify_payment_covers_amount_due(channel_id, balance, signature, context) {
             Ok(_) => Ok(true),
             Err(BridgeError::InsufficientBalance { .. }) => Ok(false),
             Err(e) => Err(e),
@@ -1244,14 +1187,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     ) -> Result<bool, BridgeError> {
         let p: Payment = serde_json::from_str(payment_json)
             .map_err(|e| BridgeError::InvalidRequest(e.to_string()))?;
-        self.payment_covers_amount_due(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.payment_covers_amount_due(&p.channel_id, p.balance, &p.signature, context)
     }
 
     pub fn payment_covers_amount_due_via_base64_header(
@@ -1260,14 +1196,25 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         context: &C,
     ) -> Result<bool, BridgeError> {
         let p = Self::decode_payment_header(base64_header)?;
-        self.payment_covers_amount_due(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            context,
-        )
+        self.payment_covers_amount_due(&p.channel_id, p.balance, &p.signature, context)
+    }
+
+    fn validate_payment_request(
+        &self,
+        channel_id: &str,
+        signature: &str,
+    ) -> Result<(), BridgeError> {
+        if channel_id.is_empty() {
+            return Err(BridgeError::InvalidRequest("missing channel_id".into()));
+        }
+        if signature.is_empty() {
+            return Err(BridgeError::InvalidRequest("missing signature".into()));
+        }
+        match self.host.get_channel_state(channel_id) {
+            ChannelState::Closed => Err(BridgeError::ChannelClosed),
+            ChannelState::Closing => Err(BridgeError::ChannelClosing),
+            ChannelState::Open => Ok(()),
+        }
     }
 
     pub fn fund_channel(
@@ -1292,13 +1239,19 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         let (funding, already_known) = match self.host.get_funding(channel_id) {
             Some(f) => (f, true),
             None => (
-                self.validate_and_save_new_channel(
-                    channel_id,
-                    params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
-                    funding_proofs.ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
-                    balance,
-                    signature,
-                )?,
+                {
+                    let validated = self.validate_new_channel_funding(
+                        channel_id,
+                        params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
+                        funding_proofs
+                            .ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
+                        balance,
+                        signature,
+                    )?;
+                    let funding = validated.funding.clone();
+                    self.record_validated_new_channel(&validated);
+                    funding
+                },
                 false,
             ),
         };
@@ -1350,14 +1303,14 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         )
     }
 
-    fn validate_and_save_new_channel(
+    pub fn validate_new_channel_funding(
         &self,
         channel_id: &str,
         params_val: &serde_json::Value,
         proofs: &[Proof],
         balance: u64,
         signature: &str,
-    ) -> Result<ChannelFunding, BridgeError> {
+    ) -> Result<ValidatedNewChannel, BridgeError> {
         let unit = params_val["unit"]
             .as_str()
             .ok_or(BridgeError::InvalidRequest("Missing unit".into()))?;
@@ -1474,15 +1427,24 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             channel_secret_hex,
             keyset_info_json,
         };
+        Ok(ValidatedNewChannel {
+            channel_id: channel_id.to_string(),
+            balance,
+            capacity,
+            sender_signature: signature.to_string(),
+            funding,
+        })
+    }
+
+    pub fn record_validated_new_channel(&self, validated: &ValidatedNewChannel) {
         self.host.save_funding(
-            channel_id,
-            funding.clone(),
+            &validated.channel_id,
+            validated.funding.clone(),
             PaymentProof {
-                balance,
-                signature: signature.to_string(),
+                balance: validated.balance,
+                signature: validated.sender_signature.clone(),
             },
         );
-        Ok(funding)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1635,13 +1597,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
         let funding = match self.host.get_funding(channel_id) {
             Some(f) => f,
-            None => self.validate_and_save_new_channel(
-                channel_id,
-                params.ok_or(BridgeError::UnknownChannel)?,
-                funding_proofs.ok_or(BridgeError::UnknownChannel)?,
-                balance,
-                signature,
-            )?,
+            None => {
+                let validated = self.validate_new_channel_funding(
+                    channel_id,
+                    params.ok_or(BridgeError::UnknownChannel)?,
+                    funding_proofs.ok_or(BridgeError::UnknownChannel)?,
+                    balance,
+                    signature,
+                )?;
+                let funding = validated.funding.clone();
+                self.record_validated_new_channel(&validated);
+                funding
+            }
         };
         let out_keyset = self.select_close_output_keyset_from_funding(&funding)?;
         self.prepare_close_data_impl(

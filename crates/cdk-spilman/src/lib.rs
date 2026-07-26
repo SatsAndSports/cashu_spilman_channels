@@ -58,7 +58,7 @@ pub use bridge::{
     ChannelPolicy, ChannelState, CloseData, CloseError, ClosePreparationError, CloseSuccess,
     ClosingData, FundChannelResult, Payment, PaymentProof, PaymentSuccess, PaymentValidationResult,
     PreparedClose, SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost,
-    SpilmanKeysetRefresher, SpilmanMintClient, UnblindResult,
+    SpilmanKeysetRefresher, SpilmanMintClient, UnblindResult, ValidatedNewChannel,
 };
 pub use client_bridge::{
     base64_decode, ClientChannelInfo, OpenChannelError, OpenChannelFailureStage, OpenChannelResult,
