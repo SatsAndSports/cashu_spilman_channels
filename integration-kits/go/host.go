@@ -285,13 +285,16 @@ type mintKeysetInfo struct {
 }
 
 func (h *BaseSpilmanHost) fetchAllKeysets(mintUrl string) ([]mintKeysetInfo, error) {
-	// Implementation similar to main.go's fetchAllKeysetsFromMint
-	// I'll simplify for brevity but keep the essential steps
-	resp, err := http.Get(mintUrl + "/v1/keysets")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(mintUrl + "/v1/keysets")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GET %s/v1/keysets failed: status %d: %s", mintUrl, resp.StatusCode, string(body))
+	}
 	var data struct {
 		Keysets []struct {
 			Id, Unit    string
@@ -299,7 +302,9 @@ func (h *BaseSpilmanHost) fetchAllKeysets(mintUrl string) ([]mintKeysetInfo, err
 			InputFeePpk uint64 `json:"input_fee_ppk"`
 		}
 	}
-	json.NewDecoder(resp.Body).Decode(&data)
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decode %s/v1/keysets: %w", mintUrl, err)
+	}
 
 	var res []mintKeysetInfo
 	for _, k := range data.Keysets {
@@ -308,17 +313,26 @@ func (h *BaseSpilmanHost) fetchAllKeysets(mintUrl string) ([]mintKeysetInfo, err
 			continue
 		}
 
-		kresp, _ := http.Get(fmt.Sprintf("%s/v1/keys/%s", mintUrl, k.Id))
-		if kresp == nil {
-			continue
+		keysUrl := fmt.Sprintf("%s/v1/keys/%s", mintUrl, k.Id)
+		kresp, err := client.Get(keysUrl)
+		if err != nil {
+			return nil, err
+		}
+		if kresp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(kresp.Body)
+			kresp.Body.Close()
+			return nil, fmt.Errorf("GET %s failed: status %d: %s", keysUrl, kresp.StatusCode, string(body))
 		}
 		var kdata struct {
 			Keysets []struct{ Keys map[string]string }
 		}
-		json.NewDecoder(kresp.Body).Decode(&kdata)
+		if err := json.NewDecoder(kresp.Body).Decode(&kdata); err != nil {
+			kresp.Body.Close()
+			return nil, fmt.Errorf("decode %s: %w", keysUrl, err)
+		}
 		kresp.Body.Close()
 		if len(kdata.Keysets) == 0 {
-			continue
+			return nil, fmt.Errorf("%s response contained no keysets", keysUrl)
 		}
 
 		info := map[string]interface{}{

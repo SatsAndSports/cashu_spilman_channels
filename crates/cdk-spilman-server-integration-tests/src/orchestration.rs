@@ -311,7 +311,7 @@ impl ServerProcess {
         };
 
         let base_url = format!("http://localhost:{}", port);
-        let server = Self {
+        let mut server = Self {
             child,
             port,
             base_url,
@@ -439,12 +439,24 @@ impl ServerProcess {
     fn spawn_go_server(root: &Path, port: u16, mint_url: &str) -> Result<GroupChild> {
         let server_dir = root.join("examples/go-ascii-art");
         let ld_library_path = root.join("target/debug");
+        let binary = server_dir.join("ascii-art");
 
-        Command::new("go")
-            .args(["run", "-tags", "spilman_dev", ".", "server"])
+        let status = Command::new("go")
+            .args(["build", "-tags", "spilman_dev", "-o", "ascii-art", "."])
+            .env("LD_LIBRARY_PATH", &ld_library_path)
+            .current_dir(&server_dir)
+            .status()
+            .context("Failed to build Go server")?;
+        if !status.success() {
+            return Err(anyhow!("go build failed for Go server"));
+        }
+
+        Command::new(&binary)
+            .arg("server")
             .env("PORT", port.to_string())
             .env("MINT_URL", mint_url)
             .env("LD_LIBRARY_PATH", &ld_library_path)
+            .env("CONFIG_PATH", server_dir.join("config.yaml"))
             .current_dir(&server_dir)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -453,11 +465,21 @@ impl ServerProcess {
     }
 
     /// Wait for the server to be ready by polling /channel/params
-    async fn wait_for_ready(&self) -> Result<()> {
+    async fn wait_for_ready(&mut self) -> Result<()> {
         let client = reqwest::Client::new();
         let params_url = format!("{}/channel/params", self.base_url);
 
         for i in 0..60 {
+            if let Some(status) = self.child.try_wait().with_context(|| {
+                format!("failed to poll {} server process", self.server_type.name())
+            })? {
+                return Err(anyhow!(
+                    "{} server exited before readiness check completed: {}",
+                    self.server_type.name(),
+                    status
+                ));
+            }
+
             match client.get(&params_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::info!(

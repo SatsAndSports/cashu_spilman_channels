@@ -30,7 +30,10 @@ func getEnv(k, fb string) string {
 }
 
 func runServer() {
-	ctx, _ := spilmankit.LoadFromYaml(CONFIG_PATH, SECRET_KEY)
+	ctx, err := spilmankit.LoadFromYaml(CONFIG_PATH, SECRET_KEY)
+	if err != nil {
+		log.Fatalf("failed to load Spilman config %s: %v", CONFIG_PATH, err)
+	}
 	defer ctx.Free()
 
 	spilmankit.RegisterManagementRoutes(http.DefaultServeMux, ctx)
@@ -80,7 +83,9 @@ func runServer() {
 
 	log.Printf("Go Server listening on :%s (Pubkey: %s)\n", PORT, spilmankit.GetServerPubkey(SECRET_KEY))
 	fmt.Println("Server is ready.")
-	http.ListenAndServe(":"+PORT, nil)
+	if err := http.ListenAndServe(":"+PORT, nil); err != nil {
+		log.Fatalf("Go server failed: %v", err)
+	}
 }
 
 func runClient(args []string) {
