@@ -13,10 +13,10 @@ use cashu::nuts::SecretKey;
 use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
 use cdk::Mint;
 use cdk_spilman::{
-    build_cashu_b_token, parse_keyset_info_from_json, BridgeError, ClientChannelState,
-    ClientStorage, ConfigurableClientHost, Payment, PaymentSuccess, ReqwestClientNetworking,
-    SpilmanBridge, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking, SpilmanHost,
-    SqliteClientStorage,
+    build_cashu_b_token, parse_keyset_info_from_json, BridgeError, ChannelState,
+    ClientChannelState, ClientStorage, CompletedClose, ConfigurableClientHost, Payment,
+    PaymentSuccess, ReqwestClientNetworking, SpilmanBridge, SpilmanClientBridge, SpilmanClientHost,
+    SpilmanClientNetworking, SpilmanHost, SqliteClientStorage,
 };
 use cdk_spilman_client_integration_tests::{
     InMemoryMintNetworking, TestMintHelper, TestServerHost,
@@ -148,11 +148,136 @@ async fn validate_unknown_channel_funding_has_no_storage_side_effects() {
         .get_funding(&open_result.channel_id)
         .is_none());
 
+    let close_err = server_bridge
+        .prepare_cooperative_close_transition(&serde_json::to_string(&registration).unwrap())
+        .unwrap_err();
+    assert_eq!(close_err.status, 404);
+    assert!(server_bridge
+        .host()
+        .get_funding(&open_result.channel_id)
+        .is_none());
+
     process_payment(&server_bridge, &registration);
     assert!(server_bridge
         .host()
         .get_funding(&open_result.channel_id)
         .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_cooperative_close_transition_does_not_mark_closing() {
+    let mint_helper = TestMintHelper::new().await.unwrap();
+    let keyset_info_json = mint_helper.keyset_info_json().unwrap();
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(
+        "https://test-mint",
+        mint_helper.keyset_id(),
+        keyset_info_json.clone(),
+    );
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_networking = InMemoryMintNetworking::new(mint_helper.mint());
+    let server_networking = InMemoryMintNetworking::new(mint_helper.mint());
+    let client_bridge = SpilmanClientBridge::new(client_host, client_networking);
+
+    let proofs = mint_helper.mint_proofs(500).await.unwrap();
+    let token = build_cashu_b_token(
+        "https://test-mint",
+        "sat",
+        &serde_json::to_string(&proofs).unwrap(),
+    )
+    .expect("build token");
+    let open_result = client_bridge
+        .open_channel_from_token(
+            &token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &keyset_info_json,
+            64,
+        )
+        .expect("open channel");
+
+    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
+    assert_eq!(
+        server_bridge
+            .host()
+            .get_channel_state(&open_result.channel_id),
+        ChannelState::Open
+    );
+
+    let close_request = client_bridge
+        .sign_cooperative_close_request(&open_result.channel_id, 0)
+        .expect("sign close");
+    let transition = server_bridge
+        .prepare_cooperative_close_transition(&serde_json::to_string(&close_request).unwrap())
+        .expect("prepare close transition");
+
+    assert_eq!(transition.prepared_close.channel_id, open_result.channel_id);
+    assert_eq!(transition.payment.balance, 0);
+    assert_eq!(
+        server_bridge
+            .host()
+            .get_channel_state(&open_result.channel_id),
+        ChannelState::Open
+    );
+
+    let close_before_closing = CompletedClose {
+        channel_id: open_result.channel_id.clone(),
+        expiry_timestamp: transition.expiry_timestamp,
+        balance: transition.prepared_close.balance,
+        receiver_proofs_json: "[]".to_string(),
+        sender_proofs_json: "[]".to_string(),
+        receiver_sum: 0,
+        sender_sum: 0,
+    };
+    let err = server_bridge
+        .mark_completed_close(&close_before_closing)
+        .unwrap_err();
+    assert!(err.to_string().contains("Not closing"));
+
+    server_bridge
+        .mark_prepared_close_closing(&transition)
+        .expect("mark closing");
+    assert_eq!(
+        server_bridge
+            .host()
+            .get_channel_state(&open_result.channel_id),
+        ChannelState::Closing
+    );
+
+    let mint_response = cdk_spilman::SpilmanMintClient::call_mint_swap(
+        &server_networking,
+        &transition.prepared_close.mint_url,
+        &transition.prepared_close.swap_request.to_string(),
+    )
+    .expect("mint swap");
+    let completed = server_bridge
+        .complete_prepared_close(&mint_response, &transition.prepared_close)
+        .expect("complete close");
+    assert_eq!(completed.channel_id, open_result.channel_id);
+    assert_eq!(
+        server_bridge
+            .host()
+            .get_channel_state(&open_result.channel_id),
+        ChannelState::Closing
+    );
+
+    let success = server_bridge
+        .mark_completed_close(&completed)
+        .expect("mark closed");
+    assert_eq!(success.channel_id, open_result.channel_id);
+    assert_eq!(
+        server_bridge
+            .host()
+            .get_channel_state(&open_result.channel_id),
+        ChannelState::Closed
+    );
 }
 
 fn pay_channel<H, N>(

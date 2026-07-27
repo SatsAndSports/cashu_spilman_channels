@@ -154,6 +154,15 @@ to commit it. `validate_payment` itself is side-effect-free and only validates
 channels that are already recorded; high-level `fund_channel` and
 `process_payment` remain validate-and-record convenience wrappers.
 
+Server close execution can also be split into caller-owned steps. Use
+`prepare_cooperative_close_transition` or `prepare_unilateral_close_transition`
+to build the close swap and pending closing-state update without mutating state,
+then call `mark_prepared_close_closing` before submitting the swap to the mint.
+After the mint responds, call `complete_prepared_close` to verify and unblind the
+response without marking the channel closed, then `mark_completed_close` to
+persist the final closed state. The high-level `execute_*_close` methods still
+perform the full sequence for simple integrations.
+
 ---
 
 ## State Management

@@ -339,6 +339,26 @@ pub struct PreparedClose {
     pub channel_secret: String,
 }
 
+/// Prepared close plus the host state transition data needed before mint I/O.
+#[derive(Debug, Clone)]
+pub struct PreparedCloseTransition {
+    pub prepared_close: PreparedClose,
+    pub expiry_timestamp: u64,
+    pub payment: PaymentProof,
+}
+
+/// Result of completing a close mint response before marking the channel closed.
+#[derive(Debug, Clone)]
+pub struct CompletedClose {
+    pub channel_id: String,
+    pub expiry_timestamp: u64,
+    pub balance: u64,
+    pub receiver_proofs_json: String,
+    pub sender_proofs_json: String,
+    pub receiver_sum: u64,
+    pub sender_sum: u64,
+}
+
 /// HTTP-friendly error for close preparation.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClosePreparationError {
@@ -685,6 +705,13 @@ impl CloseError {
 
 fn parse_mint_error_value(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+}
+
+fn close_expiry_timestamp(prep: &PreparedClose) -> u64 {
+    serde_json::from_str::<serde_json::Value>(&prep.params_json).unwrap_or_default()
+        ["expiry_timestamp"]
+        .as_u64()
+        .unwrap_or(0)
 }
 
 /// Determine if a swap error should trigger a retry (refresh keysets + re-attempt).
@@ -1588,28 +1615,15 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         balance: u64,
         signature: &str,
-        params: Option<&serde_json::Value>,
-        funding_proofs: Option<&[Proof]>,
         validate_due: bool,
     ) -> Result<CloseData, BridgeError> {
         if self.host.get_channel_state(channel_id) == ChannelState::Closed {
             return Err(BridgeError::ChannelClosed);
         }
-        let funding = match self.host.get_funding(channel_id) {
-            Some(f) => f,
-            None => {
-                let validated = self.validate_new_channel_funding(
-                    channel_id,
-                    params.ok_or(BridgeError::UnknownChannel)?,
-                    funding_proofs.ok_or(BridgeError::UnknownChannel)?,
-                    balance,
-                    signature,
-                )?;
-                let funding = validated.funding.clone();
-                self.record_validated_new_channel(&validated);
-                funding
-            }
-        };
+        let funding = self
+            .host
+            .get_funding(channel_id)
+            .ok_or(BridgeError::UnknownChannel)?;
         let out_keyset = self.select_close_output_keyset_from_funding(&funding)?;
         self.prepare_close_data_impl(
             channel_id,
@@ -1741,14 +1755,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if p.signature.is_empty() {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
-        self.prepare_close_data(
-            &p.channel_id,
-            p.balance,
-            &p.signature,
-            p.params.as_ref(),
-            p.funding_proofs.as_deref(),
-            true,
-        )
+        self.prepare_close_data(&p.channel_id, p.balance, &p.signature, true)
     }
 
     pub fn create_unilateral_close_data(&self, channel_id: &str) -> Result<CloseData, BridgeError> {
@@ -1759,7 +1766,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .host
             .get_balance_and_signature_for_unilateral_exit(channel_id)
             .ok_or_else(|| BridgeError::InvalidRequest("No payment proof".into()))?;
-        self.prepare_close_data(channel_id, p.balance, &p.signature, None, None, false)
+        self.prepare_close_data(channel_id, p.balance, &p.signature, false)
     }
 
     pub fn prepare_cooperative_close_for_execution(
@@ -1799,6 +1806,56 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .get_balance_and_signature_for_unilateral_exit(channel_id)
             .ok_or_else(|| ClosePreparationError::internal("Missing payment"))?;
         Self::wrap_close_data(close_data, channel_id, p.balance, funding)
+    }
+
+    pub fn prepare_cooperative_close_transition(
+        &self,
+        json: &str,
+    ) -> Result<PreparedCloseTransition, ClosePreparationError> {
+        let prepared_close = self.prepare_cooperative_close_for_execution(json)?;
+        let expiry_timestamp = close_expiry_timestamp(&prepared_close);
+        let sig = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default()["signature"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        Ok(PreparedCloseTransition {
+            payment: PaymentProof {
+                balance: prepared_close.balance,
+                signature: sig,
+            },
+            expiry_timestamp,
+            prepared_close,
+        })
+    }
+
+    pub fn prepare_unilateral_close_transition(
+        &self,
+        channel_id: &str,
+    ) -> Result<PreparedCloseTransition, ClosePreparationError> {
+        let prepared_close = self.prepare_unilateral_close_for_execution(channel_id)?;
+        let expiry_timestamp = close_expiry_timestamp(&prepared_close);
+        let payment = self
+            .host
+            .get_balance_and_signature_for_unilateral_exit(channel_id)
+            .ok_or_else(|| ClosePreparationError::bad_request("No payment"))?;
+        Ok(PreparedCloseTransition {
+            prepared_close,
+            expiry_timestamp,
+            payment,
+        })
+    }
+
+    pub fn mark_prepared_close_closing(
+        &self,
+        transition: &PreparedCloseTransition,
+    ) -> Result<(), CloseError> {
+        self.host
+            .mark_channel_closing(
+                &transition.prepared_close.channel_id,
+                transition.expiry_timestamp,
+                transition.payment.clone(),
+            )
+            .map_err(CloseError::storage_failed)
     }
 
     fn prepare_close_for_closing_channel_with_keyset(
@@ -1883,14 +1940,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Ok(proof)
     }
 
-    fn finalize_close(
+    pub fn complete_prepared_close(
         &self,
-        channel_id: &str,
-        expiry_timestamp: u64,
-        payment: PaymentProof,
         resp_json: &str,
         prep: &PreparedClose,
-    ) -> Result<CloseSuccess, CloseError> {
+    ) -> Result<CompletedClose, CloseError> {
         use super::parse_keyset_info_from_json;
         use cashu::nuts::SecretKey;
         use cashu::secret::Secret;
@@ -2010,7 +2064,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             secrets_with_blinding,
             &params,
             &output_keyset_info,
-            payment.balance,
+            prep.balance,
         )
         .map_err(|e| CloseError::UnblindFailed {
             reason: e.to_string(),
@@ -2032,25 +2086,59 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             serde_json::to_string(&signed_receiver_proofs).unwrap_or_default();
         let sender_proofs_json = serde_json::to_string(&sender_proofs).unwrap_or_default();
 
+        let expiry_timestamp = close_expiry_timestamp(prep);
+
+        Ok(CompletedClose {
+            channel_id: prep.channel_id.clone(),
+            expiry_timestamp,
+            balance: prep.balance,
+            receiver_proofs_json,
+            sender_proofs_json,
+            receiver_sum: r_sum,
+            sender_sum: s_sum,
+        })
+    }
+
+    pub fn mark_completed_close(
+        &self,
+        completed: &CompletedClose,
+    ) -> Result<CloseSuccess, CloseError> {
+        if self.host.get_channel_state(&completed.channel_id) != ChannelState::Closing {
+            return Err(CloseError::ValidationFailed {
+                reason: "Not closing".into(),
+                status: 400,
+                expected_balance: None,
+                actual_balance: None,
+            });
+        }
         self.host
             .mark_channel_closed(
-                channel_id,
-                expiry_timestamp,
-                payment.balance,
-                &receiver_proofs_json,
-                &sender_proofs_json,
-                r_sum,
-                s_sum,
+                &completed.channel_id,
+                completed.expiry_timestamp,
+                completed.balance,
+                &completed.receiver_proofs_json,
+                &completed.sender_proofs_json,
+                completed.receiver_sum,
+                completed.sender_sum,
             )
             .map_err(CloseError::storage_failed)?;
         Ok(CloseSuccess {
-            channel_id: channel_id.to_string(),
-            total_value: r_sum + s_sum,
-            receiver_sum: r_sum,
-            sender_sum: s_sum,
-            sender_proofs: sender_proofs_json,
+            channel_id: completed.channel_id.clone(),
+            total_value: completed.receiver_sum + completed.sender_sum,
+            receiver_sum: completed.receiver_sum,
+            sender_sum: completed.sender_sum,
+            sender_proofs: completed.sender_proofs_json.clone(),
             already_closed: false,
         })
+    }
+
+    fn finalize_close(
+        &self,
+        resp_json: &str,
+        prep: &PreparedClose,
+    ) -> Result<CloseSuccess, CloseError> {
+        let completed = self.complete_prepared_close(resp_json, prep)?;
+        self.mark_completed_close(&completed)
     }
 
     fn close_retry_result(
@@ -2186,16 +2274,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         );
         let success =
             Self::close_retry_result(result, first_rejection.into_inner().unwrap_or_default())?;
-        self.finalize_close(
-            channel_id,
-            cd.expiry_timestamp,
-            PaymentProof {
-                balance: cd.balance,
-                signature: cd.signature,
-            },
-            &success.value,
-            &success.attempt,
-        )
+        self.finalize_close(&success.value, &success.attempt)
     }
 
     pub async fn execute_close_for_closing_channel_async<
@@ -2294,16 +2373,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         .await;
         let success =
             Self::close_retry_result(result, first_rejection.into_inner().unwrap_or_default())?;
-        self.finalize_close(
-            channel_id,
-            cd.expiry_timestamp,
-            PaymentProof {
-                balance: cd.balance,
-                signature: cd.signature,
-            },
-            &success.value,
-            &success.attempt,
-        )
+        self.finalize_close(&success.value, &success.attempt)
     }
 
     pub fn execute_cooperative_close<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
@@ -2312,28 +2382,16 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        let prep = self
-            .prepare_cooperative_close_for_execution(json)
+        self.record_cooperative_close_first_use_funding(json)?;
+        let transition = self
+            .prepare_cooperative_close_transition(json)
             .map_err(CloseError::from_preparation_error)?;
-        let expiry_timestamp = serde_json::from_str::<serde_json::Value>(&prep.params_json)
-            .unwrap_or_default()["expiry_timestamp"]
-            .as_u64()
-            .unwrap_or(0);
-        let sig = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default()["signature"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        self.host
-            .mark_channel_closing(
-                &prep.channel_id,
-                expiry_timestamp,
-                PaymentProof {
-                    balance: prep.balance,
-                    signature: sig,
-                },
-            )
-            .map_err(CloseError::storage_failed)?;
-        self.execute_close_for_closing_channel(&prep.channel_id, mint_client, keyset_refresher)
+        self.mark_prepared_close_closing(&transition)?;
+        self.execute_close_for_closing_channel(
+            &transition.prepared_close.channel_id,
+            mint_client,
+            keyset_refresher,
+        )
     }
 
     pub async fn execute_cooperative_close_async<
@@ -2345,29 +2403,13 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        let prep = self
-            .prepare_cooperative_close_for_execution(json)
+        self.record_cooperative_close_first_use_funding(json)?;
+        let transition = self
+            .prepare_cooperative_close_transition(json)
             .map_err(CloseError::from_preparation_error)?;
-        let expiry_timestamp = serde_json::from_str::<serde_json::Value>(&prep.params_json)
-            .unwrap_or_default()["expiry_timestamp"]
-            .as_u64()
-            .unwrap_or(0);
-        let sig = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default()["signature"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        self.host
-            .mark_channel_closing(
-                &prep.channel_id,
-                expiry_timestamp,
-                PaymentProof {
-                    balance: prep.balance,
-                    signature: sig,
-                },
-            )
-            .map_err(CloseError::storage_failed)?;
+        self.mark_prepared_close_closing(&transition)?;
         self.execute_close_for_closing_channel_async(
-            &prep.channel_id,
+            &transition.prepared_close.channel_id,
             mint_client,
             keyset_refresher,
         )
@@ -2380,25 +2422,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        let prep = self
-            .prepare_unilateral_close_for_execution(channel_id)
+        let transition = self
+            .prepare_unilateral_close_transition(channel_id)
             .map_err(CloseError::from_preparation_error)?;
-        let expiry_timestamp = serde_json::from_str::<serde_json::Value>(&prep.params_json)
-            .unwrap_or_default()["expiry_timestamp"]
-            .as_u64()
-            .unwrap_or(0);
-        let p = self
-            .host
-            .get_balance_and_signature_for_unilateral_exit(channel_id)
-            .ok_or_else(|| CloseError::ValidationFailed {
-                reason: "No payment".into(),
-                status: 400,
-                expected_balance: None,
-                actual_balance: None,
-            })?;
-        self.host
-            .mark_channel_closing(channel_id, expiry_timestamp, p)
-            .map_err(CloseError::storage_failed)?;
+        self.mark_prepared_close_closing(&transition)?;
         self.execute_close_for_closing_channel(channel_id, mint_client, keyset_refresher)
     }
 
@@ -2411,27 +2438,43 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        let prep = self
-            .prepare_unilateral_close_for_execution(channel_id)
+        let transition = self
+            .prepare_unilateral_close_transition(channel_id)
             .map_err(CloseError::from_preparation_error)?;
-        let expiry_timestamp = serde_json::from_str::<serde_json::Value>(&prep.params_json)
-            .unwrap_or_default()["expiry_timestamp"]
-            .as_u64()
-            .unwrap_or(0);
-        let p = self
-            .host
-            .get_balance_and_signature_for_unilateral_exit(channel_id)
-            .ok_or_else(|| CloseError::ValidationFailed {
-                reason: "No payment".into(),
-                status: 400,
-                expected_balance: None,
-                actual_balance: None,
-            })?;
-        self.host
-            .mark_channel_closing(channel_id, expiry_timestamp, p)
-            .map_err(CloseError::storage_failed)?;
+        self.mark_prepared_close_closing(&transition)?;
         self.execute_close_for_closing_channel_async(channel_id, mint_client, keyset_refresher)
             .await
+    }
+
+    fn record_cooperative_close_first_use_funding(&self, json: &str) -> Result<(), CloseError> {
+        let p: Payment = serde_json::from_str(json).map_err(|e| {
+            CloseError::from_preparation_error(ClosePreparationError::bad_request(e.to_string()))
+        })?;
+        if p.channel_id.is_empty() || p.signature.is_empty() {
+            return Ok(());
+        }
+        if self.host.get_funding(&p.channel_id).is_some() {
+            return Ok(());
+        }
+        let Some(params) = p.params.as_ref() else {
+            return Ok(());
+        };
+        let Some(funding_proofs) = p.funding_proofs.as_deref() else {
+            return Ok(());
+        };
+        let validated = self
+            .validate_new_channel_funding(
+                &p.channel_id,
+                params,
+                funding_proofs,
+                p.balance,
+                &p.signature,
+            )
+            .map_err(|e| {
+                CloseError::from_preparation_error(ClosePreparationError::from_bridge_error(e))
+            })?;
+        self.record_validated_new_channel(&validated);
+        Ok(())
     }
 }
 

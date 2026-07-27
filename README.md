@@ -16,7 +16,7 @@ Experimental protocol. APIs and data models are subject to breaking changes.
 - **Privacy**: Uses P2BK (Pay-to-Blinded-Key) to prevent mint correlation.
 - **Portability**: Core protocol in Rust with bindings for WASM (JS/TS), Python, and Go.
 - **Deterministic**: Both parties independently compute commitment outputs using a common `_channel secret_`.
-- **Sans-IO Primitives**: Client channel opening exposes prepare/complete steps, and server funding exposes separate validate/record steps, so applications can own networking, persistence, retry, and recovery policy.
+- **Sans-IO Primitives**: Client channel opening, server funding validation, and server close completion expose explicit prepare/validate/complete/record steps so applications can own networking, persistence, retry, and recovery policy.
 
 ---
 

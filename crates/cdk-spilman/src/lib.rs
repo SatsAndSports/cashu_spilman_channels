@@ -56,9 +56,10 @@ pub use bindings::{
 pub use bridge::{
     unblind_and_verify_stage1_response, BridgeError, BridgeErrorResponse, ChannelFunding,
     ChannelPolicy, ChannelState, CloseData, CloseError, ClosePreparationError, CloseSuccess,
-    ClosingData, FundChannelResult, Payment, PaymentProof, PaymentSuccess, PaymentValidationResult,
-    PreparedClose, SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost,
-    SpilmanKeysetRefresher, SpilmanMintClient, UnblindResult, ValidatedNewChannel,
+    ClosingData, CompletedClose, FundChannelResult, Payment, PaymentProof, PaymentSuccess,
+    PaymentValidationResult, PreparedClose, PreparedCloseTransition, SpilmanAsyncKeysetRefresher,
+    SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost, SpilmanKeysetRefresher, SpilmanMintClient,
+    UnblindResult, ValidatedNewChannel,
 };
 pub use client_bridge::{
     base64_decode, ClientChannelInfo, OpenChannelError, OpenChannelFailureStage, OpenChannelResult,

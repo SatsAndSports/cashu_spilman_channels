@@ -196,6 +196,8 @@ The bridge is **keyless and stateless**. It delegates policy decisions (pricing,
 
 Server-side funding validation is available as an explicit validate/record flow. `validate_new_channel_funding` checks channel parameters, funding proofs, policy, and the sender signature without mutating storage. `record_validated_new_channel` commits that validated funding through the host. High-level entry points such as `fund_channel` and `process_payment` remain convenience wrappers that validate then record when they receive first-use funding. Low-level `validate_payment` is side-effect-free and only validates already recorded channels.
 
+Server-side closing is likewise exposed as explicit steps. `prepare_cooperative_close_transition` and `prepare_unilateral_close_transition` build a signed `PreparedClose` and the pending closing-state transition without marking the channel closing. `mark_prepared_close_closing` commits that transition before mint I/O. After the caller submits the prepared swap to the mint, `complete_prepared_close` verifies and unblinds the mint response without marking the channel closed, and `mark_completed_close` commits the final closed state. High-level `execute_*_close` methods remain convenience wrappers around this sequence.
+
 ```rust
 trait SpilmanHost<C = String> {
     // Policy
