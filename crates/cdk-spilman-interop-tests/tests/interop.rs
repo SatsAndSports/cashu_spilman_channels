@@ -39,6 +39,8 @@ use cdk_sqlite::wallet::memory;
 use rand::random;
 
 const DEFAULT_TEST_FEE_PPK: u64 = 400;
+const REFUND_TEST_EXPIRY_DELAY_SECS: u64 = 10;
+const REFUND_TEST_EXPIRY_SLEEP_SECS: u64 = 12;
 
 struct TestMintHelper {
     mint: Mint,
@@ -794,8 +796,8 @@ async fn test_sender_refund_prepare_rejects_before_expiry() -> anyhow::Result<()
 
 #[tokio::test]
 async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> anyhow::Result<()> {
-    let fixture = create_refund_fixture(unix_time() + 3).await?;
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    let fixture = create_refund_fixture(unix_time() + REFUND_TEST_EXPIRY_DELAY_SECS).await?;
+    tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;
     let connection = DirectMintConnection::new(fixture.mint.clone());
     let prepared = fixture
         .established
@@ -840,7 +842,7 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
 
 #[tokio::test]
 async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyhow::Result<()> {
-    let fixture = create_refund_fixture(unix_time() + 3).await?;
+    let fixture = create_refund_fixture(unix_time() + REFUND_TEST_EXPIRY_DELAY_SECS).await?;
     let connection = DirectMintConnection::new(fixture.mint.clone());
 
     let commitment = CommitmentOutputs::for_balance(5, &fixture.established.params)?;
@@ -869,7 +871,7 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
         FundingSpendKind::RelayClose
     );
 
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;
     let prepared = fixture
         .established
         .prepare_sender_refund_after_expiry(fixture.alice_secret.clone(), unix_time())?;
