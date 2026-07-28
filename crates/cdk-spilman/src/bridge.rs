@@ -1244,6 +1244,47 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
     }
 
+    pub fn validate_existing_channel_funding(
+        &self,
+        channel_id: &str,
+        balance: u64,
+        signature: &str,
+    ) -> Result<FundChannelResult, BridgeError> {
+        if channel_id.is_empty() {
+            return Err(BridgeError::InvalidRequest("missing channel_id".into()));
+        }
+        if signature.is_empty() {
+            return Err(BridgeError::InvalidRequest("missing signature".into()));
+        }
+        match self.host.get_channel_state(channel_id) {
+            ChannelState::Closed => return Err(BridgeError::ChannelClosed),
+            ChannelState::Closing => return Err(BridgeError::ChannelClosing),
+            ChannelState::Open => {}
+        }
+        let funding = self
+            .host
+            .get_funding(channel_id)
+            .ok_or(BridgeError::UnknownChannel)?;
+        let params_val: serde_json::Value = serde_json::from_str(&funding.params_json)
+            .map_err(|e| BridgeError::Internal(e.to_string()))?;
+        let capacity = params_val["capacity"].as_u64().unwrap_or(0);
+        self.verify_signature(
+            &funding.params_json,
+            &funding.funding_proofs_json,
+            &funding.channel_secret_hex,
+            &funding.keyset_info_json,
+            channel_id,
+            balance,
+            signature,
+        )
+        .map_err(BridgeError::InvalidSignature)?;
+        Ok(FundChannelResult {
+            channel_id: channel_id.to_string(),
+            capacity,
+            already_known: true,
+        })
+    }
+
     pub fn fund_channel(
         &self,
         channel_id: &str,
@@ -1263,44 +1304,30 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             ChannelState::Closing => return Err(BridgeError::ChannelClosing),
             ChannelState::Open => {}
         }
-        let (funding, already_known) = match self.host.get_funding(channel_id) {
-            Some(f) => (f, true),
-            None => (
-                {
-                    let validated = self.validate_new_channel_funding(
-                        channel_id,
-                        params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
-                        funding_proofs
-                            .ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
-                        balance,
-                        signature,
-                    )?;
-                    let funding = validated.funding.clone();
-                    self.record_validated_new_channel(&validated);
-                    funding
-                },
-                false,
-            ),
+        let funding = match self.host.get_funding(channel_id) {
+            Some(_) => {
+                return self.validate_existing_channel_funding(channel_id, balance, signature)
+            }
+            None => {
+                let validated = self.validate_new_channel_funding(
+                    channel_id,
+                    params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
+                    funding_proofs.ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
+                    balance,
+                    signature,
+                )?;
+                let funding = validated.funding.clone();
+                self.record_validated_new_channel(&validated);
+                funding
+            }
         };
         let params_val: serde_json::Value = serde_json::from_str(&funding.params_json)
             .map_err(|e| BridgeError::Internal(e.to_string()))?;
         let capacity = params_val["capacity"].as_u64().unwrap_or(0);
-        if already_known {
-            self.verify_signature(
-                &funding.params_json,
-                &funding.funding_proofs_json,
-                &funding.channel_secret_hex,
-                &funding.keyset_info_json,
-                channel_id,
-                balance,
-                signature,
-            )
-            .map_err(BridgeError::InvalidSignature)?;
-        }
         Ok(FundChannelResult {
             channel_id: channel_id.to_string(),
             capacity,
-            already_known,
+            already_known: false,
         })
     }
 
