@@ -66,7 +66,9 @@ pub use client_bridge::{
     SpilmanClientAsyncNetworking, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
 };
 #[cfg(feature = "wallet")]
-pub use client_bridge::{CompletedOpenChannel, PreparedOpenChannel};
+pub use client_bridge::{
+    CompletedOpenChannel, CompletedOpenRecovery, PreparedOpenChannel, PreparedOpenRecovery,
+};
 pub use client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
     ClientOpeningFailure, ClientPaymentState, ClientStorage, MemoryClientStorage,

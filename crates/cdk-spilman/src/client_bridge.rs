@@ -400,6 +400,37 @@ pub struct CompletedOpenChannel {
     pub result: OpenChannelResult,
 }
 
+/// Channel-opening recovery data prepared before any mint I/O or persistence.
+#[cfg(feature = "wallet")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreparedOpenRecovery {
+    /// Stable identifier for the channel being recovered.
+    pub channel_id: String,
+    /// Mint URL where restore requests must be submitted.
+    pub mint_url: String,
+    /// JSON body for the funding-output mint `/v1/restore` request.
+    pub funding_restore_request_json: String,
+    /// JSON body for the plain-change mint `/v1/restore` request, if any
+    /// change outputs were prepared.
+    pub change_restore_request_json: Option<String>,
+    /// Persisted opening record used to complete restore responses.
+    pub opening: ClientChannelOpeningFromSwap,
+}
+
+/// Completed channel-opening recovery after mint restore responses are unblinded.
+#[cfg(feature = "wallet")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletedOpenRecovery {
+    /// Stable identifier for the channel being recovered.
+    pub channel_id: String,
+    /// Funding proofs to persist when marking the channel open.
+    pub funding_proofs_json: String,
+    /// Plain loose-change proofs restored from the funding swap.
+    pub change_proofs_json: String,
+    /// User-facing open result metadata.
+    pub result: OpenChannelResult,
+}
+
 #[cfg(feature = "wallet")]
 struct TokenAutoAttempt {
     output_keyset: SelectedOutputKeyset,
@@ -2182,10 +2213,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
     /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
     #[cfg(feature = "wallet")]
-    pub fn recover_open_channel_from_swap(
+    pub fn prepare_open_channel_recovery(
         &self,
         channel_id: &str,
-    ) -> Result<OpenChannelResult, OpenChannelError> {
+    ) -> Result<PreparedOpenRecovery, OpenChannelError> {
         let opening = self
             .host
             .get_channel_opening_from_swap(channel_id)
@@ -2196,47 +2227,219 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     format!("Channel not found in OpeningFromSwap state: {channel_id}"),
                 )
             })?;
-        let funding_proofs_json = self.restore_funding_proofs(channel_id).map_err(|e| {
+        let funding_restore_request_json = create_funding_restore_request(
+            &opening.params_json,
+            &opening.channel_secret_hex,
+            &opening.keyset_info_json,
+        )
+        .map_err(|e| {
             OpenChannelError::new(
-                OpenChannelFailureStage::RestoreVerification,
+                OpenChannelFailureStage::BeforeOpeningSaved,
                 Some(channel_id.to_string()),
                 e,
             )
         })?;
-        let change_proofs_json = self.restore_change_proofs(channel_id).map_err(|e| {
+        let change_restore_request_json = if opening.change_amount_raw == 0 {
+            None
+        } else {
+            Some(
+                create_plain_change_restore_request(
+                    &opening.change_secrets_json,
+                    &opening.keyset_info_json,
+                )
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::BeforeOpeningSaved,
+                        Some(channel_id.to_string()),
+                        e,
+                    )
+                })?,
+            )
+        };
+
+        Ok(PreparedOpenRecovery {
+            channel_id: channel_id.to_string(),
+            mint_url: opening.mint_url.clone(),
+            funding_restore_request_json,
+            change_restore_request_json,
+            opening,
+        })
+    }
+
+    /// Complete restore responses for an `OpeningFromSwap` channel without mutating storage.
+    #[cfg(feature = "wallet")]
+    pub fn complete_prepared_open_recovery(
+        &self,
+        prepared: &PreparedOpenRecovery,
+        funding_restore_response: &str,
+        change_restore_response: Option<&str>,
+    ) -> Result<CompletedOpenRecovery, OpenChannelError> {
+        let funding_restore_result = complete_funding_restore(
+            funding_restore_response,
+            &prepared.opening.params_json,
+            &prepared.opening.channel_secret_hex,
+            &prepared.opening.keyset_info_json,
+        )
+        .map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::RestoreVerification,
-                Some(channel_id.to_string()),
+                Some(prepared.channel_id.clone()),
                 e,
             )
         })?;
+        let funding_restore_json: serde_json::Value = serde_json::from_str(&funding_restore_result)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(prepared.channel_id.clone()),
+                    format!("Failed to parse restore result: {e}"),
+                )
+            })?;
+        let funding_proofs_json = funding_restore_json["funding_proofs_json"]
+            .as_str()
+            .map(|proofs| proofs.to_string())
+            .ok_or_else(|| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(prepared.channel_id.clone()),
+                    "Missing 'funding_proofs_json' in restore result",
+                )
+            })?;
+
+        let change_proofs_json = match (
+            prepared.change_restore_request_json.as_ref(),
+            change_restore_response,
+        ) {
+            (None, None) => "[]".to_string(),
+            (Some(_), Some(response)) => {
+                let change_restore_result = complete_plain_change_restore(
+                    response,
+                    &prepared.opening.change_secrets_json,
+                    &prepared.opening.keyset_info_json,
+                )
+                .map_err(|e| {
+                    OpenChannelError::new(
+                        OpenChannelFailureStage::RestoreVerification,
+                        Some(prepared.channel_id.clone()),
+                        e,
+                    )
+                })?;
+                let change_restore_json: serde_json::Value =
+                    serde_json::from_str(&change_restore_result).map_err(|e| {
+                        OpenChannelError::new(
+                            OpenChannelFailureStage::RestoreVerification,
+                            Some(prepared.channel_id.clone()),
+                            format!("Failed to parse change restore result: {e}"),
+                        )
+                    })?;
+                change_restore_json["change_proofs_json"]
+                    .as_str()
+                    .map(|proofs| proofs.to_string())
+                    .ok_or_else(|| {
+                        OpenChannelError::new(
+                            OpenChannelFailureStage::RestoreVerification,
+                            Some(prepared.channel_id.clone()),
+                            "Missing 'change_proofs_json' in change restore result",
+                        )
+                    })?
+            }
+            (Some(_), None) => {
+                return Err(OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(prepared.channel_id.clone()),
+                    "Missing change restore response",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(prepared.channel_id.clone()),
+                    "Unexpected change restore response",
+                ));
+            }
+        };
+
+        let keyset_info =
+            parse_keyset_info_from_json(&prepared.opening.keyset_info_json).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
+                    Some(prepared.channel_id.clone()),
+                    format!("Failed to parse stored keyset info: {e}"),
+                )
+            })?;
+        Ok(CompletedOpenRecovery {
+            channel_id: prepared.channel_id.clone(),
+            funding_proofs_json,
+            change_proofs_json: change_proofs_json.clone(),
+            result: OpenChannelResult {
+                channel_id: prepared.channel_id.clone(),
+                capacity: prepared.opening.capacity,
+                funding_token_amount: prepared.opening.funding_token_amount,
+                mint_url: prepared.opening.mint_url.clone(),
+                unit: prepared.opening.unit.clone(),
+                keyset_id: keyset_info.keyset_id.to_string(),
+                sender_pubkey_hex: prepared.opening.sender_pubkey_hex.clone(),
+                receiver_pubkey_hex: prepared.opening.receiver_pubkey_hex.clone(),
+                change_proofs_json,
+            },
+        })
+    }
+
+    /// Transition a completed open recovery from OpeningFromSwap to Open.
+    #[cfg(feature = "wallet")]
+    pub fn mark_completed_open_recovery(
+        &self,
+        completed: &CompletedOpenRecovery,
+    ) -> Result<(), OpenChannelError> {
         self.host
-            .mark_channel_open(channel_id, &funding_proofs_json)
+            .mark_channel_open(&completed.channel_id, &completed.funding_proofs_json)
             .map_err(|e| {
                 OpenChannelError::new(
                     OpenChannelFailureStage::MarkOpen,
+                    Some(completed.channel_id.clone()),
+                    e,
+                )
+            })
+    }
+
+    /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
+    #[cfg(feature = "wallet")]
+    pub fn recover_open_channel_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Result<OpenChannelResult, OpenChannelError> {
+        let prepared = self.prepare_open_channel_recovery(channel_id)?;
+        let funding_restore_response = self
+            .networking
+            .call_mint_restore(&prepared.mint_url, &prepared.funding_restore_request_json)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::RestoreVerification,
                     Some(channel_id.to_string()),
                     e,
                 )
             })?;
-        let keyset_info = parse_keyset_info_from_json(&opening.keyset_info_json).map_err(|e| {
-            OpenChannelError::new(
-                OpenChannelFailureStage::MarkOpen,
-                Some(channel_id.to_string()),
-                format!("Failed to parse stored keyset info: {e}"),
-            )
-        })?;
-        Ok(OpenChannelResult {
-            channel_id: channel_id.to_string(),
-            capacity: opening.capacity,
-            funding_token_amount: opening.funding_token_amount,
-            mint_url: opening.mint_url,
-            unit: opening.unit,
-            keyset_id: keyset_info.keyset_id.to_string(),
-            sender_pubkey_hex: opening.sender_pubkey_hex,
-            receiver_pubkey_hex: opening.receiver_pubkey_hex,
-            change_proofs_json,
-        })
+        let change_restore_response = match prepared.change_restore_request_json.as_ref() {
+            Some(request) => Some(
+                self.networking
+                    .call_mint_restore(&prepared.mint_url, request)
+                    .map_err(|e| {
+                        OpenChannelError::new(
+                            OpenChannelFailureStage::RestoreVerification,
+                            Some(channel_id.to_string()),
+                            e,
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let completed = self.complete_prepared_open_recovery(
+            &prepared,
+            &funding_restore_response,
+            change_restore_response.as_deref(),
+        )?;
+        self.mark_completed_open_recovery(&completed)?;
+        Ok(completed.result)
     }
 
     /// Restore funding proofs for a channel using NUT-09 (async version).
