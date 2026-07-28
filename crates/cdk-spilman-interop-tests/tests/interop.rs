@@ -841,11 +841,7 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
 #[tokio::test]
 async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyhow::Result<()> {
     let fixture = create_refund_fixture(unix_time() + 3).await?;
-    tokio::time::sleep(Duration::from_secs(4)).await;
     let connection = DirectMintConnection::new(fixture.mint.clone());
-    let prepared = fixture
-        .established
-        .prepare_sender_refund_after_expiry(fixture.alice_secret.clone(), unix_time())?;
 
     let commitment = CommitmentOutputs::for_balance(5, &fixture.established.params)?;
     let mut close_swap =
@@ -872,6 +868,11 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
         EstablishedChannel::classify_funding_spend_witness(&funding_state),
         FundingSpendKind::RelayClose
     );
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let prepared = fixture
+        .established
+        .prepare_sender_refund_after_expiry(fixture.alice_secret.clone(), unix_time())?;
 
     assert!(
         EstablishedChannel::submit_prepared_sender_refund(&prepared, &connection, &fixture.keys)
