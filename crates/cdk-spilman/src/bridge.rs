@@ -1717,7 +1717,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Ok(())
     }
 
-    fn select_close_output_keyset_for_channel(
+    pub fn select_close_output_keyset_for_channel(
         &self,
         channel_id: &str,
     ) -> Result<SelectedOutputKeyset, ClosePreparationError> {
@@ -1856,6 +1856,26 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 transition.payment.clone(),
             )
             .map_err(CloseError::storage_failed)
+    }
+
+    pub fn prepare_close_for_closing_channel_with_output_keyset(
+        &self,
+        channel_id: &str,
+        selected: SelectedOutputKeyset,
+    ) -> Result<PreparedClose, ClosePreparationError> {
+        if self.host.get_channel_state(channel_id) != ChannelState::Closing {
+            return Err(ClosePreparationError::bad_request("Not closing"));
+        }
+        let cd = self
+            .host
+            .get_closing_data(channel_id)
+            .ok_or_else(|| ClosePreparationError::internal("Missing closing data"))?;
+        self.prepare_close_for_closing_channel_with_keyset(
+            channel_id,
+            cd.balance,
+            &cd.signature,
+            selected,
+        )
     }
 
     fn prepare_close_for_closing_channel_with_keyset(
