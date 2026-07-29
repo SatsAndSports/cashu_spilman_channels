@@ -4,14 +4,20 @@
 //! mirroring the server-side `SpilmanBridge` / `SpilmanHost` pattern.
 //!
 //! The `SpilmanClientHost` trait handles storage and crypto callbacks, while
-//! `SpilmanClientNetworking` handles mint communication. The high-level bridge
-//! methods can still orchestrate channel creation, payment signing, and header
-//! construction.
+//! `SpilmanClientNetworking` handles mint communication for compatibility
+//! wrappers. Systems with their own runtime, retry policy, or durable recovery
+//! should prefer the explicit phase APIs and perform mint I/O themselves.
 //!
-//! For hosts that need stricter runtime control, channel opening also exposes a
-//! Sans-IO-style flow: prepare protocol artifacts without network or storage
-//! side effects, let the caller persist/submit them, then complete the mint
-//! responses through pure completion helpers.
+//! # Sans-IO integration model
+//!
+//! The preferred integration path is:
+//!
+//! 1. prepare protocol artifacts without network I/O,
+//! 2. let the caller persist the prepared state and submit mint requests,
+//! 3. complete mint responses without storage mutation,
+//! 4. explicitly record or mark the completed state.
+//!
+//! The all-in-one methods remain as convenience wrappers for simple callers.
 //!
 //! # Example (pseudocode)
 //! ```ignore
@@ -19,10 +25,10 @@
 //! let networking = MyNetworking::new();
 //! let bridge = SpilmanClientBridge::new(host, networking);
 //!
-//! // Open a channel from an existing Cashu token
+//! // Open a channel from an existing Cashu token through the convenience wrapper.
 //! let result = bridge.open_channel_from_token(...)?;
 //!
-//! // Or drive the Sans-IO opening flow yourself:
+//! // Or drive the Sans-IO opening flow yourself.
 //! let prepared = bridge.prepare_open_channel_from_token(...)?;
 //! bridge.mark_prepared_open_saved(&prepared)?;
 //! let swap_response = submit_to_mint(&prepared.mint_url, &prepared.swap_request_json).await?;
@@ -1500,6 +1506,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// Open a new channel while optionally allocating only part of the selected
     /// post-swap input value to the channel funding token. Any remainder is
     /// returned as plain change proofs in [`OpenChannelResult::change_proofs_json`].
+    ///
+    /// This is a convenience wrapper: it fetches input keyset metadata, persists
+    /// the prepared opening, submits the mint swap through
+    /// [`SpilmanClientNetworking`], verifies restore, and marks the channel open.
+    /// Durable integrations should use the explicit prepare/complete/mark methods.
     #[cfg(feature = "wallet")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_channel_from_proofs_with_funding_amount(
@@ -1862,6 +1873,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// Build the NUT-09 restore request for a prepared channel open.
     ///
     /// Callers submit the returned JSON to the mint's `/v1/restore` endpoint.
+    /// This method performs no network I/O and does not mutate storage.
     pub fn funding_restore_request_for_prepared_open(
         &self,
         prepared: &PreparedOpenChannel,
@@ -2211,7 +2223,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .ok_or_else(|| "Missing 'change_proofs_json' in change restore result".to_string())
     }
 
-    /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
+    /// Prepare NUT-09 restore requests for an `OpeningFromSwap` channel.
+    ///
+    /// This performs no network I/O and does not mutate storage. Callers submit
+    /// the returned restore request JSON values to the mint, then pass the
+    /// responses to [`complete_prepared_open_recovery`](Self::complete_prepared_open_recovery).
     #[cfg(feature = "wallet")]
     pub fn prepare_open_channel_recovery(
         &self,
@@ -2385,7 +2401,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         })
     }
 
-    /// Transition a completed open recovery from OpeningFromSwap to Open.
+    /// Transition a completed open recovery from `OpeningFromSwap` to `Open`.
+    ///
+    /// This is the storage mutation step for explicit open recovery.
     #[cfg(feature = "wallet")]
     pub fn mark_completed_open_recovery(
         &self,
@@ -2403,6 +2421,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     }
 
     /// Recover an `OpeningFromSwap` channel by restoring funding proofs and marking it open.
+    ///
+    /// This is a convenience wrapper around the explicit recovery phases. It
+    /// performs mint restore calls through [`SpilmanClientNetworking`] and marks
+    /// the channel open. Durable integrations should use
+    /// [`prepare_open_channel_recovery`](Self::prepare_open_channel_recovery),
+    /// [`complete_prepared_open_recovery`](Self::complete_prepared_open_recovery),
+    /// and [`mark_completed_open_recovery`](Self::mark_completed_open_recovery).
     #[cfg(feature = "wallet")]
     pub fn recover_open_channel_from_swap(
         &self,
@@ -2547,9 +2572,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
     /// Sign a payment and immediately record it as the latest local state.
     ///
-    /// This is the convenience method for ordinary channel payments. It also
-    /// supports explicit cooperative decreases because recording policy belongs
-    /// to callers/protocols above this bridge.
+    /// This is the convenience method for simple callers. Integrations that need
+    /// to serialize, submit, or otherwise stage a payment before recording should
+    /// call [`sign_payment`](Self::sign_payment) and
+    /// [`record_signed_payment`](Self::record_signed_payment) explicitly.
     pub fn sign_and_record_payment(
         &self,
         channel_id: &str,

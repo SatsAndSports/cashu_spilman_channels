@@ -4,6 +4,14 @@
 //! This module provides a high-level bridge for implementing Spilman payment channels
 //! in any service provider. It handles the core protocol logic, validation, and
 //! signature verification, while delegating storage and pricing to a host hook.
+//!
+//! # Sans-IO integration model
+//!
+//! The preferred integration path for durable services is to use explicit phases:
+//! validate or prepare protocol data, let the caller perform mint I/O and retry
+//! orchestration, then explicitly record or mark the completed state. The
+//! all-in-one close/funding helpers remain as convenience wrappers for simple
+//! callers and tests.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
@@ -70,7 +78,10 @@ pub struct ClosingData {
 
 /// Host hooks for the Spilman bridge
 ///
-/// Implement this trait to provide storage and pricing logic for your service.
+/// Implement this trait to provide storage, policy, signing, and pricing logic
+/// for your service. Mint network I/O is intentionally outside the host trait;
+/// durable integrations should drive that I/O around the bridge's explicit
+/// prepare/complete/mark phases.
 /// The generic type `C` allows for a custom request context used in pricing.
 pub trait SpilmanHost<C = String> {
     /// Check if the receiver pubkey in the channel params is acceptable
@@ -1244,6 +1255,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
     }
 
+    /// Validate a payment/registration signature for an already-known channel.
+    ///
+    /// This reads stored funding data and verifies the supplied signature, but
+    /// does not record a payment or mutate channel state.
     pub fn validate_existing_channel_funding(
         &self,
         channel_id: &str,
@@ -1285,6 +1300,16 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         })
     }
 
+    /// Validate channel funding and return channel capacity.
+    ///
+    /// This is a convenience wrapper. For new channels it validates and records
+    /// funding; for known channels it validates the supplied signature without
+    /// mutating stored payment state. Durable integrations that need explicit
+    /// persistence boundaries should call
+    /// [`validate_new_channel_funding`](Self::validate_new_channel_funding) plus
+    /// [`record_validated_new_channel`](Self::record_validated_new_channel), or
+    /// [`validate_existing_channel_funding`](Self::validate_existing_channel_funding),
+    /// directly.
     pub fn fund_channel(
         &self,
         channel_id: &str,
@@ -1357,6 +1382,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         )
     }
 
+    /// Validate a first-use funding payment without recording it.
+    ///
+    /// This performs protocol and policy validation only. Call
+    /// [`record_validated_new_channel`](Self::record_validated_new_channel) to
+    /// persist the funding and initial payment proof after the caller has chosen
+    /// the surrounding persistence/retry behavior.
     pub fn validate_new_channel_funding(
         &self,
         channel_id: &str,
@@ -1490,6 +1521,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         })
     }
 
+    /// Persist a previously validated first-use channel funding record.
     pub fn record_validated_new_channel(&self, validated: &ValidatedNewChannel) {
         self.host.save_funding(
             &validated.channel_id,
@@ -1872,6 +1904,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         })
     }
 
+    /// Persist the durable pre-swap `Closing` transition for a prepared close.
+    ///
+    /// Call this before submitting the mint swap so a crash can replay close
+    /// execution from stored closing data.
     pub fn mark_prepared_close_closing(
         &self,
         transition: &PreparedCloseTransition,
@@ -1885,6 +1921,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .map_err(CloseError::storage_failed)
     }
 
+    /// Prepare the mint swap for a channel already marked `Closing`.
+    ///
+    /// This performs no mint I/O and does not mutate storage. The caller should
+    /// submit [`PreparedClose::swap_request`] to the mint, then pass the response
+    /// to [`complete_prepared_close`](Self::complete_prepared_close).
     pub fn prepare_close_for_closing_channel_with_output_keyset(
         &self,
         channel_id: &str,
@@ -1987,6 +2028,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Ok(proof)
     }
 
+    /// Complete a prepared close from a mint swap response without mutating storage.
     pub fn complete_prepared_close(
         &self,
         resp_json: &str,
@@ -2146,6 +2188,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         })
     }
 
+    /// Persist a completed close and return the close summary.
+    ///
+    /// This is the storage mutation step after
+    /// [`complete_prepared_close`](Self::complete_prepared_close).
     pub fn mark_completed_close(
         &self,
         completed: &CompletedClose,
@@ -2223,6 +2269,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
     }
 
+    /// Execute a close for a channel already marked `Closing`.
+    ///
+    /// This is a convenience wrapper around close preparation, mint swap
+    /// submission, retry, completion, and marking closed. Durable integrations
+    /// should use the explicit prepare/complete/mark methods and own mint I/O.
     pub fn execute_close_for_closing_channel<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         channel_id: &str,
@@ -2423,6 +2474,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         self.finalize_close(&success.value, &success.attempt)
     }
 
+    /// Execute cooperative close as an all-in-one convenience wrapper.
+    ///
+    /// This may record first-use funding, mark the channel `Closing`, submit the
+    /// mint swap with retry, complete the response, and mark the channel closed.
+    /// Durable integrations should drive those phases explicitly.
     pub fn execute_cooperative_close<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         json: &str,
@@ -2463,6 +2519,11 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         .await
     }
 
+    /// Execute unilateral close as an all-in-one convenience wrapper.
+    ///
+    /// This marks the channel `Closing`, submits the mint swap with retry,
+    /// completes the response, and marks the channel closed. Durable integrations
+    /// should drive those phases explicitly.
     pub fn execute_unilateral_close<M: SpilmanMintClient, R: SpilmanKeysetRefresher>(
         &self,
         channel_id: &str,
