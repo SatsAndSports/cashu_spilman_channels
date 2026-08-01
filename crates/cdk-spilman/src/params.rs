@@ -417,7 +417,11 @@ impl ChannelParameters {
             "msat" => CurrencyUnit::Msat,
             "usd" => CurrencyUnit::Usd,
             "eur" => CurrencyUnit::Eur,
-            _ => anyhow::bail!("Unknown unit: {}", unit_str),
+            // A keyset may denominate in anything its issuer likes — a claim on
+            // bytes, watt-hours, millilitres. Rejecting those made custom units
+            // unusable, and `unit_name` below stringified them all to "units",
+            // so a channel could not even round-trip its own parameters.
+            other => CurrencyUnit::Custom(other.to_string()),
         };
 
         let capacity = json["capacity"]
@@ -823,11 +827,14 @@ impl ChannelParameters {
 
     /// Get a string representation of the unit
     pub fn unit_name(&self) -> &str {
-        match self.unit {
+        match &self.unit {
             CurrencyUnit::Sat => "sat",
             CurrencyUnit::Msat => "msat",
             CurrencyUnit::Usd => "usd",
             CurrencyUnit::Eur => "eur",
+            // Round-trips, rather than collapsing every custom unit onto the
+            // literal "units" — which the parser above then rejected.
+            CurrencyUnit::Custom(name) => name,
             _ => "units",
         }
     }
@@ -1087,6 +1094,57 @@ mod tests {
         // Assert channel IDs match
         assert_eq!(
             original_channel_id, reconstructed_channel_id,
+            "Channel IDs should match after JSON roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_json_roundtrip_preserves_custom_unit() {
+        // A keyset may denominate in whatever its issuer sells — bytes of
+        // forwarding, watt-hours, millilitres. Before this round-tripped,
+        // `unit_name` collapsed every such unit onto the literal "units" and
+        // the parser then rejected it, so a channel could not read back
+        // parameters it had written itself: `Unknown unit: units`.
+        let alice_secret = SecretKey::generate();
+        let charlie_secret = SecretKey::generate();
+        let keyset_info = mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
+
+        let funding_token_amount =
+            ChannelParameters::get_minimum_funding_token_amount(1000, &keyset_info, 64)
+                .expect("Failed to compute funding token amount");
+
+        let unit = CurrencyUnit::Custom("byte".to_string());
+        let original = ChannelParameters::new_with_secret_key(
+            alice_secret.public_key(),
+            charlie_secret.public_key(),
+            "https://testmint.cash".to_string(),
+            unit.clone(),
+            1000,
+            funding_token_amount,
+            1700000000,
+            1699999000,
+            keyset_info.clone(),
+            64,
+            &alice_secret,
+        )
+        .expect("Failed to create params with a custom unit");
+
+        assert_eq!(original.unit_name(), "byte", "the unit should name itself");
+
+        let reconstructed = ChannelParameters::from_json_with_secret_key(
+            &original.get_channel_id_params_json(),
+            keyset_info,
+            &charlie_secret,
+        )
+        .expect("Failed to reconstruct params carrying a custom unit");
+
+        assert_eq!(
+            reconstructed.unit, unit,
+            "the unit should survive the round trip"
+        );
+        assert_eq!(
+            original.get_channel_id(),
+            reconstructed.get_channel_id(),
             "Channel IDs should match after JSON roundtrip"
         );
     }
