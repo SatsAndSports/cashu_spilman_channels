@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust fmt, lint, and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: make fmt-check
+
+      - name: Lint
+        run: make lint
+
+      - name: Rust-only tests
+        run: make test-rust-only
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-logs
+          path: testing/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  go:
+    name: Go integration and server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: |
+            examples/go-ascii-art/go.sum
+            integration-kits/go/go.sum
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Go integration tests
+        run: make test-integration-go
+
+      - name: Go server integration tests
+        run: make test-server-go
+
+      - name: Go demo tests
+        run: make test-demo-go
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-logs
+          path: testing/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  python:
+    name: Python integration and server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            crates/cdk-spilman-python/pyproject.toml
+            integration-kits/python/pyproject.toml
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Python integration tests
+        run: make test-integration-python
+
+      - name: Python server integration tests
+        run: make test-server-python
+
+      - name: Python demo tests
+        run: make test-demo-python
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-logs
+          path: testing/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  typescript:
+    name: TypeScript/WASM integration and server tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            integration-kits/ts/package-lock.json
+            examples/ts-ascii-art/package-lock.json
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: TypeScript server integration tests
+        run: make test-server-ts
+
+      - name: TypeScript demo tests
+        run: make test-demo-ts
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-test-logs
+          path: testing/*.log
+          if-no-files-found: ignore
+          retention-days: 14
