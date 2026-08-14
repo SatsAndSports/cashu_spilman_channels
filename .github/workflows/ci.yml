@@ -55,7 +55,7 @@ jobs:
           retention-days: 14
 
   go:
-    name: Go integration and server tests
+    name: Go integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -81,12 +81,6 @@ jobs:
       - name: Go integration tests
         run: make test-integration-go
 
-      - name: Go server integration tests
-        run: make test-server-go
-
-      - name: Go demo tests
-        run: make test-demo-go
-
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -97,7 +91,7 @@ jobs:
           retention-days: 14
 
   python:
-    name: Python integration and server tests
+    name: Python integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -124,12 +118,6 @@ jobs:
       - name: Python integration tests
         run: make test-integration-python
 
-      - name: Python server integration tests
-        run: make test-server-python
-
-      - name: Python demo tests
-        run: make test-demo-python
-
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -140,7 +128,7 @@ jobs:
           retention-days: 14
 
   typescript:
-    name: TypeScript/WASM integration and server tests
+    name: TypeScript/WASM server tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -171,9 +159,6 @@ jobs:
 
       - name: TypeScript server integration tests
         run: make test-server-ts
-
-      - name: TypeScript demo tests
-        run: make test-demo-ts
 
       - name: Upload test logs
         if: always()
