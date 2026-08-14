@@ -19,7 +19,6 @@ use cashu::Amount;
 use cashu::SECP256K1;
 #[cfg(test)]
 use std::collections::BTreeMap;
-#[cfg(test)]
 use std::str::FromStr;
 
 use super::deterministic::DeterministicSecretWithBlinding;
@@ -412,17 +411,8 @@ impl ChannelParameters {
         let unit_str = json["unit"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'unit' field"))?;
-        let unit = match unit_str {
-            "sat" => CurrencyUnit::Sat,
-            "msat" => CurrencyUnit::Msat,
-            "usd" => CurrencyUnit::Usd,
-            "eur" => CurrencyUnit::Eur,
-            // A keyset may denominate in anything its issuer likes — a claim on
-            // bytes, watt-hours, millilitres. Rejecting those made custom units
-            // unusable, and `unit_name` below stringified them all to "units",
-            // so a channel could not even round-trip its own parameters.
-            other => CurrencyUnit::Custom(other.to_string()),
-        };
+        let unit =
+            CurrencyUnit::from_str(unit_str).map_err(|e| anyhow::anyhow!("Invalid unit: {}", e))?;
 
         let capacity = json["capacity"]
             .as_u64()
@@ -826,17 +816,8 @@ impl ChannelParameters {
     }
 
     /// Get a string representation of the unit
-    pub fn unit_name(&self) -> &str {
-        match &self.unit {
-            CurrencyUnit::Sat => "sat",
-            CurrencyUnit::Msat => "msat",
-            CurrencyUnit::Usd => "usd",
-            CurrencyUnit::Eur => "eur",
-            // Round-trips, rather than collapsing every custom unit onto the
-            // literal "units" — which the parser above then rejected.
-            CurrencyUnit::Custom(name) => name,
-            _ => "units",
-        }
+    pub fn unit_name(&self) -> String {
+        self.unit.to_string()
     }
 
     /// Get the STAGE2 blinded pubkey for a stage 1 output context ("sender" or "receiver")
@@ -1140,6 +1121,54 @@ mod tests {
 
         assert_eq!(
             reconstructed.unit, unit,
+            "the unit should survive the round trip"
+        );
+        assert_eq!(
+            original.get_channel_id(),
+            reconstructed.get_channel_id(),
+            "Channel IDs should match after JSON roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_json_roundtrip_preserves_auth_unit() {
+        // Use Cashu's canonical unit parser/stringifier so new known units do
+        // not accidentally collapse to "units" at this JSON boundary.
+        let alice_secret = SecretKey::generate();
+        let charlie_secret = SecretKey::generate();
+        let keyset_info = mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
+
+        let funding_token_amount =
+            ChannelParameters::get_minimum_funding_token_amount(1000, &keyset_info, 64)
+                .expect("Failed to compute funding token amount");
+
+        let original = ChannelParameters::new_with_secret_key(
+            alice_secret.public_key(),
+            charlie_secret.public_key(),
+            "https://testmint.cash".to_string(),
+            CurrencyUnit::Auth,
+            1000,
+            funding_token_amount,
+            1700000000,
+            1699999000,
+            keyset_info.clone(),
+            64,
+            &alice_secret,
+        )
+        .expect("Failed to create params with auth unit");
+
+        assert_eq!(original.unit_name(), "auth", "the unit should name itself");
+
+        let reconstructed = ChannelParameters::from_json_with_secret_key(
+            &original.get_channel_id_params_json(),
+            keyset_info,
+            &charlie_secret,
+        )
+        .expect("Failed to reconstruct params carrying the auth unit");
+
+        assert_eq!(
+            reconstructed.unit,
+            CurrencyUnit::Auth,
             "the unit should survive the round trip"
         );
         assert_eq!(
