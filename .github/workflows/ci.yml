@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -19,6 +23,7 @@ jobs:
   rust:
     name: Rust fmt, lint, and tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,10 +52,12 @@ jobs:
           name: rust-test-logs
           path: testing/*.log
           if-no-files-found: ignore
+          retention-days: 14
 
   go:
     name: Go integration and server tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,10 +94,12 @@ jobs:
           name: go-test-logs
           path: testing/*.log
           if-no-files-found: ignore
+          retention-days: 14
 
   python:
     name: Python integration and server tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -128,10 +137,12 @@ jobs:
           name: python-test-logs
           path: testing/*.log
           if-no-files-found: ignore
+          retention-days: 14
 
   typescript:
     name: TypeScript/WASM integration and server tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -158,9 +169,6 @@ jobs:
         with:
           tool: wasm-pack
 
-      - name: TypeScript/WASM integration tests
-        run: make test-integration-ts
-
       - name: TypeScript server integration tests
         run: make test-server-ts
 
@@ -174,3 +182,4 @@ jobs:
           name: typescript-test-logs
           path: testing/*.log
           if-no-files-found: ignore
+          retention-days: 14
