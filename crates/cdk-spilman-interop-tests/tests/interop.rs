@@ -14,10 +14,10 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut10::Secret as Nut10Secret;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, BlindedMessage, CheckStateRequest,
-    CheckStateResponse, CurrencyUnit, Id, KeySet, Keys, KeysetResponse, MeltQuoteBolt11Response,
-    MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
-    MintRequest, MintResponse, PaymentMethod, PreMintSecrets, Proof, RestoreRequest,
-    RestoreResponse, SpendingConditions, State, SwapRequest, SwapResponse,
+    CheckStateResponse, CurrencyUnit, Id, KeySet, Keys, KeysetResponse, MeltRequest, MintInfo,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest, MintResponse,
+    PaymentMethod, PreMintSecrets, Proof, RestoreRequest, RestoreResponse, SpendingConditions,
+    State, SwapRequest, SwapResponse,
 };
 use cdk::secret::Secret;
 use cdk::util::unix_time;
@@ -26,7 +26,10 @@ use cdk::{Amount, Mint};
 use cdk_common::amount::SplitTarget;
 use cdk_common::common::{FeeReserve, QuoteTTL};
 use cdk_common::nut00::KnownMethod;
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest};
+use cdk_common::{
+    MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+    MintQuoteResponse,
+};
 use cdk_fake_wallet::FakeWallet;
 use cdk_spilman::{
     complete_funding_swap, compute_channel_from_token, create_funding_swap, ChannelFunding,
@@ -337,7 +340,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteBolt11Response<String>>, cdk::Error> {
+    ) -> Result<Vec<MintQuoteResponse<String>>, cdk::Error> {
         Err(cdk::Error::UnsupportedPaymentMethod)
     }
 
@@ -368,7 +371,7 @@ impl MintConnector for DirectMintConnection {
     async fn post_melt_quote(
         &self,
         _request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteResponse<String>, cdk::Error> {
+    ) -> Result<MeltQuoteCreateResponse<String>, cdk::Error> {
         Err(cdk::Error::UnsupportedPaymentMethod)
     }
 
@@ -384,7 +387,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         _method: &PaymentMethod,
         _request: MeltRequest<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, cdk::Error> {
+    ) -> Result<MeltQuoteResponse<String>, cdk::Error> {
         Err(cdk::Error::UnsupportedPaymentMethod)
     }
 
