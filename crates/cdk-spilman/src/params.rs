@@ -7,7 +7,7 @@ pub type ChannelId = String;
 
 use serde::{Deserialize, Serialize};
 
-use bitcoin::hashes::{sha256, Hash};
+use bitcoin::hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{Parity, Scalar};
 use cashu::nuts::{CurrencyUnit, SecretKey};
@@ -23,6 +23,12 @@ use std::str::FromStr;
 
 use super::deterministic::DeterministicSecretWithBlinding;
 use super::keysets_and_amounts::KeysetInfo;
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut engine = HmacEngine::<sha256::Hash>::new(key);
+    engine.input(message);
+    Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
+}
 
 pub(crate) struct Stage2P2bkTweakInfo {
     #[allow(dead_code)]
@@ -881,23 +887,14 @@ impl ChannelParameters {
     ) -> Result<DeterministicSecretWithBlinding, anyhow::Error> {
         let channel_id = self.get_channel_id();
 
-        // Derive deterministic nonce: SHA256(channel_secret || "{channel_id}|{context}|{amount}|nonce|{index}")
+        // Derive deterministic nonce: HMAC-SHA256(channel_secret, "{channel_id}|{context}|{amount}|nonce|{index}")
         let nonce_text = format!("{}|{}|{}|nonce|{}", channel_id, context, amount, index);
-        let mut nonce_input = Vec::new();
-        nonce_input.extend_from_slice(&self.channel_secret);
-        nonce_input.extend_from_slice(nonce_text.as_bytes());
+        let nonce = hex::encode(hmac_sha256(&self.channel_secret, nonce_text.as_bytes()));
 
-        let hash = sha256::Hash::hash(&nonce_input);
-        let nonce = hex::encode(hash.to_byte_array());
-
-        // Derive deterministic blinding factor: SHA256(channel_secret || "{channel_id}|{context}|{amount}|blinding|{index}")
+        // Derive deterministic blinding factor: HMAC-SHA256(channel_secret, "{channel_id}|{context}|{amount}|blinding|{index}")
         let blinding_text = format!("{}|{}|{}|blinding|{}", channel_id, context, amount, index);
-        let mut blinding_input = Vec::new();
-        blinding_input.extend_from_slice(&self.channel_secret);
-        blinding_input.extend_from_slice(blinding_text.as_bytes());
-
-        let hash = sha256::Hash::hash(&blinding_input);
-        let blinding_factor = SecretKey::from_slice(hash.as_byte_array())?;
+        let blinding_factor =
+            SecretKey::from_slice(&hmac_sha256(&self.channel_secret, blinding_text.as_bytes()))?;
 
         // Handle funding context separately (requires 2-of-2 blinded pubkeys + expiry)
         if context == "funding" {
@@ -1017,6 +1014,16 @@ impl ChannelParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hmac_sha256_rfc4231_vector() {
+        let digest = hmac_sha256(&[0x0b; 20], b"Hi There");
+
+        assert_eq!(
+            hex::encode(digest),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
 
     #[test]
     fn test_json_roundtrip_preserves_channel_id() {
