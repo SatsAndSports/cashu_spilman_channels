@@ -912,10 +912,19 @@ impl ChannelParameters {
         let nonce_text = format!("{}|{}|{}|nonce|{}", channel_id, context, amount, index);
         let nonce = hex::encode(hmac_sha256(&self.channel_secret, nonce_text.as_bytes()));
 
-        // Derive deterministic blinding factor: HMAC-SHA256(channel_secret, "{channel_id}|{context}|{amount}|blinding|{index}")
-        let blinding_text = format!("{}|{}|{}|blinding|{}", channel_id, context, amount, index);
-        let blinding_factor =
-            SecretKey::from_slice(&hmac_sha256(&self.channel_secret, blinding_text.as_bytes()))?;
+        // Derive a valid secp256k1 blinding scalar without reducing candidates modulo n.
+        let blinding_factor = (0u8..=255)
+            .find_map(|retry_counter| {
+                let blinding_text = format!(
+                    "{}|{}|{}|blinding|{}|{}",
+                    channel_id, context, amount, index, retry_counter
+                );
+                SecretKey::from_slice(&hmac_sha256(&self.channel_secret, blinding_text.as_bytes()))
+                    .ok()
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("Failed to derive valid blinding factor after 256 attempts")
+            })?;
 
         // Handle funding context separately (requires 2-of-2 blinded pubkeys + expiry)
         if context == "funding" {
