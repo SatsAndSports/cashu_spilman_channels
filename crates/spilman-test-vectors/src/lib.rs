@@ -8,5 +8,6 @@ pub mod commitment_outputs_keyset_v2;
 pub mod funding_outputs_keyset_v2;
 pub mod output_nonce_and_blinding_keyset_v2;
 pub mod real_mint_keyset_v2;
+pub mod sig_all_keyset_v2;
 pub mod stage1_key_tweaks_keyset_v2;
 pub mod stage2_p2bk_keyset_v2;

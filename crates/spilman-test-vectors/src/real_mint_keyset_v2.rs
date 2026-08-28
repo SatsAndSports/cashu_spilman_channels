@@ -28,11 +28,8 @@ pub struct RealMintKeysetV2 {
     pub public_keys: Vec<(u64, String)>,
 }
 
-/// Build a deterministic CDK V2 mint and return its active SAT public keyset.
-///
-/// The resulting private keys are deliberately test-only. Production vector
-/// data contains only the corresponding public keyset.
-pub async fn generate_real_test_mint_keyset_v2() -> Result<RealMintKeysetV2> {
+/// Build the deterministic CDK V2 mint used by the test fixtures.
+pub async fn build_real_test_mint_v2() -> Result<Mint> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
     let mut builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
     let fee_reserve = FeeReserve {
@@ -59,9 +56,17 @@ pub async fn generate_real_test_mint_keyset_v2() -> Result<RealMintKeysetV2> {
 
     let mnemonic = Mnemonic::from_str(REAL_TEST_MINT_KEYSET_V2_MNEMONIC)
         .map_err(|error| anyhow!("invalid real test mint mnemonic: {error}"))?;
-    let mint: Mint = builder
+    Ok(builder
         .build_with_seed(db, &mnemonic.to_seed_normalized(""))
-        .await?;
+        .await?)
+}
+
+/// Build a deterministic CDK V2 mint and return its active SAT public keyset.
+///
+/// The resulting private keys are deliberately test-only. Production vector
+/// data contains only the corresponding public keyset.
+pub async fn generate_real_test_mint_keyset_v2() -> Result<RealMintKeysetV2> {
+    let mint = build_real_test_mint_v2().await?;
     let keyset_id = *mint
         .get_active_keysets()
         .get(&CurrencyUnit::Sat)
