@@ -6,9 +6,9 @@ use k256::{
 };
 use sha2::{Digest, Sha256};
 
-/// Canonical name of the first channel-secret compatibility fixture.
-pub const SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME: &str =
-    "spilman-test-vector-channel-secret-hkdf-v1-001";
+/// Canonical name of the channel-secret compatibility fixture.
+pub const SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME: &str =
+    "spilman-test-vector-channel-secret-hkdf";
 
 const ALICE_SECRET_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000001";
@@ -65,8 +65,8 @@ fn decode_hex<const N: usize>(value: &str) -> [u8; N] {
 }
 
 /// Return the fixed values for
-/// `spilman-test-vector-channel-secret-hkdf-v1-001`.
-pub fn spilman_test_vector_channel_secret_hkdf_v1_001() -> ChannelSecretTestVector {
+/// `spilman-test-vector-channel-secret-hkdf`.
+pub fn spilman_test_vector_channel_secret_hkdf() -> ChannelSecretTestVector {
     ChannelSecretTestVector {
         alice_secret_key: decode_hex(ALICE_SECRET_KEY_HEX),
         charlie_secret_key: decode_hex(CHARLIE_SECRET_KEY_HEX),
@@ -108,8 +108,8 @@ fn hkdf_sha256_empty_salt(ikm: &[u8], info: &[u8]) -> [u8; 32] {
 ///
 /// Panics only if the fixed test-vector keys or their point encodings are
 /// invalid, which would indicate corruption of the fixture itself.
-pub fn derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference() -> ChannelSecretReference {
-    let vector = spilman_test_vector_channel_secret_hkdf_v1_001();
+pub fn derive_spilman_test_vector_channel_secret_hkdf_reference() -> ChannelSecretReference {
+    let vector = spilman_test_vector_channel_secret_hkdf();
     let alice_secret =
         SecretKey::from_slice(&vector.alice_secret_key).expect("valid Alice test key");
     let charlie_secret =
@@ -140,40 +140,40 @@ pub fn derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference() -> Chan
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference,
-        spilman_test_vector_channel_secret_hkdf_v1_001 as get_test_vector_details,
-        SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME,
+        derive_spilman_test_vector_channel_secret_hkdf_reference,
+        spilman_test_vector_channel_secret_hkdf as get_test_vector_details,
+        SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME,
     };
 
     #[test]
-    fn spilman_test_vector_channel_secret_hkdf_v1_001() {
+    fn spilman_test_vector_channel_secret_hkdf() {
         let vector = get_test_vector_details();
-        let reference = derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference();
+        let reference = derive_spilman_test_vector_channel_secret_hkdf_reference();
 
         assert_eq!(
             hex::encode(reference.alice_public_key),
             hex::encode(vector.alice_public_key),
-            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: independent Alice public-key derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: independent Alice public-key derivation"
         );
         assert_eq!(
             hex::encode(reference.charlie_public_key),
             hex::encode(vector.charlie_public_key),
-            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: independent Charlie public-key derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: independent Charlie public-key derivation"
         );
         assert_eq!(
             hex::encode(reference.shared_point),
             hex::encode(vector.shared_point),
-            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: independent compressed shared-point derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: independent compressed shared-point derivation"
         );
         assert_eq!(
             hex::encode(reference.dh),
             hex::encode(vector.dh),
-            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: independent hashed ECDH derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: independent hashed ECDH derivation"
         );
         assert_eq!(
             hex::encode(reference.channel_secret),
             hex::encode(vector.channel_secret),
-            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: independent HKDF derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: independent HKDF derivation"
         );
     }
 }

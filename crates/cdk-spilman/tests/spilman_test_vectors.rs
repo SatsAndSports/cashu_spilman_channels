@@ -1,14 +1,24 @@
 //! Compatibility assertions for published Spilman test vectors.
 
-use cashu::util::hex;
-use cdk_spilman::compute_channel_secret;
+use std::collections::BTreeMap;
+use std::str::FromStr;
+
+use cashu::nuts::{CurrencyUnit, Id, Keys, PublicKey};
+use cashu::{util::hex, Amount};
+use cdk_spilman::{compute_channel_secret, ChannelParameters, KeysetInfo};
+use spilman_test_vectors::channel_id::{
+    spilman_test_vector_channel_id as get_channel_id_test_vector_details,
+    spilman_test_vector_channel_id_mint_trailing_slash as get_trailing_slash_test_vector_details,
+    ChannelIdTestVector, SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME,
+    SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME,
+};
 use spilman_test_vectors::channel_secret::{
-    spilman_test_vector_channel_secret_hkdf_v1_001 as get_test_vector_details,
-    SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME,
+    spilman_test_vector_channel_secret_hkdf as get_test_vector_details,
+    SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME,
 };
 
 #[test]
-fn spilman_test_vector_channel_secret_hkdf_v1_001() {
+fn spilman_test_vector_channel_secret_hkdf() {
     let vector = get_test_vector_details();
     let alice_secret =
         cashu::nuts::SecretKey::from_slice(&vector.alice_secret_key).expect("valid Alice test key");
@@ -21,7 +31,7 @@ fn spilman_test_vector_channel_secret_hkdf_v1_001() {
             &charlie_secret.public_key()
         )),
         hex::encode(vector.channel_secret),
-        "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: Alice production derivation"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: Alice production derivation"
     );
     assert_eq!(
         hex::encode(compute_channel_secret(
@@ -29,6 +39,78 @@ fn spilman_test_vector_channel_secret_hkdf_v1_001() {
             &alice_secret.public_key()
         )),
         hex::encode(vector.channel_secret),
-        "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME}: Charlie production derivation"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME}: Charlie production derivation"
+    );
+}
+
+fn channel_parameters(vector: ChannelIdTestVector) -> ChannelParameters {
+    let active_keys = Keys::new(
+        vector
+            .public_keys
+            .iter()
+            .map(|(amount, public_key)| {
+                (
+                    Amount::from(*amount),
+                    PublicKey::from_str(public_key).expect("valid vector public key"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>(),
+    );
+    let keyset_info = KeysetInfo::new(
+        Id::from_str(vector.keyset_id).expect("valid vector keyset ID"),
+        CurrencyUnit::Sat,
+        active_keys,
+        vector.input_fee_ppk,
+        None,
+    );
+    let sender_pubkey = PublicKey::from_str(vector.sender_pubkey).expect("valid vector sender");
+    let receiver_pubkey =
+        PublicKey::from_str(vector.receiver_pubkey).expect("valid vector receiver");
+    ChannelParameters::new(
+        sender_pubkey,
+        receiver_pubkey,
+        vector.mint.to_owned(),
+        CurrencyUnit::Sat,
+        vector.capacity,
+        vector.funding_token_amount,
+        vector.expiry_timestamp,
+        vector.setup_timestamp,
+        keyset_info,
+        vector.maximum_amount,
+        vector.channel_secret,
+    )
+    .expect("valid channel-ID vector parameters")
+}
+
+#[test]
+fn spilman_test_vector_channel_id() {
+    let vector = get_channel_id_test_vector_details();
+    let parameters = channel_parameters(vector);
+
+    assert_eq!(
+        parameters.get_channel_id(),
+        hex::encode(vector.channel_id),
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: production channel-ID derivation"
+    );
+    assert_eq!(
+        parameters.get_channel_id_bytes(),
+        vector.channel_id,
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: production channel-ID bytes"
+    );
+}
+
+#[test]
+fn spilman_test_vector_channel_id_mint_trailing_slash() {
+    let vector = get_trailing_slash_test_vector_details();
+    let parameters = channel_parameters(vector);
+
+    assert_eq!(
+        parameters.mint, "https://vector-mint.example",
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: production mint normalization"
+    );
+    assert_eq!(
+        parameters.get_channel_id(),
+        hex::encode(vector.channel_id),
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: production channel-ID derivation"
     );
 }

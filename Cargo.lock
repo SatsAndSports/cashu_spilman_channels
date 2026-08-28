@@ -3440,10 +3440,17 @@ dependencies = [
 name = "spilman-test-vectors"
 version = "0.15.1"
 dependencies = [
+ "anyhow",
+ "bip39",
+ "cdk",
+ "cdk-common",
+ "cdk-fake-wallet",
+ "cdk-sqlite",
  "hex",
  "hmac",
  "k256",
  "sha2",
+ "tokio",
 ]
 
 [[package]]

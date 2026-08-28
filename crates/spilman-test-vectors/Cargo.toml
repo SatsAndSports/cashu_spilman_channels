@@ -6,10 +6,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
+bip39.workspace = true
+cdk.workspace = true
+cdk-common.workspace = true
+cdk-fake-wallet.workspace = true
+cdk-sqlite.workspace = true
 hex = "0.4"
 hmac = "0.12"
 k256 = { version = "0.13", features = ["arithmetic"] }
 sha2.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true
