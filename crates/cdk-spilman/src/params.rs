@@ -17,6 +17,8 @@ use cashu::util::hex;
 #[cfg(test)]
 use cashu::Amount;
 use cashu::SECP256K1;
+use hkdf::Hkdf;
+use sha2::Sha256;
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -92,19 +94,30 @@ pub struct ChannelParameters {
 
 /// Compute the channel secret from a secret key and counterparty's public key
 ///
-/// Performs ECDH and then hashes the result with a domain separator so that
-/// the raw Diffie-Hellman shared secret never leaves this function.
+/// Performs libsecp256k1's default ECDH hash, then derives a protocol-specific
+/// secret with HKDF-SHA256.
 ///
-/// Returns: SHA256("Cashu_Spilman_channel_secret_v1" || ECDH(my_secret, their_pubkey))
+/// Returns: HKDF-SHA256(
+///     salt = empty,
+///     ikm = ECDH(my_secret, their_pubkey),
+///     info = "Cashu_Spilman_channel_secret_v1",
+///     length = 32,
+/// )
+///
+/// # Panics
+///
+/// Panics if HKDF cannot expand a 32-byte SHA-256 output. This is impossible
+/// for the fixed output length used here.
 pub fn compute_channel_secret(
     my_secret: &cashu::nuts::SecretKey,
     their_pubkey: &cashu::nuts::PublicKey,
 ) -> [u8; 32] {
     let raw_ecdh = SharedSecret::new(their_pubkey, my_secret).secret_bytes();
-    let mut input = Vec::new();
-    input.extend_from_slice(b"Cashu_Spilman_channel_secret_v1");
-    input.extend_from_slice(&raw_ecdh);
-    sha256::Hash::hash(&input).to_byte_array()
+    let hkdf = Hkdf::<Sha256>::new(None, &raw_ecdh);
+    let mut channel_secret = [0u8; 32];
+    hkdf.expand(b"Cashu_Spilman_channel_secret_v1", &mut channel_secret)
+        .expect("a 32-byte SHA-256 HKDF output is valid");
+    channel_secret
 }
 
 /// Helper to create a simple KeysetInfo for testing

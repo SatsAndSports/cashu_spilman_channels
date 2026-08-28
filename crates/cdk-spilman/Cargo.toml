@@ -21,11 +21,13 @@ axum = { workspace = true, optional = true, features = ["macros"] }
 base64 = "0.22"
 bitcoin.workspace = true
 cashu.workspace = true
+hkdf.workspace = true
 reqwest = { workspace = true, optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yml = { version = "0.0.12", optional = true }
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "sync"] }
 tracing.workspace = true
