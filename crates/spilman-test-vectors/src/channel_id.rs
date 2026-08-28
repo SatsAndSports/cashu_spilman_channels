@@ -5,10 +5,11 @@ use sha2::{Digest, Sha256};
 use crate::channel_secret::spilman_test_vector_channel_secret_hkdf;
 
 /// Canonical name of the channel-ID compatibility fixture.
-pub const SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME: &str = "spilman-test-vector-channel-id";
+pub const SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME: &str =
+    "spilman-test-vector-channel-id-keysetv2";
 /// Canonical name of the trailing-slash channel-ID compatibility fixture.
-pub const SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME: &str =
-    "spilman-test-vector-channel-id-mint-trailing-slash";
+pub const SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME: &str =
+    "spilman-test-vector-channel-id-keysetv2-mint-trailing-slash";
 
 const MINT: &str = "https://vector-mint.example";
 const MINT_WITH_TRAILING_SLASH: &str = "https://vector-mint.example/";
@@ -195,8 +196,8 @@ fn decode_hex<const N: usize>(value: &str) -> [u8; N] {
         .expect("test-vector hex must have the expected length")
 }
 
-/// Return the fixed values for `spilman-test-vector-channel-id`.
-pub fn spilman_test_vector_channel_id() -> ChannelIdTestVector {
+/// Return the fixed values for `spilman-test-vector-channel-id-keysetv2`.
+pub fn spilman_test_vector_channel_id_keysetv2() -> ChannelIdTestVector {
     let channel_secret = spilman_test_vector_channel_secret_hkdf().channel_secret;
     let canonical_preimage = concat!(
         "https://vector-mint.example|sat|100|100|",
@@ -227,10 +228,10 @@ pub fn spilman_test_vector_channel_id() -> ChannelIdTestVector {
 }
 
 /// Return the fixed values for the trailing-slash channel-ID fixture.
-pub fn spilman_test_vector_channel_id_mint_trailing_slash() -> ChannelIdTestVector {
+pub fn spilman_test_vector_channel_id_keysetv2_mint_trailing_slash() -> ChannelIdTestVector {
     ChannelIdTestVector {
         mint: MINT_WITH_TRAILING_SLASH,
-        ..spilman_test_vector_channel_id()
+        ..spilman_test_vector_channel_id_keysetv2()
     }
 }
 
@@ -269,37 +270,38 @@ pub fn derive_channel_id_reference(vector: ChannelIdTestVector) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_channel_id_reference, spilman_test_vector_channel_id as get_test_vector_details,
-        spilman_test_vector_channel_id_mint_trailing_slash as get_trailing_slash_test_vector_details,
-        SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME,
-        SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME,
+        derive_channel_id_reference,
+        spilman_test_vector_channel_id_keysetv2 as get_test_vector_details,
+        spilman_test_vector_channel_id_keysetv2_mint_trailing_slash as get_trailing_slash_test_vector_details,
+        SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME,
+        SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME,
     };
-    use crate::real_mint_keyset::{generate_real_test_mint_keyset, RealMintKeyset};
+    use crate::real_mint_keyset_v2::{generate_real_test_mint_keyset_v2, RealMintKeysetV2};
 
     #[test]
-    fn spilman_test_vector_channel_id() {
+    fn spilman_test_vector_channel_id_keysetv2() {
         let vector = get_test_vector_details();
         assert_eq!(
             derive_channel_id_reference(vector),
             vector.channel_id,
-            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: independent SHA-256 derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: independent SHA-256 derivation"
         );
     }
 
     #[test]
-    fn spilman_test_vector_channel_id_mint_trailing_slash() {
+    fn spilman_test_vector_channel_id_keysetv2_mint_trailing_slash() {
         let vector = get_trailing_slash_test_vector_details();
         assert_eq!(
             derive_channel_id_reference(vector),
             vector.channel_id,
-            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: independent normalized SHA-256 derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME}: independent normalized SHA-256 derivation"
         );
     }
 
     #[tokio::test]
     async fn channel_id_vector_uses_the_real_deterministic_mint_keyset() {
         let vector = get_test_vector_details();
-        let expected = RealMintKeyset {
+        let expected = RealMintKeysetV2 {
             keyset_id: vector.keyset_id.to_owned(),
             input_fee_ppk: vector.input_fee_ppk,
             public_keys: vector
@@ -309,11 +311,11 @@ mod tests {
                 .collect(),
         };
         assert_eq!(
-            generate_real_test_mint_keyset()
+            generate_real_test_mint_keyset_v2()
                 .await
                 .expect("deterministic real test keyset"),
             expected,
-            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: CDK mint keyset derived from the fixed test mnemonic"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: CDK V2 mint keyset derived from the fixed test mnemonic"
         );
     }
 }

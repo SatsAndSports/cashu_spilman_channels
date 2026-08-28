@@ -7,18 +7,18 @@ use cashu::nuts::{CurrencyUnit, Id, Keys, PublicKey};
 use cashu::{util::hex, Amount};
 use cdk_spilman::{compute_channel_secret, ChannelParameters, KeysetInfo};
 use spilman_test_vectors::channel_id::{
-    spilman_test_vector_channel_id as get_channel_id_test_vector_details,
-    spilman_test_vector_channel_id_mint_trailing_slash as get_trailing_slash_test_vector_details,
-    ChannelIdTestVector, SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME,
-    SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME,
+    spilman_test_vector_channel_id_keysetv2 as get_channel_id_test_vector_details,
+    spilman_test_vector_channel_id_keysetv2_mint_trailing_slash as get_trailing_slash_test_vector_details,
+    ChannelIdTestVector, SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME,
+    SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME,
 };
 use spilman_test_vectors::channel_secret::{
     spilman_test_vector_channel_secret_hkdf as get_test_vector_details,
     SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME,
 };
-use spilman_test_vectors::output_nonce_and_blinding::{
-    spilman_test_vector_output_nonce_and_blinding as get_output_nonce_and_blinding_test_vector_details,
-    SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME,
+use spilman_test_vectors::output_nonce_and_blinding_keyset_v2::{
+    spilman_test_vector_output_nonce_and_blinding_keysetv2 as get_output_nonce_and_blinding_test_vector_details,
+    SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME,
 };
 
 #[test]
@@ -87,40 +87,40 @@ fn channel_parameters(vector: ChannelIdTestVector) -> ChannelParameters {
 }
 
 #[test]
-fn spilman_test_vector_channel_id() {
+fn spilman_test_vector_channel_id_keysetv2() {
     let vector = get_channel_id_test_vector_details();
     let parameters = channel_parameters(vector);
 
     assert_eq!(
         parameters.get_channel_id(),
         hex::encode(vector.channel_id),
-        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: production channel-ID derivation"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: production channel-ID derivation"
     );
     assert_eq!(
         parameters.get_channel_id_bytes(),
         vector.channel_id,
-        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_NAME}: production channel-ID bytes"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: production channel-ID bytes"
     );
 }
 
 #[test]
-fn spilman_test_vector_channel_id_mint_trailing_slash() {
+fn spilman_test_vector_channel_id_keysetv2_mint_trailing_slash() {
     let vector = get_trailing_slash_test_vector_details();
     let parameters = channel_parameters(vector);
 
     assert_eq!(
         parameters.mint, "https://vector-mint.example",
-        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: production mint normalization"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME}: production mint normalization"
     );
     assert_eq!(
         parameters.get_channel_id(),
         hex::encode(vector.channel_id),
-        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: production channel-ID derivation"
+        "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME}: production channel-ID derivation"
     );
 }
 
 #[test]
-fn spilman_test_vector_output_nonce_and_blinding() {
+fn spilman_test_vector_output_nonce_and_blinding_keysetv2() {
     let vector = get_output_nonce_and_blinding_test_vector_details();
     let output = channel_parameters(get_channel_id_test_vector_details())
         .create_deterministic_output_with_blinding(vector.context, vector.amount, vector.index)
@@ -131,11 +131,11 @@ fn spilman_test_vector_output_nonce_and_blinding() {
     assert_eq!(
         secret_json[1]["nonce"],
         hex::encode(vector.nonce),
-        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: production output nonce"
+        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: production output nonce"
     );
     assert_eq!(
         hex::encode(output.blinding_factor.secret_bytes()),
         hex::encode(vector.blinding_factor),
-        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: production Cashu blinding factor"
+        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: production Cashu blinding factor"
     );
 }
