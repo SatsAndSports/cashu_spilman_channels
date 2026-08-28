@@ -10,8 +10,6 @@
 use async_trait::async_trait;
 
 use cashu::dhke::blind_message;
-use cashu::nuts::nut10::Conditions;
-use cashu::nuts::nut11::SigFlag;
 use cashu::nuts::{BlindSignature, BlindedMessage, Id, RestoreRequest, SecretKey};
 use cashu::secret::Secret;
 use cashu::Amount;
@@ -63,19 +61,12 @@ impl DeterministicSecretWithBlinding {
         amount: u64,
         index: usize,
     ) -> Result<Self, anyhow::Error> {
-        // Manually construct the NUT-10 P2PK secret JSON
-        // Format: ["P2PK", {"nonce": "...", "data": "pubkey_hex", "tags": null}]
-        let secret_json = serde_json::json!([
-            "P2PK",
-            {
-                "nonce": nonce,
-                "data": pubkey.to_hex(),
-                "tags": null
-            }
-        ]);
-
-        // Create a Secret from the JSON string
-        let secret = Secret::new(secret_json.to_string());
+        // NUT-XX commits the serialized bytes to make the blinded message reproducible.
+        let secret = Secret::new(format!(
+            r#"["P2PK",{{"data":"{}","nonce":"{}","tags":[]}}]"#,
+            pubkey.to_hex(),
+            nonce
+        ));
 
         Ok(Self {
             secret,
@@ -109,37 +100,16 @@ impl DeterministicSecretWithBlinding {
         // The refund path uses a DIFFERENT blinded key for Alice (unlinkable to 2-of-2)
         let blinded_sender_pubkey_refund = params.get_sender_blinded_pubkey_for_stage1_refund()?;
 
-        // Create the spending conditions: 2-of-2 multisig (Alice + Charlie) before expiry
-        // After expiry, Alice can refund with just her signature
-        // All pubkeys are BLINDED for privacy, with refund using a separate tweak
-        let conditions = Conditions::new(
-            Some(params.expiry_timestamp), // Expiry timestamp for Alice's refund
-            Some(vec![blinded_receiver_pubkey]), // Charlie's blinded key for 2-of-2
-            Some(vec![blinded_sender_pubkey_refund]), // Alice's REFUND blinded key (different tweak)
-            Some(2),                                  // Require 2 signatures before expiry
-            Some(SigFlag::SigAll),                    // SigAll: signatures commit to outputs
-            Some(1),                                  // Only 1 signature needed for refund (Alice)
-        )?;
-
-        // Convert conditions to proper NUT-10/11 tag array format
-        let tags: Vec<Vec<String>> = conditions.into();
-        let tags_json = serde_json::to_value(tags)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize spending conditions: {}", e))?;
-
-        // Manually construct the NUT-10 P2PK secret JSON with spending conditions
-        // Format: ["P2PK", {"nonce": "...", "data": "pubkey_hex", "tags": [...conditions...]}]
-        // The "data" field contains Alice's BLINDED pubkey
-        let secret_json = serde_json::json!([
-            "P2PK",
-            {
-                "nonce": nonce,
-                "data": blinded_sender_pubkey.to_hex(),
-                "tags": tags_json
-            }
-        ]);
-
-        // Create a Secret from the JSON string
-        let secret = Secret::new(secret_json.to_string());
+        // NUT-XX fixes this exact tag order and compact JSON encoding because these
+        // bytes are blinded and jointly authorized by the funding proofs' SIG_ALL.
+        let secret = Secret::new(format!(
+            r#"["P2PK",{{"data":"{}","nonce":"{}","tags":[["pubkeys","{}"],["locktime","{}"],["n_sigs","2"],["refund","{}"],["n_sigs_refund","1"],["sigflag","SIG_ALL"]]}}]"#,
+            blinded_sender_pubkey.to_hex(),
+            nonce,
+            blinded_receiver_pubkey.to_hex(),
+            params.expiry_timestamp,
+            blinded_sender_pubkey_refund.to_hex(),
+        ));
 
         Ok(Self {
             secret,

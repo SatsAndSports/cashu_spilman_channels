@@ -5,7 +5,14 @@ use std::str::FromStr;
 
 use cashu::nuts::{CurrencyUnit, Id, Keys, PublicKey};
 use cashu::{util::hex, Amount};
-use cdk_spilman::{compute_channel_secret, ChannelParameters, KeysetInfo};
+use cdk_spilman::{
+    compute_channel_secret, ChannelParameters, CommitmentOutputs,
+    DeterministicOutputsForOneContext, KeysetInfo, OrderedListOfAmounts,
+};
+use spilman_test_vectors::amount_selection_keyset_v2::{
+    spilman_test_vector_amount_selection_keysetv2 as get_amount_selection_test_vector_details,
+    spilman_test_vector_amount_selection_keysetv2_max32 as get_amount_selection_max32_test_vector_details,
+};
 use spilman_test_vectors::channel_id::{
     spilman_test_vector_channel_id_keysetv2 as get_channel_id_test_vector_details,
     spilman_test_vector_channel_id_keysetv2_mint_trailing_slash as get_trailing_slash_test_vector_details,
@@ -16,10 +23,13 @@ use spilman_test_vectors::channel_secret::{
     spilman_test_vector_channel_secret_hkdf as get_test_vector_details,
     SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME,
 };
+use spilman_test_vectors::commitment_outputs_keyset_v2::spilman_test_vector_commitment_outputs_keysetv2 as get_commitment_outputs_test_vector_details;
+use spilman_test_vectors::funding_outputs_keyset_v2::spilman_test_vector_funding_outputs_keysetv2 as get_funding_outputs_test_vector_details;
 use spilman_test_vectors::output_nonce_and_blinding_keyset_v2::{
     spilman_test_vector_output_nonce_and_blinding_keysetv2 as get_output_nonce_and_blinding_test_vector_details,
     SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME,
 };
+use spilman_test_vectors::stage1_key_tweaks_keyset_v2::spilman_test_vector_stage1_key_tweaks_keysetv2 as get_stage1_key_tweaks_test_vector_details;
 
 #[test]
 fn spilman_test_vector_channel_secret_hkdf() {
@@ -137,5 +147,134 @@ fn spilman_test_vector_output_nonce_and_blinding_keysetv2() {
         hex::encode(output.blinding_factor.secret_bytes()),
         hex::encode(vector.blinding_factor),
         "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: production Cashu blinding factor"
+    );
+}
+
+#[test]
+fn spilman_test_vector_amount_selection_keysetv2() {
+    for vector in [
+        get_amount_selection_test_vector_details(),
+        get_amount_selection_max32_test_vector_details(),
+    ] {
+        let parameters = channel_parameters(get_channel_id_test_vector_details());
+        let selected = OrderedListOfAmounts::from_target(
+            vector.target,
+            vector.maximum_amount,
+            &parameters.keyset_info,
+        )
+        .expect("representable vector target");
+        assert_eq!(selected.amounts(), vector.amounts);
+    }
+}
+
+#[test]
+fn spilman_test_vector_stage1_key_tweaks_keysetv2() {
+    let parameters = channel_parameters(get_channel_id_test_vector_details());
+    let vector = get_stage1_key_tweaks_test_vector_details();
+    assert_eq!(
+        parameters
+            .get_sender_blinded_pubkey_for_stage1()
+            .expect("sender stage-1 key")
+            .to_hex(),
+        vector[0].blinded_pubkey
+    );
+    assert_eq!(
+        parameters
+            .get_receiver_blinded_pubkey_for_stage1()
+            .expect("receiver stage-1 key")
+            .to_hex(),
+        vector[1].blinded_pubkey
+    );
+    assert_eq!(
+        parameters
+            .get_sender_blinded_pubkey_for_stage1_refund()
+            .expect("sender refund stage-1 key")
+            .to_hex(),
+        vector[2].blinded_pubkey
+    );
+}
+
+#[test]
+fn spilman_test_vector_funding_outputs_keysetv2() {
+    let parameters = channel_parameters(get_channel_id_test_vector_details());
+    let outputs = DeterministicOutputsForOneContext::new("funding".to_owned(), 100, parameters)
+        .expect("valid funding outputs");
+    let secrets = outputs
+        .get_secrets_with_blinding()
+        .expect("funding secrets");
+    let messages = outputs
+        .get_blinded_messages(None)
+        .expect("funding messages");
+
+    for ((secret, message), vector) in secrets
+        .iter()
+        .zip(messages.iter())
+        .zip(get_funding_outputs_test_vector_details())
+    {
+        assert_eq!(secret.amount, vector.amount);
+        assert_eq!(secret.index, vector.index);
+        assert_eq!(secret.secret.to_bytes(), vector.secret.as_bytes());
+        assert_eq!(
+            hex::encode(secret.blinding_factor.secret_bytes()),
+            vector.blinding_factor
+        );
+        assert_eq!(message.blinded_secret.to_hex(), vector.blinded_message);
+    }
+}
+
+#[test]
+fn spilman_test_vector_commitment_outputs_keysetv2() {
+    let parameters = channel_parameters(get_channel_id_test_vector_details());
+    let outputs = CommitmentOutputs::for_balance(50, &parameters).expect("valid commitment");
+    let mut produced = Vec::new();
+    for (context, outputs) in [
+        ("receiver", &outputs.receiver_outputs),
+        ("sender", &outputs.sender_outputs),
+    ] {
+        for (secret, message) in outputs
+            .get_secrets_with_blinding()
+            .expect("secrets")
+            .into_iter()
+            .zip(outputs.get_blinded_messages(None).expect("messages"))
+        {
+            produced.push((context, secret, message));
+        }
+    }
+    for ((context, secret, message), vector) in produced
+        .iter()
+        .zip(get_commitment_outputs_test_vector_details())
+    {
+        assert_eq!(*context, vector.context);
+        assert_eq!(secret.amount, vector.amount);
+        assert_eq!(secret.index, vector.index);
+        assert_eq!(secret.secret.to_bytes(), vector.secret.as_bytes());
+        assert_eq!(
+            hex::encode(secret.blinding_factor.secret_bytes()),
+            vector.blinding_factor
+        );
+        assert_eq!(message.blinded_secret.to_hex(), vector.blinded_message);
+    }
+
+    let sorted = outputs
+        .create_swap_request(Vec::new(), None)
+        .expect("valid commitment output ordering");
+    let expected: Vec<_> = get_commitment_outputs_test_vector_details()
+        .into_iter()
+        .map(|vector| vector.blinded_message)
+        .collect();
+    assert_eq!(
+        sorted
+            .outputs()
+            .iter()
+            .map(|output| output.blinded_secret.to_hex())
+            .collect::<Vec<_>>(),
+        [
+            expected[0],
+            expected[3],
+            expected[1],
+            expected[4],
+            expected[2],
+            expected[5]
+        ],
     );
 }
