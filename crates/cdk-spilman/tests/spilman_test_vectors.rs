@@ -16,6 +16,10 @@ use spilman_test_vectors::channel_secret::{
     spilman_test_vector_channel_secret_hkdf as get_test_vector_details,
     SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_NAME,
 };
+use spilman_test_vectors::output_nonce_and_blinding::{
+    spilman_test_vector_output_nonce_and_blinding as get_output_nonce_and_blinding_test_vector_details,
+    SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME,
+};
 
 #[test]
 fn spilman_test_vector_channel_secret_hkdf() {
@@ -112,5 +116,26 @@ fn spilman_test_vector_channel_id_mint_trailing_slash() {
         parameters.get_channel_id(),
         hex::encode(vector.channel_id),
         "{SPILMAN_TEST_VECTOR_CHANNEL_ID_MINT_TRAILING_SLASH_NAME}: production channel-ID derivation"
+    );
+}
+
+#[test]
+fn spilman_test_vector_output_nonce_and_blinding() {
+    let vector = get_output_nonce_and_blinding_test_vector_details();
+    let output = channel_parameters(get_channel_id_test_vector_details())
+        .create_deterministic_output_with_blinding(vector.context, vector.amount, vector.index)
+        .expect("valid deterministic funding output");
+    let secret_json: serde_json::Value =
+        serde_json::from_str(&output.secret.to_string()).expect("valid NUT-10 secret JSON");
+
+    assert_eq!(
+        secret_json[1]["nonce"],
+        hex::encode(vector.nonce),
+        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: production output nonce"
+    );
+    assert_eq!(
+        hex::encode(output.blinding_factor.secret_bytes()),
+        hex::encode(vector.blinding_factor),
+        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: production Cashu blinding factor"
     );
 }
