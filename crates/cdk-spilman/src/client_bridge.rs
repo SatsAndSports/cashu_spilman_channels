@@ -213,9 +213,14 @@ pub trait SpilmanClientHost {
     /// Compute the hashed ECDH channel secret for a channel.
     ///
     /// The host performs ECDH between the sender's secret key (identified by
-    /// `sender_pubkey_hex`) and the receiver's public key, then hashes the result
-    /// with a domain separator:
-    ///   SHA256("Cashu_Spilman_channel_secret_v1" || ECDH(sender_secret, receiver_pubkey))
+    /// `sender_pubkey_hex`) and the receiver's public key, then derives a
+    /// domain-separated secret with HKDF-SHA256:
+    ///   HKDF-SHA256(
+    ///       salt = empty,
+    ///       ikm = ECDH(sender_secret, receiver_pubkey),
+    ///       info = "Cashu_Spilman_channel_secret_v1",
+    ///       length = 32,
+    ///   )
     ///
     /// For hosts that hold raw secret keys, the convenience function
     /// `crate::bindings::compute_channel_secret_from_hex()` provides
