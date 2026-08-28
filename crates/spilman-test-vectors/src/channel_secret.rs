@@ -139,11 +139,15 @@ pub fn derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference() -> Chan
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference,
+        spilman_test_vector_channel_secret_hkdf_v1_001 as get_test_vector_details,
+        SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME,
+    };
 
     #[test]
     fn spilman_test_vector_channel_secret_hkdf_v1_001() {
-        let vector = super::spilman_test_vector_channel_secret_hkdf_v1_001();
+        let vector = get_test_vector_details();
         let reference = derive_spilman_test_vector_channel_secret_hkdf_v1_001_reference();
 
         assert_eq!(

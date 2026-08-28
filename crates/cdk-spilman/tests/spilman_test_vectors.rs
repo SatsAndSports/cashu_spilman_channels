@@ -3,13 +3,13 @@
 use cashu::util::hex;
 use cdk_spilman::compute_channel_secret;
 use spilman_test_vectors::channel_secret::{
-    spilman_test_vector_channel_secret_hkdf_v1_001 as channel_secret_vector,
+    spilman_test_vector_channel_secret_hkdf_v1_001 as get_test_vector_details,
     SPILMAN_TEST_VECTOR_CHANNEL_SECRET_HKDF_V1_001_NAME,
 };
 
 #[test]
 fn spilman_test_vector_channel_secret_hkdf_v1_001() {
-    let vector = channel_secret_vector();
+    let vector = get_test_vector_details();
     let alice_secret =
         cashu::nuts::SecretKey::from_slice(&vector.alice_secret_key).expect("valid Alice test key");
     let charlie_secret = cashu::nuts::SecretKey::from_slice(&vector.charlie_secret_key)
