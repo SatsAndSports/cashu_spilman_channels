@@ -643,14 +643,13 @@ dependencies = [
  "bitcoin",
  "cashu",
  "hkdf",
- "hmac",
- "k256",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yml",
  "sha2",
+ "spilman-test-vectors",
  "thiserror",
  "tokio",
  "tracing",
@@ -3435,6 +3434,16 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spilman-test-vectors"
+version = "0.15.1"
+dependencies = [
+ "hex",
+ "hmac",
+ "k256",
+ "sha2",
 ]
 
 [[package]]

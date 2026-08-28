@@ -8,6 +8,7 @@ members = [
     "crates/cdk-spilman-python",
     "crates/cdk-spilman-server-integration-tests",
     "crates/cdk-wasm",
+    "crates/spilman-test-vectors",
     "examples/rust-ascii-art",
 ]
 resolver = "2"
