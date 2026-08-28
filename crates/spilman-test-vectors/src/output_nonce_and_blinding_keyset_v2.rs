@@ -1,14 +1,14 @@
-//! Test vector for deterministic output nonces and Cashu blinding factors.
+//! V2-keyset test vector for deterministic output nonces and Cashu blinding factors.
 
 use hmac::{Hmac, Mac};
 use k256::SecretKey;
 use sha2::Sha256;
 
-use crate::channel_id::spilman_test_vector_channel_id;
+use crate::channel_id::spilman_test_vector_channel_id_keysetv2;
 
-/// Canonical name of the deterministic output compatibility fixture.
-pub const SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME: &str =
-    "spilman-test-vector-output-nonce-and-blinding";
+/// Canonical name of the V2-keyset deterministic output compatibility fixture.
+pub const SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME: &str =
+    "spilman-test-vector-output-nonce-and-blinding-keysetv2";
 
 const CONTEXT: &str = "funding";
 const AMOUNT: u64 = 64;
@@ -68,8 +68,10 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
-/// Return the fixed values for `spilman-test-vector-output-nonce-and-blinding`.
-pub fn spilman_test_vector_output_nonce_and_blinding() -> OutputNonceAndBlindingTestVector {
+/// Return the fixed values for
+/// `spilman-test-vector-output-nonce-and-blinding-keysetv2`.
+pub fn spilman_test_vector_output_nonce_and_blinding_keysetv2() -> OutputNonceAndBlindingTestVector
+{
     let nonce_message = concat!(
         "7af675f4f1b9843200d23060ebeb5bf5abea67fa511af79aefa4ba6a19b88c2e",
         "|funding|64|nonce|0"
@@ -80,7 +82,7 @@ pub fn spilman_test_vector_output_nonce_and_blinding() -> OutputNonceAndBlinding
     );
     OutputNonceAndBlindingTestVector {
         channel_id: CHANNEL_ID,
-        channel_secret: spilman_test_vector_channel_id().channel_secret,
+        channel_secret: spilman_test_vector_channel_id_keysetv2().channel_secret,
         context: CONTEXT,
         amount: AMOUNT,
         index: INDEX,
@@ -98,7 +100,7 @@ pub fn spilman_test_vector_output_nonce_and_blinding() -> OutputNonceAndBlinding
 ///
 /// Panics if no valid secp256k1 scalar is found in the specified retry range.
 pub fn derive_output_nonce_and_blinding_reference() -> OutputNonceAndBlindingReference {
-    let vector = spilman_test_vector_output_nonce_and_blinding();
+    let vector = spilman_test_vector_output_nonce_and_blinding_keysetv2();
     let nonce = hmac_sha256(&vector.channel_secret, vector.nonce_message.as_bytes());
     let (retry_counter, blinding_factor) = (0u8..=255)
         .find_map(|retry_counter| {
@@ -132,34 +134,34 @@ pub fn derive_output_nonce_and_blinding_reference() -> OutputNonceAndBlindingRef
 mod tests {
     use super::{
         derive_output_nonce_and_blinding_reference,
-        spilman_test_vector_output_nonce_and_blinding as get_test_vector_details,
-        SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME,
+        spilman_test_vector_output_nonce_and_blinding_keysetv2 as get_test_vector_details,
+        SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME,
     };
 
     #[test]
-    fn spilman_test_vector_output_nonce_and_blinding() {
+    fn spilman_test_vector_output_nonce_and_blinding_keysetv2() {
         let vector = get_test_vector_details();
         let reference = derive_output_nonce_and_blinding_reference();
 
         assert_eq!(
             vector.channel_id,
-            hex::encode(crate::channel_id::spilman_test_vector_channel_id().channel_id),
-            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: channel-ID fixture input"
+            hex::encode(crate::channel_id::spilman_test_vector_channel_id_keysetv2().channel_id),
+            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: channel-ID fixture input"
         );
 
         assert_eq!(
             hex::encode(reference.nonce),
             hex::encode(vector.nonce),
-            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: independent nonce HMAC derivation"
+            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: independent nonce HMAC derivation"
         );
         assert_eq!(
             reference.retry_counter, vector.retry_counter,
-            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: independent scalar retry selection"
+            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: independent scalar retry selection"
         );
         assert_eq!(
             hex::encode(reference.blinding_factor),
             hex::encode(vector.blinding_factor),
-            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_NAME}: independent blinding HMAC derivation"
+            "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: independent blinding HMAC derivation"
         );
     }
 }

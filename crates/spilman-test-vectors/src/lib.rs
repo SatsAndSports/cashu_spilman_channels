@@ -3,5 +3,5 @@
 
 pub mod channel_id;
 pub mod channel_secret;
-pub mod output_nonce_and_blinding;
-pub mod real_mint_keyset;
+pub mod output_nonce_and_blinding_keyset_v2;
+pub mod real_mint_keyset_v2;

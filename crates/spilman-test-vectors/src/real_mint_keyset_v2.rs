@@ -1,4 +1,4 @@
-//! Deterministic real Cashu mint keyset used by protocol test vectors.
+//! Deterministic real Cashu V2 mint keyset used by protocol test vectors.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -14,11 +14,12 @@ use cdk_common::nut00::KnownMethod;
 use cdk_fake_wallet::FakeWallet;
 
 /// Fixed public BIP-39 test mnemonic used solely to reproduce this keyset.
-pub const REAL_TEST_MINT_MNEMONIC: &str = "nut nut nut nut nut nut nut nut nut nut nut crunch";
+pub const REAL_TEST_MINT_KEYSET_V2_MNEMONIC: &str =
+    "nut nut nut nut nut nut nut nut nut nut nut crunch";
 
-/// Public data for a real deterministic Cashu mint keyset.
+/// Public data for a real deterministic Cashu V2 mint keyset.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RealMintKeyset {
+pub struct RealMintKeysetV2 {
     /// Mint-assigned active SAT keyset identifier.
     pub keyset_id: String,
     /// Input fee in parts per thousand.
@@ -27,13 +28,13 @@ pub struct RealMintKeyset {
     pub public_keys: Vec<(u64, String)>,
 }
 
-/// Build a deterministic CDK mint and return its active SAT public keyset.
+/// Build a deterministic CDK V2 mint and return its active SAT public keyset.
 ///
 /// The resulting private keys are deliberately test-only. Production vector
 /// data contains only the corresponding public keyset.
-pub async fn generate_real_test_mint_keyset() -> Result<RealMintKeyset> {
+pub async fn generate_real_test_mint_keyset_v2() -> Result<RealMintKeysetV2> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    let mut builder = MintBuilder::new(db.clone());
+    let mut builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
     let fee_reserve = FeeReserve {
         min_fee_reserve: 0.into(),
         percent_fee_reserve: 0.0,
@@ -56,7 +57,7 @@ pub async fn generate_real_test_mint_keyset() -> Result<RealMintKeyset> {
         .await?;
     builder.set_unit_fee(&CurrencyUnit::Sat, 0)?;
 
-    let mnemonic = Mnemonic::from_str(REAL_TEST_MINT_MNEMONIC)
+    let mnemonic = Mnemonic::from_str(REAL_TEST_MINT_KEYSET_V2_MNEMONIC)
         .map_err(|error| anyhow!("invalid real test mint mnemonic: {error}"))?;
     let mint: Mint = builder
         .build_with_seed(db, &mnemonic.to_seed_normalized(""))
@@ -78,7 +79,7 @@ pub async fn generate_real_test_mint_keyset() -> Result<RealMintKeyset> {
         .collect();
     public_keys.sort_unstable_by_key(|(amount, _)| *amount);
 
-    Ok(RealMintKeyset {
+    Ok(RealMintKeysetV2 {
         keyset_id: keyset_id.to_string(),
         input_fee_ppk: 0,
         public_keys,
