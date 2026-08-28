@@ -3442,6 +3442,7 @@ version = "0.15.1"
 dependencies = [
  "anyhow",
  "bip39",
+ "cashu",
  "cdk",
  "cdk-common",
  "cdk-fake-wallet",
