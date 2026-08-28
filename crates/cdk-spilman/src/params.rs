@@ -72,7 +72,7 @@ pub struct ChannelParameters {
     pub sender_pubkey: cashu::nuts::PublicKey,
     /// Charlie's public key (receiver)
     pub receiver_pubkey: cashu::nuts::PublicKey,
-    /// Mint URL (or "local" for in-process mint)
+    /// Mint URL without trailing slashes (or "local" for in-process mint)
     pub mint: String,
     /// Currency unit for the channel
     pub unit: CurrencyUnit,
@@ -230,6 +230,14 @@ impl ChannelParameters {
         maximum_amount_for_one_output: u64,
         channel_secret: [u8; 32],
     ) -> anyhow::Result<Self> {
+        if mint.contains('|') {
+            anyhow::bail!("mint URL must not contain '|'");
+        }
+        if unit.to_string().contains('|') {
+            anyhow::bail!("currency unit must not contain '|'");
+        }
+        let mint = mint.trim_end_matches('/').to_string();
+
         // Validate input_fee_ppk is in valid range
         if keyset_info.input_fee_ppk > 999 {
             anyhow::bail!(
@@ -1097,6 +1105,80 @@ mod tests {
             original_channel_id, reconstructed_channel_id,
             "Channel IDs should match after JSON roundtrip"
         );
+    }
+
+    #[test]
+    fn test_channel_id_normalizes_mint_url_and_rejects_pipe_delimiters() {
+        let sender_pubkey = SecretKey::generate().public_key();
+        let receiver_pubkey = SecretKey::generate().public_key();
+        let keyset_info = mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
+        let funding_token_amount =
+            ChannelParameters::get_minimum_funding_token_amount(1000, &keyset_info, 64)
+                .expect("funding amount should be computable");
+
+        let without_slash = ChannelParameters::new(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://testmint.cash".to_string(),
+            CurrencyUnit::Sat,
+            1000,
+            funding_token_amount,
+            1_700_000_000,
+            1_699_999_000,
+            keyset_info.clone(),
+            64,
+            [42; 32],
+        )
+        .expect("mint URL without trailing slash should be valid");
+        let with_slash = ChannelParameters::new(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://testmint.cash/".to_string(),
+            CurrencyUnit::Sat,
+            1000,
+            funding_token_amount,
+            1_700_000_000,
+            1_699_999_000,
+            keyset_info.clone(),
+            64,
+            [42; 32],
+        )
+        .expect("mint URL with trailing slash should be valid");
+
+        assert_eq!(with_slash.mint, "https://testmint.cash");
+        assert_eq!(without_slash.get_channel_id(), with_slash.get_channel_id());
+
+        let mint_error = ChannelParameters::new(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://test|mint.cash".to_string(),
+            CurrencyUnit::Sat,
+            1000,
+            funding_token_amount,
+            1_700_000_000,
+            1_699_999_000,
+            keyset_info.clone(),
+            64,
+            [42; 32],
+        )
+        .expect_err("mint URL containing a pipe should be rejected");
+        assert!(mint_error.to_string().contains("must not contain '|"));
+
+        let unit_error = ChannelParameters::new(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://testmint.cash".to_string(),
+            CurrencyUnit::Custom("custom|unit".to_string()),
+            1000,
+            funding_token_amount,
+            1_700_000_000,
+            1_699_999_000,
+            keyset_info,
+            64,
+            [42; 32],
+        )
+        .expect_err("currency unit containing a pipe should be rejected");
+        assert!(unit_error.to_string().contains("must not contain '|"));
     }
 
     #[test]
