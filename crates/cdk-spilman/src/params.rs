@@ -544,7 +544,10 @@ impl ChannelParameters {
     /// - "sender_stage1" / "receiver_stage1" - for funding token 2-of-2
     /// - "sender_stage1_refund" - for funding token expiry refund
     ///
-    /// Computes: SHA256("Cashu_Spilman_P2BK_v1" || channel_secret || "{channel_id}|{context}|{retry_counter}")
+    /// Computes: HMAC-SHA256(
+    ///     key = channel_secret,
+    ///     message = "Cashu_Spilman_stage1_key_tweak_v1" || "{channel_id}|{context}|{retry_counter}",
+    /// )
     /// Retries with incrementing retry_counter until a valid scalar in [1, n-1] is found.
     ///
     /// Note: This produces a SHARED blinding scalar for all proofs with the same context.
@@ -554,13 +557,10 @@ impl ChannelParameters {
 
         for retry_counter in 0u8..=255 {
             let text = format!("{}|{}|{}", channel_id, context, retry_counter);
-            let mut input = Vec::new();
-            input.extend_from_slice(b"Cashu_Spilman_P2BK_v1");
-            input.extend_from_slice(&self.channel_secret);
-            input.extend_from_slice(text.as_bytes());
-
-            let hash = sha256::Hash::hash(&input);
-            let bytes: [u8; 32] = hash.to_byte_array();
+            let mut message = Vec::new();
+            message.extend_from_slice(b"Cashu_Spilman_stage1_key_tweak_v1");
+            message.extend_from_slice(text.as_bytes());
+            let bytes = hmac_sha256(&self.channel_secret, &message);
 
             // Try to create a valid scalar (must be in range [1, n-1])
             if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
