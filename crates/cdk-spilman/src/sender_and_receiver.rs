@@ -386,35 +386,43 @@ impl SpilmanChannelSender {
                     outputs: vec![blinded_message],
                 };
 
-                let restore_response = mint_connection.post_restore(restore_request).await;
-
-                match restore_response {
-                    Ok(response) if !response.signatures.is_empty() => {
-                        // Success! Unblind the signature to get the proof
-                        let blind_signature =
-                            response.signatures.into_iter().next().ok_or_else(|| {
-                                anyhow::anyhow!("mint restore response had no signatures")
-                            })?;
-
-                        let mut proofs = cashu::dhke::construct_proofs(
-                            vec![blind_signature],
-                            vec![det_output.blinding_factor.clone()],
-                            vec![det_output.secret.clone()],
-                            &params.keyset_info.active_keys,
-                        )?;
-                        let proof = proofs.pop().ok_or_else(|| {
-                            anyhow::anyhow!("construct_proofs returned no proofs")
-                        })?;
-                        let proof = self.sign_sender_close_proof(proof, amount, index)?;
-
-                        recovered_proofs.push(proof);
-                        index += 1;
-                    }
-                    _ => {
-                        // No signature found for this (amount, index), move to next amount
-                        break;
-                    }
+                let restore_response = mint_connection
+                    .post_restore(restore_request)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "failed to restore sender output for amount {} index {}: {}",
+                            amount,
+                            index,
+                            error
+                        )
+                    })?;
+                let mut signatures = restore_response.signatures.into_iter();
+                let Some(blind_signature) = signatures.next() else {
+                    // No signature found for this (amount, index), move to the next amount.
+                    break;
+                };
+                if signatures.next().is_some() {
+                    anyhow::bail!(
+                        "mint restore response returned multiple signatures for amount {} index {}",
+                        amount,
+                        index
+                    );
                 }
+
+                let mut proofs = cashu::dhke::construct_proofs(
+                    vec![blind_signature],
+                    vec![det_output.blinding_factor.clone()],
+                    vec![det_output.secret.clone()],
+                    &params.keyset_info.active_keys,
+                )?;
+                let proof = proofs
+                    .pop()
+                    .ok_or_else(|| anyhow::anyhow!("construct_proofs returned no proofs"))?;
+                let proof = self.sign_sender_close_proof(proof, amount, index)?;
+
+                recovered_proofs.push(proof);
+                index += 1;
             }
         }
 
@@ -482,6 +490,29 @@ mod tests {
         }
     }
 
+    struct FailingRestoreMintConnection;
+
+    #[async_trait]
+    impl MintConnection for FailingRestoreMintConnection {
+        async fn process_swap(
+            &self,
+            _request: cashu::nuts::SwapRequest,
+        ) -> anyhow::Result<SwapResponse> {
+            unreachable!("process_swap is not used in these tests")
+        }
+
+        async fn post_restore(&self, _request: RestoreRequest) -> anyhow::Result<RestoreResponse> {
+            Err(anyhow::anyhow!("injected restore failure"))
+        }
+
+        async fn check_state(
+            &self,
+            _ys: Vec<cashu::nuts::PublicKey>,
+        ) -> anyhow::Result<CheckStateResponse> {
+            unreachable!("check_state is not used in these tests")
+        }
+    }
+
     fn create_test_sender(maximum_amount_for_one_output: u64) -> SpilmanChannelSender {
         let alice_secret = SecretKey::generate();
         let sender_pubkey = alice_secret.public_key();
@@ -530,6 +561,19 @@ mod tests {
 
         assert!(proofs.is_empty(), "mock restore returns no proofs");
         assert_eq!(mint.attempted_amounts(), vec![1, 2, 4, 8]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_sender_proofs_propagates_restore_error() {
+        let sender = create_test_sender(0);
+        let error = sender
+            .restore_sender_proofs(&FailingRestoreMintConnection)
+            .await
+            .expect_err("restore failure should not return partial proofs");
+
+        assert!(error
+            .to_string()
+            .contains("failed to restore sender output for amount 1 index 0"));
     }
 
     #[tokio::test]
