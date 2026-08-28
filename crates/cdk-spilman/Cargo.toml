@@ -33,8 +33,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 tracing.workspace = true
 
 [dev-dependencies]
-hmac = "0.12"
-k256 = { version = "0.13", features = ["arithmetic"] }
+spilman-test-vectors = { path = "../spilman-test-vectors" }
 tokio = { workspace = true, features = ["full"] }
 
 [lints]

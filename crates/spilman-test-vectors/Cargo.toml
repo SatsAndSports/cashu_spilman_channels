@@ -1,0 +1,15 @@
+[package]
+name = "spilman-test-vectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+hmac = "0.12"
+k256 = { version = "0.13", features = ["arithmetic"] }
+sha2.workspace = true
+
+[lints]
+workspace = true
