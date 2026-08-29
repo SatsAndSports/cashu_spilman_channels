@@ -7,8 +7,8 @@ This guide covers setting up the development environment for Spilman payment cha
 From the repository root:
 
 ```bash
-# Run the Spilman test suite
-make test-suite
+# Run the complete non-demo test suite
+make test-all
 ```
 
 ## Native Development (Recommended for Pi)
@@ -89,14 +89,14 @@ against a different mint implementation (e.g. NutMix, Nutshell, or a remote
 mint), start it yourself and set `MINT_URL`:
 
 ```bash
-# Run integration and demo tests against your external mint
-MINT_URL=http://localhost:3338 make test-integration-all test-demo-all
+# Run binding integration tests against your external mint
+MINT_URL=http://localhost:3338 make test-integration-all
 ```
 
 **Important:** The server integration tests (`test-server-*`) always spawn
 their own standalone test mint internally because the Rust harness controls
-the mint lifecycle. `MINT_URL` is respected by the integration and demo
-targets that go through `scripts/run_with_mint.sh`.
+the mint lifecycle. `MINT_URL` is respected by the binding integration targets
+that go through `scripts/run_with_mint.sh`.
 
 ### Integration Kit Tests
 
@@ -112,8 +112,7 @@ make test-kit-all
 The WASM bindings are used by both browser clients and Node.js servers. The root Makefile uses sentinel-based dependency tracking for fast builds.
 
 ```bash
-# Build and test the workspace
-make test-suite
+# Build and run the complete test suite
 make test-all
 ```
 
@@ -132,7 +131,6 @@ make build-wasm
 Test targets automatically use dev mode for speed:
 ```bash
 make test-integration-ts  # Uses WASM_DEV=1 internally
-make test-demo-ts         # Uses WASM_DEV=1 internally
 ```
 
 ---
@@ -142,10 +140,10 @@ make test-demo-ts         # Uses WASM_DEV=1 internally
 ### Rust Tests
 
 ```bash
-# Rust-side suite
-make test-suite
+# Rust-only suite
+make test-rust-only
 
-# All tests (includes live mint integration)
+# All tests, including language integration kits
 make test-all
 ```
 

@@ -86,9 +86,3 @@ examples/ts-ascii-art/
     ├── integration.test.ts
     └── retry-close.test.ts
 ```
-
-## Testing
-
-```bash
-make test-demo-ts
-```

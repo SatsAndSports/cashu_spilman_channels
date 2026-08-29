@@ -18,7 +18,7 @@ cargo fmt --manifest-path Cargo.toml --all -- --check
 cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 
 # Test suites
-make test-suite
+make test-rust-only
 make test-all
 
 # Common delegated top-level targets
