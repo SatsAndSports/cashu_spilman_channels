@@ -41,12 +41,12 @@ async-trait = "0.1"
 axum = { version = "0.8.9", features = ["ws"] }
 bip39 = "2"
 bitcoin = { version = "0.32.9", features = ["base64", "serde", "rand", "rand-std"] }
-cdk = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cdk", default-features = false, features = ["mint"] }
-cdk-axum = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cdk-axum", default-features = false }
-cdk-common = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cdk-common", default-features = false }
-cdk-fake-wallet = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cdk-fake-wallet" }
-cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cdk-sqlite", default-features = false, features = ["mint"] }
-cashu = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.17.6", package = "cashu", default-features = false }
+cdk = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cdk", default-features = false, features = ["mint"] }
+cdk-axum = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cdk-axum", default-features = false }
+cdk-common = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cdk-common", default-features = false }
+cdk-fake-wallet = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cdk-fake-wallet" }
+cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cdk-sqlite", default-features = false, features = ["mint"] }
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "eb34616e88c6f50623ec37b94997c67257279693", package = "cashu", default-features = false }
 hkdf = "0.12"
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
