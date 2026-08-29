@@ -31,7 +31,7 @@ fn bridge_error_response_json(err: &BridgeError) -> String {
 }
 
 /// Result of a successful payment
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct PaymentSuccess {
     pub channel_id: String,
@@ -52,7 +52,7 @@ impl From<spilman_core::PaymentSuccess> for PaymentSuccess {
 }
 
 /// Result of validating a payment without recording it
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct PaymentValidationResult {
     pub channel_id: String,
@@ -75,7 +75,7 @@ impl From<spilman_core::PaymentValidationResult> for PaymentValidationResult {
 }
 
 /// Result of registering/funding a channel
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct FundChannelResult {
     pub channel_id: String,
@@ -94,7 +94,7 @@ impl From<spilman_core::FundChannelResult> for FundChannelResult {
 }
 
 /// Result of successfully closing a channel
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct CloseSuccess {
     pub channel_id: String,
@@ -145,14 +145,14 @@ impl From<spilman_core::CloseSuccess> for CloseSuccess {
 /// Optional methods (default implementations exist):
 /// - refresh_all_keysets(mint: str) -> None  # Re-fetch keysets from mint (for retry logic)
 struct PySpilmanHost {
-    py_host: PyObject,
+    py_host: Py<PyAny>,
 }
 
 impl SpilmanHost for PySpilmanHost {
     fn get_active_keyset_ids(&self, mint: &str, unit: &cashu::nuts::CurrencyUnit) -> Vec<Id> {
         let unit_str = unit.to_string();
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "get_active_keyset_ids", (mint, unit_str))
@@ -181,7 +181,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_keyset_info(&self, mint: &str, keyset_id: &Id) -> Option<String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "get_keyset_info", (mint, keyset_id.to_string()))
@@ -202,7 +202,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn receiver_key_is_acceptable(&self, receiver_pubkey: &PublicKey) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "receiver_key_is_acceptable",
@@ -230,7 +230,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn mint_and_keyset_is_acceptable(&self, mint: &str, keyset_id: &Id) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "mint_and_keyset_is_acceptable",
@@ -258,7 +258,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_funding(&self, channel_id: &str) -> Option<spilman_core::ChannelFunding> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_funding_and_params", (channel_id,))
@@ -268,7 +268,7 @@ impl SpilmanHost for PySpilmanHost {
                 return None;
             }
 
-            let tuple = result.downcast_bound::<PyTuple>(py).ok()?;
+            let tuple = result.cast_bound::<PyTuple>(py).ok()?;
             if tuple.len() != 4 {
                 return None;
             }
@@ -288,7 +288,7 @@ impl SpilmanHost for PySpilmanHost {
         funding: spilman_core::ChannelFunding,
         initial_payment: spilman_core::PaymentProof,
     ) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _ = self.py_host.call_method1(
                 py,
                 "save_funding",
@@ -306,13 +306,9 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_amount_due(&self, channel_id: &str, context_json: Option<&String>) -> u64 {
-        Python::with_gil(|py| {
-            let ctx = match context_json {
-                Some(s) => s.as_str().into_py(py),
-                None => py.None(),
-            };
+        Python::attach(|py| {
             self.py_host
-                .call_method1(py, "get_amount_due", (channel_id, ctx))
+                .call_method1(py, "get_amount_due", (channel_id, context_json))
                 .and_then(|r| r.extract::<u64>(py))
                 .unwrap_or(0)
         })
@@ -324,7 +320,7 @@ impl SpilmanHost for PySpilmanHost {
         payment: spilman_core::PaymentProof,
         context_json: &String,
     ) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _ = self.py_host.call_method1(
                 py,
                 "record_payment",
@@ -339,7 +335,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_channel_state(&self, channel_id: &str) -> ChannelState {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "get_channel_state", (channel_id,))
@@ -363,7 +359,7 @@ impl SpilmanHost for PySpilmanHost {
         expiry_timestamp: u64,
         payment: spilman_core::PaymentProof,
     ) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "mark_channel_closing",
@@ -381,7 +377,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_closing_data(&self, channel_id: &str) -> Option<ClosingData> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_closing_data", (channel_id,))
@@ -422,7 +418,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn get_channel_policy(&self, unit: &str) -> Option<ChannelPolicy> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_channel_policy", (unit,))
@@ -440,7 +436,7 @@ impl SpilmanHost for PySpilmanHost {
     }
 
     fn now_seconds(&self) -> u64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method0(py, "now_seconds")
                 .and_then(|r| r.extract::<u64>(py))
@@ -452,7 +448,7 @@ impl SpilmanHost for PySpilmanHost {
         &self,
         channel_id: &str,
     ) -> Option<spilman_core::PaymentProof> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(
@@ -466,7 +462,7 @@ impl SpilmanHost for PySpilmanHost {
                 return None;
             }
 
-            let tuple = result.downcast_bound::<PyTuple>(py).ok()?;
+            let tuple = result.cast_bound::<PyTuple>(py).ok()?;
             if tuple.len() != 2 {
                 return None;
             }
@@ -488,7 +484,7 @@ impl SpilmanHost for PySpilmanHost {
         receiver_sum: u64,
         sender_sum: u64,
     ) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "mark_channel_closed",
@@ -513,7 +509,7 @@ impl SpilmanHost for PySpilmanHost {
         receiver_pubkey_hex: &str,
         sender_pubkey_hex: &str,
     ) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "compute_channel_secret",
@@ -531,7 +527,7 @@ impl SpilmanHost for PySpilmanHost {
         message_hex: &str,
         tweak_scalar_hex: &str,
     ) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "sign_with_tweaked_key",
@@ -546,7 +542,7 @@ impl SpilmanHost for PySpilmanHost {
 
 impl SpilmanMintClient for PySpilmanHost {
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
@@ -560,7 +556,7 @@ impl SpilmanMintClient for PySpilmanHost {
 
 impl SpilmanKeysetRefresher for PySpilmanHost {
     fn refresh(&self, mint: &str) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Check if the method exists on the Python host
             if self.py_host.getattr(py, "refresh_all_keysets").is_err() {
                 // Method not implemented, use default behavior
@@ -597,7 +593,7 @@ impl SpilmanBridge {
     /// Args:
     ///     host: Python object implementing SpilmanHost methods
     #[new]
-    fn new(host: PyObject) -> Self {
+    fn new(host: Py<PyAny>) -> Self {
         let py_host = PySpilmanHost { py_host: host };
         let inner = RustSpilmanBridge::new(py_host);
 
@@ -1029,10 +1025,10 @@ fn mint_proofs_from_mint(
     mint_url: &str,
     amount_sat: u64,
     keyset_info_json: &str,
-    call_http: PyObject,
+    call_http: Py<PyAny>,
 ) -> PyResult<String> {
     let http_fn = |method: &str, url: &str, body: &str| -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = call_http
                 .call1(py, (method, url, body))
                 .map_err(|e| format!("HTTP callback failed: {}", e))?;
@@ -1043,7 +1039,7 @@ fn mint_proofs_from_mint(
     };
 
     // Release the GIL during the Rust execution (which includes sleeping for poll)
-    py.allow_threads(|| {
+    py.detach(|| {
         spilman_core::mint_proofs_from_mint(mint_url, amount_sat, keyset_info_json, &http_fn)
             .map_err(PyValueError::new_err)
     })
@@ -1079,7 +1075,7 @@ fn sign_with_tweaked_key_util(
 // ============================================================================
 
 /// Result of opening a new channel via ClientBridge.
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct ClientOpenChannelResult {
     pub channel_id: String,
@@ -1093,7 +1089,7 @@ pub struct ClientOpenChannelResult {
 }
 
 /// Information about a stored channel.
-#[pyclass(get_all)]
+#[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct ClientChannelInfo {
     pub channel_id: String,
@@ -1134,7 +1130,7 @@ pub struct ClientChannelInfo {
 /// - sign_with_tweaked_key(signer_pubkey_hex: str, message_hex: str, tweak_scalar_hex: str) -> str
 /// - compute_channel_secret(sender_pubkey_hex: str, receiver_pubkey_hex: str) -> str
 struct PySpilmanClientHost {
-    py_host: PyObject,
+    py_host: Py<PyAny>,
 }
 
 /// Wrapper that delegates SpilmanClientNetworking trait calls to a Python object.
@@ -1142,11 +1138,11 @@ struct PySpilmanClientHost {
 /// The Python object must implement:
 /// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Raises on error
 struct PySpilmanClientNetworking {
-    py_host: PyObject,
+    py_host: Py<PyAny>,
 }
 
 fn python_error_message(py: Python<'_>, err: PyErr) -> String {
-    err.value_bound(py)
+    err.value(py)
         .str()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|_| err.to_string())
@@ -1162,7 +1158,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
     ) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let opening_json = serde_json::to_string(&opening)
                 .expect("ClientChannelOpeningFromSwap serialization failed");
             self.py_host
@@ -1177,7 +1173,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method1(py, "mark_channel_open", (channel_id, funding_proofs_json))
                 .map(|_| ())
@@ -1190,7 +1186,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
         channel_id: &str,
         failure: ClientOpeningFailure,
     ) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let failure_json =
                 serde_json::to_string(&failure).expect("ClientOpeningFailure serialization failed");
             self.py_host
@@ -1205,7 +1201,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_channel_funding", (channel_id,))
@@ -1224,7 +1220,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
         &self,
         channel_id: &str,
     ) -> Option<ClientChannelOpeningFromSwap> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_channel_opening_from_swap", (channel_id,))
@@ -1244,7 +1240,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     // ========================================================================
 
     fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_payment_state", (channel_id,))
@@ -1260,7 +1256,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let state_json =
                 serde_json::to_string(&state).expect("ClientPaymentState serialization failed");
             self.py_host
@@ -1275,7 +1271,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     // ========================================================================
 
     fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "get_channel_state", (channel_id,))
@@ -1297,7 +1293,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method1(py, "mark_channel_closing", (channel_id,))
                 .map(|_| ())
@@ -1306,7 +1302,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method1(py, "mark_channel_closed", (channel_id,))
                 .map(|_| ())
@@ -1315,7 +1311,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn list_channel_ids(&self) -> Vec<String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method0(py, "list_channel_ids")
                 .and_then(|r| r.extract::<Vec<String>>(py))
@@ -1324,7 +1320,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     }
 
     fn delete_channel(&self, channel_id: &str) -> Result<(), String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method1(py, "delete_channel", (channel_id,))
                 .map(|_| ())
@@ -1337,7 +1333,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
     // ========================================================================
 
     fn now_seconds(&self) -> u64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.py_host
                 .call_method0(py, "now_seconds")
                 .and_then(|r| r.extract::<u64>(py))
@@ -1355,7 +1351,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
         message_hex: &str,
         tweak_scalar_hex: &str,
     ) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "sign_with_tweaked_key",
@@ -1372,7 +1368,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
         sender_pubkey_hex: &str,
         receiver_pubkey_hex: &str,
     ) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "compute_channel_secret",
@@ -1387,7 +1383,7 @@ impl SpilmanClientHost for PySpilmanClientHost {
 
 impl SpilmanClientNetworking for PySpilmanClientNetworking {
     fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
@@ -1403,7 +1399,7 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
         mint_url: &str,
         restore_request_json: &str,
     ) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "call_mint_restore",
@@ -1416,7 +1412,7 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
     }
 
     fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_keysets", (mint_url,))
@@ -1428,7 +1424,7 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
     }
 
     fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_keys", (mint_url, keyset_id))
@@ -1466,8 +1462,8 @@ impl ClientBridge {
     ///           (also must implement call_mint_swap for networking)
     #[new]
     #[pyo3(signature = (host))]
-    fn new(host: PyObject) -> Self {
-        Python::with_gil(|py| {
+    fn new(host: Py<PyAny>) -> Self {
+        Python::attach(|py| {
             let py_host = PySpilmanClientHost {
                 py_host: host.clone_ref(py),
             };

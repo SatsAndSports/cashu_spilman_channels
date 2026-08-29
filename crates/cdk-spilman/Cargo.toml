@@ -9,7 +9,7 @@ rust-version = "1.85.0"
 [features]
 default = []
 wallet = ["cashu/wallet"]
-configurable-host = ["dep:serde_yml", "dep:rusqlite"]
+configurable-host = ["dep:yaml_serde", "dep:rusqlite"]
 configurable-host-reqwest = ["configurable-host", "dep:reqwest", "dep:tokio"]
 spilman-axum = ["configurable-host", "dep:axum"]
 client-sqlite = ["dep:rusqlite"]
@@ -26,7 +26,7 @@ reqwest = { workspace = true, optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
-serde_yml = { version = "0.0.12", optional = true }
+yaml_serde = { version = "0.10", optional = true }
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "sync"] }
