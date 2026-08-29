@@ -142,7 +142,7 @@ fn default_pricing_scale() -> u64 {
 impl ConfigurableHostConfig {
     /// Parse a [`ConfigurableHostConfig`] from a YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        serde_yml::from_str(yaml).map_err(|e| format!("YAML parse error: {e}"))
+        yaml_serde::from_str(yaml).map_err(|e| format!("YAML parse error: {e}"))
     }
 }
 

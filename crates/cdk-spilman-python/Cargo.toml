@@ -10,11 +10,11 @@ name = "cdk_spilman"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
 cashu.workspace = true
 spilman-core = { package = "cdk-spilman", path = "../cdk-spilman", default-features = false, features = ["wallet"], version = "=0.15.1" }
 hex = "0.4"
 serde_json = "1.0"
 
 [build-dependencies]
-pyo3-build-config = "0.22"
+pyo3-build-config = "0.29.2"

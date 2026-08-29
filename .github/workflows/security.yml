@@ -51,7 +51,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.24.x'
+          go-version: '1.25.x'
           cache-dependency-path: |
             examples/go-ascii-art/go.sum
             integration-kits/go/go.sum
@@ -68,9 +68,19 @@ jobs:
         working-directory: examples/go-ascii-art
 
   npm-audit:
-    name: npm audit
+    name: npm audit (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: TypeScript integration kit
+            lockfile: integration-kits/ts/package-lock.json
+            working-directory: integration-kits/ts
+          - name: TypeScript demo
+            lockfile: examples/ts-ascii-art/package-lock.json
+            working-directory: examples/ts-ascii-art
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -80,17 +90,11 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: |
-            integration-kits/ts/package-lock.json
-            examples/ts-ascii-art/package-lock.json
+          cache-dependency-path: ${{ matrix.lockfile }}
 
-      - name: Audit TypeScript integration kit
+      - name: Audit ${{ matrix.name }}
         run: npm audit --audit-level=high
-        working-directory: integration-kits/ts
-
-      - name: Audit TypeScript demo
-        run: npm audit --audit-level=high
-        working-directory: examples/ts-ascii-art
+        working-directory: ${{ matrix.working-directory }}
 
   python-audit:
     name: Python dependency audit
