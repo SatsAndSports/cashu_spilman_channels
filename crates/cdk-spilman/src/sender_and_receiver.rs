@@ -120,6 +120,11 @@ pub fn verify_valid_channel(
             params.keyset_info.input_fee_ppk,
             params.keyset_info.final_expiry,
         ),
+        cashu::nuts::nut02::KeySetVersion::Version02 => {
+            return ChannelVerificationResult::failed(vec![
+                ChannelVerificationError::InternalError("V3 keysets are not supported".to_string()),
+            ]);
+        }
     };
 
     if expected_keyset_id != computed_keyset_id {
