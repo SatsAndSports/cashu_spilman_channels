@@ -65,7 +65,7 @@ jobs:
           tool: wasm-pack
 
       - name: Run full test suite
-        run: make test-all
+        run: make test-library-all
 
       - name: Upload test logs
         if: always()

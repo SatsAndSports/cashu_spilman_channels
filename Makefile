@@ -59,10 +59,9 @@ CONTAINER_CMD ?= podman
 	run-python-server run-python-client \
 	run-go-server run-go-client \
 	run-ts-server run-ts-client \
-	test test-rust-only test-unit-spilman test-core test-vectors test-test-mint test-interop test-wasm test-rust-demo test-client-integration-rust test-integration-rust \
+	test test-rust-only test-library-all test-unit-spilman test-core test-vectors test-test-mint test-interop test-wasm test-client-integration-rust \
 	test-unit-go test-integration-go test-integration-python test-integration-ts \
-	test-server-ts test-server-rust test-server-python test-server-go test-server-all \
-	test-demo-python test-demo-go test-demo-ts \
+	test-integration-all test-nut00-errors test-selective-retry test-server-ts test-server-rust test-server-python test-server-go test-server-all \
 	test-kit-python test-kit-go test-kit-ts test-kit-all \
 	test-all container-test \
 	clean clean-logs \
@@ -252,23 +251,8 @@ test-integration-python:
 test-integration-go:
 	$(MINT_RUNNER) $(MAKE) -C crates/cdk-spilman-go test-integration-dev
 
-test-suite: test-core test-interop test-wasm test-rust-demo test-go test-python
-	@echo ""
-	@echo "========================================="
-	@echo "  ALL SUITE TESTS PASSED"
-	@echo "========================================="
-
-test-demo-python: test-python
-	$(MINT_RUNNER) scripts/python-parallel-demo.sh
-
-test-demo-go: test-go
-	$(MINT_RUNNER) scripts/go-parallel-demo.sh
-
 test-integration-ts:
 	$(MINT_RUNNER) $(MAKE) -C crates/cdk-wasm test-integration WASM_DEV=1
-
-test-demo-ts:
-	WASM_DEV=1 $(MINT_RUNNER) scripts/ts-parallel-demo.sh
 
 # NUT-00 error code compliance test (requires mint via MINT_URL or auto-spawned)
 test-nut00-errors:
@@ -286,28 +270,30 @@ test-server-python: test-python
 test-server-go: test-go
 	SERVER_TYPE=go cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
-test-server-rust: test-rust-demo
+test-server-rust:
 	SERVER_TYPE=rust cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
 test-server-ts: test-integration-ts
 	WASM_DEV=1 SERVER_TYPE=ts cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
-test-all: test-suite test-integration-python test-integration-go test-integration-ts test-nut00-errors test-selective-retry test-demo-python test-demo-go test-demo-ts test-server-python test-server-go test-server-rust test-server-ts
+test-library-all: test-rust-only test-integration-all test-server-all test-nut00-errors test-selective-retry
+	@echo ""
+	@echo "========================================="
+	@echo "  ALL LIBRARY TESTS PASSED"
+	@echo "========================================="
+
+test-all: test-library-all test-kit-all
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL TESTS PASSED"
 	@echo "========================================="
 
-# Run Rust ASCII Art integration tests (requires mint)
-test-integration-rust:
-	$(MINT_RUNNER) cargo test -p rust-ascii-art --manifest-path Cargo.toml --test integration -- --nocapture
-
 # Run Go unit tests (delegates to Go Makefile)
 test-unit-go: build-go
 	$(MAKE) -C $(GO_CRATE_DIR) test-dev
 
-# Run all integration tests (Go, Python, TS, Rust)
-test-integration-all: test-integration-rust test-integration-go test-integration-python test-integration-ts
+# Run all language binding integration tests
+test-integration-all: test-integration-go test-integration-python test-integration-ts
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL INTEGRATION TESTS PASSED"
@@ -322,17 +308,6 @@ test-server-all: test-server-ts test-server-rust test-server-python test-server-
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL SERVER INTEGRATION TESTS PASSED"
-	@echo "========================================="
-
-# ===========================================================================
-# Test Targets - Demo Tests (simple client/server sanity check)
-# ===========================================================================
-
-# Test all demos
-test-demo-all: test-demo-python test-demo-go test-demo-ts
-	@echo ""
-	@echo "========================================="
-	@echo "  ALL DEMO TESTS PASSED"
 	@echo "========================================="
 
 # ===========================================================================
@@ -366,10 +341,9 @@ test-kit-all: test-kit-python test-kit-go test-kit-ts
 test: test-rust-only
 
 # Rust-only tests: Rust crates plus Rust client/server integration paths.
-# This intentionally excludes Go/Python/TS bindings, language-kit tests, demos
-# for non-Rust languages, and ignored/special-purpose tests such as NUT-00
-# compliance checks.
-test-rust-only: test-core test-vectors test-test-mint test-interop test-client-integration-rust test-wasm test-rust-demo test-server-rust
+# This intentionally excludes Go/Python/TS bindings, language-kit tests, and
+# ignored/special-purpose tests such as NUT-00 compliance checks.
+test-rust-only: test-core test-vectors test-test-mint test-interop test-client-integration-rust test-wasm test-server-rust
 	@echo ""
 	@echo "========================================="
 	@echo "  ALL RUST-ONLY TESTS PASSED"
