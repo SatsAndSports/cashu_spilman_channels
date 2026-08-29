@@ -140,7 +140,7 @@ impl TestMintHelper {
 
 async fn create_test_mint() -> anyhow::Result<Mint> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
