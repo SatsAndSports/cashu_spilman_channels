@@ -270,7 +270,7 @@ test-server-python: test-python
 test-server-go: test-go
 	SERVER_TYPE=go cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
-test-server-rust:
+test-server-rust: build-rust-server
 	SERVER_TYPE=rust cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
 test-server-ts: test-integration-ts
