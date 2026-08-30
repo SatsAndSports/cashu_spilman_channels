@@ -33,7 +33,7 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 }
 
 /// Hash input to a nonzero secp256k1 scalar, retrying once with `0xff` appended.
-fn hash_to_secp_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<Scalar>
+pub(crate) fn hash_to_secp_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<Scalar>
 where
     F: Fn(&[u8]) -> [u8; 32],
 {
@@ -928,19 +928,15 @@ impl ChannelParameters {
             .to_be_bytes(),
         );
 
-        // Derive a valid secp256k1 blinding scalar without reducing candidates modulo n.
-        let blinding_factor = (0u8..=255)
-            .find_map(|retry_counter| {
-                let blinding_text = format!(
-                    "{}|{}|{}|blinding|{}|{}",
-                    channel_id, context, amount, index, retry_counter
-                );
-                SecretKey::from_slice(&hmac_sha256(&self.channel_secret, blinding_text.as_bytes()))
-                    .ok()
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!("Failed to derive valid blinding factor after 256 attempts")
-            })?;
+        let blinding_text = format!("{}|{}|{}|blinding|{}", channel_id, context, amount, index);
+        let blinding_scalar = hash_to_secp_scalar(blinding_text.as_bytes(), |message| {
+            hmac_sha256(&self.channel_secret, message)
+        })
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to derive deterministic blinding factor: {error}")
+        })?;
+        let blinding_factor = SecretKey::from_slice(&blinding_scalar.to_be_bytes())
+            .map_err(|error| anyhow::anyhow!("Invalid deterministic blinding factor: {error}"))?;
 
         // Handle funding context separately (requires 2-of-2 blinded pubkeys + expiry)
         if context == "funding" {

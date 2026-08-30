@@ -27,9 +27,9 @@ pub struct FundingOutputTestVector {
 /// Return the fixed funding outputs in Cashu smallest-first order.
 pub fn spilman_test_vector_funding_outputs_keysetv2() -> [FundingOutputTestVector; 3] {
     [
-        FundingOutputTestVector { amount: 4, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"e9aad80a4e747e570bb68cff4f8a33f8c2d904f424e695f9e2febf92bbd4fb30\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "89d7fc20c07229e615c9365c83b70938566037c55fe61c102afee78ff44fab66", blinded_message: "027e3b02f160f2d75b276bd411821a2fc66bd3ba4aed5fc23b9a88e472dd641134" },
-        FundingOutputTestVector { amount: 32, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"879abe0662d57e86ec39d715103c1c95814780b29752c01aadb0888b92d3c081\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "932933b55f73dfc76c8fd04e671360e46fc2be33878e83ebde17a5c48651744c", blinded_message: "034e10f284aceb8d8a316105f2533583c7f4e5ea6b2102f276403d061f1ee9460f" },
-        FundingOutputTestVector { amount: 64, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"f934dd4311715f9e9af3d338c2b7235581a779f748839ffbfe584b0c1e21e37a\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "74285411dc702b0e295f143d026b95bd75cf730647a694e5c5b8147f619d1b35", blinded_message: "03fb84f24c1bb271786a89aaeaff334c36db02bde6e1f9607d69f94db907b48bbf" },
+        FundingOutputTestVector { amount: 4, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"e9aad80a4e747e570bb68cff4f8a33f8c2d904f424e695f9e2febf92bbd4fb30\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "d8d6d77cfe64154981bc10bfbb96987c27353f1854e3b977543e5c92ff91ffef", blinded_message: "03c1d74cd3ce918288b83438fb63850c4b316a82135afc6543e564c0915facadef" },
+        FundingOutputTestVector { amount: 32, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"879abe0662d57e86ec39d715103c1c95814780b29752c01aadb0888b92d3c081\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "8952cedabe7d95af9d8388373e1bc2d8cb8897a4e59a5b3c0d3c7e93d2059b0f", blinded_message: "02f4fa3357831a0eed7aa2ebd0164a75c804a463650c890f37815f5c70f3683265" },
+        FundingOutputTestVector { amount: 64, index: 0, secret: "[\"P2PK\",{\"data\":\"03da88bac82ac2731d6f4463e2d981824ea2d0e4862215bf8a422b1afe4eea6a8d\",\"nonce\":\"f934dd4311715f9e9af3d338c2b7235581a779f748839ffbfe584b0c1e21e37a\",\"tags\":[[\"pubkeys\",\"03c988d50c11fa634afdd519e2a9ce751adf29f0b17ad6251b7c199fdf9c1f7455\"],[\"locktime\",\"1800000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"02d9194f39e5689e97a4f20614b09e5ec751edc41f63d0bde6fc39d7dfeba74760\"],[\"n_sigs_refund\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]", blinding_factor: "95066df465e8e73f5d56df3bcf010ed7c8cc473b0e68ada8bb51589f31009618", blinded_message: "0365caa01fd1599a8f3c1321022c56680bf010351c2af4c45936fde4bfd8469442" },
     ]
 }
 
@@ -43,7 +43,7 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 ///
 /// # Panics
 ///
-/// Panics if no valid scalar is found in the fixed retry range.
+/// Panics if both scalar candidates are invalid.
 pub fn derive_funding_output_scalars(amount: u64, index: usize) -> (String, String) {
     let channel = spilman_test_vector_channel_id_keysetv2();
     let id = hex::encode(channel.channel_id);
@@ -51,17 +51,15 @@ pub fn derive_funding_output_scalars(amount: u64, index: usize) -> (String, Stri
         &channel.channel_secret,
         format!("{id}|funding|{amount}|nonce|{index}").as_bytes(),
     ));
-    let scalar = (0u8..=255)
-        .find_map(|retry| {
-            let value = hmac_sha256(
-                &channel.channel_secret,
-                format!("{id}|funding|{amount}|blinding|{index}|{retry}").as_bytes(),
-            );
-            k256::SecretKey::from_slice(&value)
-                .ok()
-                .map(|_| hex::encode(value))
-        })
-        .expect("valid scalar");
+    let input = format!("{id}|funding|{amount}|blinding|{index}");
+    let mut value = hmac_sha256(&channel.channel_secret, input.as_bytes());
+    if k256::SecretKey::from_slice(&value).is_err() {
+        let mut retry_input = input.into_bytes();
+        retry_input.push(0xff);
+        value = hmac_sha256(&channel.channel_secret, &retry_input);
+    }
+    assert!(k256::SecretKey::from_slice(&value).is_ok(), "valid scalar");
+    let scalar = hex::encode(value);
     (nonce, scalar)
 }
 
