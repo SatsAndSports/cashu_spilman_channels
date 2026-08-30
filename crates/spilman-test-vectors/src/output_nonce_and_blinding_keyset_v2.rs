@@ -34,7 +34,7 @@ pub struct OutputNonceAndBlindingTestVector {
     pub index: usize,
     /// Exact UTF-8 HMAC input for the nonce.
     pub nonce_message: &'static str,
-    /// The resulting 32-byte nonce.
+    /// The resulting valid 32-byte secp256k1 scalar serialized as the nonce.
     pub nonce: [u8; 32],
     /// The accepted blinding-factor retry counter.
     pub retry_counter: u8,
@@ -47,7 +47,7 @@ pub struct OutputNonceAndBlindingTestVector {
 /// Values derived independently from the deterministic output vector inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputNonceAndBlindingReference {
-    /// The 32-byte nonce.
+    /// The valid 32-byte secp256k1 scalar serialized as the nonce.
     pub nonce: [u8; 32],
     /// The accepted retry counter.
     pub retry_counter: u8,
@@ -102,6 +102,10 @@ pub fn spilman_test_vector_output_nonce_and_blinding_keysetv2() -> OutputNonceAn
 pub fn derive_output_nonce_and_blinding_reference() -> OutputNonceAndBlindingReference {
     let vector = spilman_test_vector_output_nonce_and_blinding_keysetv2();
     let nonce = hmac_sha256(&vector.channel_secret, vector.nonce_message.as_bytes());
+    assert!(
+        SecretKey::from_slice(&nonce).is_ok(),
+        "the fixture nonce must be a valid secp256k1 scalar"
+    );
     let (retry_counter, blinding_factor) = (0u8..=255)
         .find_map(|retry_counter| {
             let message = format!(

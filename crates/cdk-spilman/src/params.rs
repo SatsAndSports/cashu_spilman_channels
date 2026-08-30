@@ -32,6 +32,30 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
 }
 
+/// Hash input to a nonzero secp256k1 scalar, retrying once with `0xff` appended.
+fn hash_to_secp_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<Scalar>
+where
+    F: Fn(&[u8]) -> [u8; 32],
+{
+    let candidate = hash(input);
+    if let Ok(scalar) = Scalar::from_be_bytes(candidate) {
+        if scalar != Scalar::ZERO {
+            return Ok(scalar);
+        }
+    }
+
+    let mut retry_input = input.to_vec();
+    retry_input.push(0xff);
+    let candidate = hash(&retry_input);
+    if let Ok(scalar) = Scalar::from_be_bytes(candidate) {
+        if scalar != Scalar::ZERO {
+            return Ok(scalar);
+        }
+    }
+
+    anyhow::bail!("Failed to derive valid secp256k1 scalar after retry")
+}
+
 pub(crate) struct Stage2P2bkTweakInfo {
     #[allow(dead_code)]
     pub(crate) ephemeral_secret: SecretKey,
@@ -667,24 +691,9 @@ impl ChannelParameters {
         input.extend_from_slice(zx);
         input.push(i_byte);
 
-        let hash = sha256::Hash::hash(&input);
-        let bytes: [u8; 32] = hash.to_byte_array();
-        if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-            if scalar != Scalar::ZERO {
-                return Ok(scalar);
-            }
-        }
-
-        input.push(0xff);
-        let hash = sha256::Hash::hash(&input);
-        let bytes: [u8; 32] = hash.to_byte_array();
-        if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-            if scalar != Scalar::ZERO {
-                return Ok(scalar);
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid P2BK scalar")
+        hash_to_secp_scalar(&input, |message| {
+            sha256::Hash::hash(message).to_byte_array()
+        })
     }
 
     /// Get the blinded sender (Alice) pubkey for stage 1 P2BK
@@ -908,9 +917,16 @@ impl ChannelParameters {
     ) -> Result<DeterministicSecretWithBlinding, anyhow::Error> {
         let channel_id = self.get_channel_id();
 
-        // Derive deterministic nonce: HMAC-SHA256(channel_secret, "{channel_id}|{context}|{amount}|nonce|{index}")
+        // The nonce is an output-discriminator scalar so V3 can reuse this
+        // derivation as its deterministic NUMS offset.
         let nonce_text = format!("{}|{}|{}|nonce|{}", channel_id, context, amount, index);
-        let nonce = hex::encode(hmac_sha256(&self.channel_secret, nonce_text.as_bytes()));
+        let nonce = hex::encode(
+            hash_to_secp_scalar(nonce_text.as_bytes(), |message| {
+                hmac_sha256(&self.channel_secret, message)
+            })
+            .map_err(|error| anyhow::anyhow!("Failed to derive deterministic nonce: {error}"))?
+            .to_be_bytes(),
+        );
 
         // Derive a valid secp256k1 blinding scalar without reducing candidates modulo n.
         let blinding_factor = (0u8..=255)
@@ -1053,6 +1069,38 @@ mod tests {
             hex::encode(digest),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
+    }
+
+    #[test]
+    fn test_hash_to_secp_scalar_retries_once_with_ff() {
+        let input = b"deterministic output";
+        let scalar = hash_to_secp_scalar(input, |candidate_input| {
+            if candidate_input == input {
+                [0; 32]
+            } else {
+                assert_eq!(candidate_input, b"deterministic output\xff");
+                let mut valid_scalar = [0; 32];
+                valid_scalar[31] = 1;
+                valid_scalar
+            }
+        })
+        .expect("second candidate is a valid scalar");
+
+        assert_eq!(
+            scalar.to_be_bytes(),
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hash_to_secp_scalar_rejects_two_invalid_candidates() {
+        let error = hash_to_secp_scalar(b"deterministic output", |_| [0; 32])
+            .expect_err("zero candidates are invalid scalars");
+
+        assert!(error.to_string().contains("after retry"));
     }
 
     #[test]
