@@ -576,34 +576,19 @@ impl ChannelParameters {
     /// - "sender_stage1" / "receiver_stage1" - for funding token 2-of-2
     /// - "sender_stage1_refund" - for funding token expiry refund
     ///
-    /// Computes: HMAC-SHA256(
-    ///     key = channel_secret,
-    ///     message = "Cashu_Spilman_stage1_key_tweak_v1" || "{channel_id}|{context}|{retry_counter}",
-    /// )
-    /// Retries with incrementing retry_counter until a valid scalar in [1, n-1] is found.
+    /// Computes HMAC-SHA256 with `channel_secret` over
+    /// `"Cashu_Spilman_stage1_key_tweak_v1" || "{channel_id}|{context}"`.
+    /// A single invalid candidate is retried with raw `0xff` appended.
     ///
     /// Note: This produces a SHARED blinding scalar for all proofs with the same context.
     /// For per-proof blinding (stage2), use `stage2_tweak_info_for_role()` instead.
     fn derive_blinding_scalar(&self, context: &str) -> anyhow::Result<Scalar> {
         let channel_id = self.get_channel_id();
 
-        for retry_counter in 0u8..=255 {
-            let text = format!("{}|{}|{}", channel_id, context, retry_counter);
-            let mut message = Vec::new();
-            message.extend_from_slice(b"Cashu_Spilman_stage1_key_tweak_v1");
-            message.extend_from_slice(text.as_bytes());
-            let bytes = hmac_sha256(&self.channel_secret, &message);
-
-            // Try to create a valid scalar (must be in range [1, n-1])
-            if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-                // Scalar::from_be_bytes rejects values >= n, and we also reject zero
-                if scalar != Scalar::ZERO {
-                    return Ok(scalar);
-                }
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid blinding scalar after 256 attempts")
+        let mut message = b"Cashu_Spilman_stage1_key_tweak_v1".to_vec();
+        message.extend_from_slice(format!("{channel_id}|{context}").as_bytes());
+        hash_to_secp_scalar(&message, |input| hmac_sha256(&self.channel_secret, input))
+            .map_err(|error| anyhow::anyhow!("Failed to derive stage-1 blinding scalar: {error}"))
     }
 
     /// Derive stage 2 P2BK tweak info for a specific output
@@ -638,8 +623,9 @@ impl ChannelParameters {
 
     /// Derive a per-output ephemeral secret for stage 2 contexts
     ///
-    /// Computes: SHA256("Cashu_Spilman_P2BK_ephemeral_v1" || channel_secret || "{channel_id}|{context}|{amount}|{index}|{retry_counter}")
-    /// Retries with incrementing retry_counter until a valid secret key is found.
+    /// Computes HMAC-SHA256 with `channel_secret` over
+    /// `"Cashu_Spilman_P2BK_ephemeral_v1" || "{channel_id}|{context}|{amount}|{index}"`.
+    /// A single invalid candidate is retried with raw `0xff` appended.
     fn derive_stage2_p2bk_ephemeral_secret_for_output(
         &self,
         context: &str,
@@ -648,25 +634,15 @@ impl ChannelParameters {
     ) -> anyhow::Result<SecretKey> {
         let channel_id = self.get_channel_id();
 
-        for retry_counter in 0u8..=255 {
-            let text = format!(
-                "{}|{}|{}|{}|{}",
-                channel_id, context, amount, index, retry_counter
-            );
-            let mut input = Vec::new();
-            input.extend_from_slice(b"Cashu_Spilman_P2BK_ephemeral_v1");
-            input.extend_from_slice(&self.channel_secret);
-            input.extend_from_slice(text.as_bytes());
-
-            let hash = sha256::Hash::hash(&input);
-            let bytes: [u8; 32] = hash.to_byte_array();
-
-            if let Ok(secret) = SecretKey::from_slice(&bytes) {
-                return Ok(secret);
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid ephemeral secret for output after 256 attempts")
+        let mut message = b"Cashu_Spilman_P2BK_ephemeral_v1".to_vec();
+        message.extend_from_slice(format!("{channel_id}|{context}|{amount}|{index}").as_bytes());
+        let scalar =
+            hash_to_secp_scalar(&message, |input| hmac_sha256(&self.channel_secret, input))
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to derive stage-2 ephemeral secret: {error}")
+                })?;
+        SecretKey::from_slice(&scalar.to_be_bytes())
+            .map_err(|error| anyhow::anyhow!("Invalid stage-2 ephemeral secret: {error}"))
     }
 
     /// Derive the raw x-coordinate used by NUT-28 before the KDF step.

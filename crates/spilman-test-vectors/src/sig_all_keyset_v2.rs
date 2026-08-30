@@ -63,14 +63,14 @@ pub fn spilman_test_vector_sig_all_keysetv2() -> SigAllTestVector {
     SigAllTestVector {
         receiver_balance: 50,
         funding_proof_cs: [
-            "028d2b7d1215b72c2b23d51563fb0d61e3652b87a77ceb3b237df1b9f46b0d044f",
-            "02de5cb101e677403e4658d615e1a665db787558cccd09ff93a65983fa48fcecfd",
-            "03bb199086ab2d33ce69cc80a007b48350fb13ce669af96be24f44613e9d0013b7",
+            "03324f2f0c4961e71397999bb072623d53e05276faf6e377aff1e04c8fc89757f0",
+            "0396b23d7ddc18f2f2f0a47c464d0316bd65011d1e96605c2d653272cd5955f04b",
+            "03ce7ca88ba5cdc6999008b6395feaf372a628587203a974ca1a284f3d019e6484",
         ],
         message_sha256: [
-            0x93, 0xdd, 0xe7, 0x28, 0x50, 0xcf, 0x5d, 0xea, 0x63, 0x9d, 0x67, 0x5d, 0xc1, 0x9f,
-            0x82, 0x9b, 0xf8, 0x53, 0x69, 0xbe, 0xbd, 0xb8, 0x51, 0x34, 0x22, 0x98, 0x2a, 0x1a,
-            0x07, 0x93, 0x41, 0x5f,
+            0x91, 0x73, 0x19, 0xd4, 0x09, 0xc8, 0x4d, 0xcc, 0xb0, 0xd2, 0x1f, 0xe3, 0x1a, 0x61,
+            0x29, 0xbb, 0xd3, 0x4c, 0x5d, 0xb7, 0x2c, 0x97, 0x57, 0xd3, 0xa2, 0x52, 0x2e, 0xad,
+            0xca, 0x03, 0x01, 0x89,
         ],
     }
 }
@@ -155,8 +155,7 @@ mod tests {
             &keys,
         )
         .expect("unblind fixed funding proofs");
-        for (proof, expected_c) in proofs.into_iter().zip(funding_input_cs()) {
-            assert_eq!(proof.c.to_hex(), expected_c);
-        }
+        let actual: Vec<_> = proofs.into_iter().map(|proof| proof.c.to_hex()).collect();
+        assert_eq!(actual, funding_input_cs());
     }
 }
