@@ -136,6 +136,13 @@ pub fn compute_channel_secret(
     my_secret: &cashu::nuts::SecretKey,
     their_pubkey: &cashu::nuts::PublicKey,
 ) -> [u8; 32] {
+    let (
+        cashu::nuts::PublicKey::Secp256k1(their_pubkey),
+        cashu::nuts::SecretKey::Secp256k1(my_secret),
+    ) = (their_pubkey, my_secret)
+    else {
+        panic!("Spilman channels require secp256k1 keys");
+    };
     let raw_ecdh = SharedSecret::new(their_pubkey, my_secret).secret_bytes();
     let hkdf = Hkdf::<Sha256>::new(None, &raw_ecdh);
     let mut channel_secret = [0u8; 32];
@@ -180,13 +187,16 @@ fn derive_blinded_secret_key(secret: &SecretKey, r: &Scalar) -> anyhow::Result<S
     // Get parity of the public key by accessing the underlying secp256k1 pubkey
     // Our wrapper's x_only_public_key() only returns XOnlyPublicKey, but the inner
     // secp256k1::PublicKey::x_only_public_key() returns (XOnlyPublicKey, Parity)
-    let pubkey = secret.public_key();
-    let inner_pubkey: &bitcoin::secp256k1::PublicKey = &pubkey;
+    let cashu::nuts::PublicKey::Secp256k1(inner_pubkey) = secret.public_key() else {
+        anyhow::bail!("Spilman channels require secp256k1 keys");
+    };
     let (_, parity) = inner_pubkey.x_only_public_key();
 
     // Get the underlying secp256k1 secret key
     // We need to clone because negate() consumes self
-    let inner_secret: bitcoin::secp256k1::SecretKey = **secret;
+    let inner_secret = *secret
+        .as_secp256k1()
+        .map_err(|_| anyhow::anyhow!("Spilman channels require secp256k1 keys"))?;
 
     // If parity is odd, negate the secret key before adding the tweak
     // This is because BIP-340 signing will use the negated key for odd-Y pubkeys
@@ -219,7 +229,9 @@ fn derive_blinded_pubkey(
     r: &Scalar,
 ) -> anyhow::Result<cashu::nuts::PublicKey> {
     // Get parity of the public key
-    let inner_pubkey: &bitcoin::secp256k1::PublicKey = pubkey;
+    let cashu::nuts::PublicKey::Secp256k1(inner_pubkey) = pubkey else {
+        anyhow::bail!("Spilman channels require secp256k1 keys");
+    };
     let (_, parity) = inner_pubkey.x_only_public_key();
 
     // If parity is odd, negate the pubkey before adding the tweak
@@ -675,7 +687,7 @@ impl ChannelParameters {
         secret: &SecretKey,
     ) -> anyhow::Result<[u8; 32]> {
         let shared_point = pubkey.mul_tweak(&SECP256K1, &secret.as_scalar())?;
-        Ok(shared_point.x_only_public_key().0.serialize())
+        Ok(shared_point.x_only_public_key().serialize())
     }
 
     /// Derive NUT-28 P2BK scalar from ephemeral shared secret x-coordinate.
@@ -1471,7 +1483,10 @@ mod tests {
         let msg = Message::from_digest_slice(msg_hash.as_ref()).unwrap();
 
         // Get the secp256k1 keypair for signing
-        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &blinded_secret);
+        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(
+            &SECP256K1,
+            blinded_secret.as_secp256k1().unwrap(),
+        );
         let signature = SECP256K1.sign_schnorr(&msg, &keypair);
 
         println!("Message: {}", hex::encode(msg_hash.to_byte_array()));
@@ -1686,8 +1701,10 @@ mod tests {
         let msg = Message::from_digest_slice(msg_hash.as_ref()).unwrap();
 
         // Sign with refund blinded key
-        let keypair =
-            bitcoin::secp256k1::Keypair::from_secret_key(&SECP256K1, &blinded_refund_secret);
+        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(
+            &SECP256K1,
+            blinded_refund_secret.as_secp256k1().unwrap(),
+        );
         let signature = SECP256K1.sign_schnorr(&msg, &keypair);
 
         println!("Message: {}", hex::encode(msg_hash.to_byte_array()));

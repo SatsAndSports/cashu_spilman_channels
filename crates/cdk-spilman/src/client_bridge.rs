@@ -693,6 +693,9 @@ fn build_keyset_info_from_responses(
             keyset_info.input_fee_ppk,
             keyset_info.final_expiry,
         ),
+        cashu::nuts::nut02::KeySetVersion::Version02 => {
+            return Err("V3 keysets are not supported".to_string());
+        }
     };
     if keyset_info.keyset_id != computed_id {
         return Err(format!(

@@ -1680,10 +1680,14 @@ pub fn sign_with_tweaked_key_util(
 
     // Handle BIP-340 parity: if pubkey has odd Y, negate secret before adding tweak
     let pubkey = secret.public_key();
-    let inner_pubkey: &bitcoin::secp256k1::PublicKey = &pubkey;
+    let PublicKey::Secp256k1(inner_pubkey) = pubkey else {
+        return Err("Spilman channels require secp256k1 keys".to_string());
+    };
     let (_, parity) = inner_pubkey.x_only_public_key();
 
-    let inner_secret: bitcoin::secp256k1::SecretKey = *secret;
+    let inner_secret = *secret
+        .as_secp256k1()
+        .map_err(|_| "Spilman channels require secp256k1 keys".to_string())?;
     let effective_secret = if parity == Parity::Odd {
         inner_secret.negate()
     } else {
