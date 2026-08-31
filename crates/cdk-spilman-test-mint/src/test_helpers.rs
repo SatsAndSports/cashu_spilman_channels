@@ -29,7 +29,7 @@ pub const DEFAULT_TEST_FEE_PPK: u64 = 0;
 /// Create an in-memory test mint with FakeWallet backend.
 pub async fn create_test_mint() -> Result<Mint> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
