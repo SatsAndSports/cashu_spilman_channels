@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use bitcoin::hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{Parity, Scalar};
+use bls12_381::Scalar as BlsScalar;
 use cashu::nuts::{CurrencyUnit, SecretKey};
 #[cfg(test)]
 use cashu::nuts::{Id, Keys, PublicKey};
@@ -54,6 +55,35 @@ where
     }
 
     anyhow::bail!("Failed to derive valid secp256k1 scalar after retry")
+}
+
+/// Hash input to a nonzero BLS12-381 scalar using bounded rejection sampling.
+///
+/// Each candidate is hashed from `input || u32_BE(counter)`, for counters zero
+/// through 255. Candidate encodings are big-endian to match NUT-00 `OS2IP`;
+/// `bls12_381::Scalar` uses little-endian bytes.
+#[allow(dead_code)] // Reserved for the V3 BLS issuance flow.
+pub(crate) fn hash_to_bls_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<BlsScalar>
+where
+    F: Fn(&[u8]) -> [u8; 32],
+{
+    for counter in 0..=255u32 {
+        let mut candidate_input = Vec::with_capacity(input.len() + std::mem::size_of::<u32>());
+        candidate_input.extend_from_slice(input);
+        candidate_input.extend_from_slice(&counter.to_be_bytes());
+        let mut candidate = hash(&candidate_input);
+
+        if candidate == [0; 32] {
+            continue;
+        }
+
+        candidate.reverse();
+        if let Some(scalar) = Option::<BlsScalar>::from(BlsScalar::from_bytes(&candidate)) {
+            return Ok(scalar);
+        }
+    }
+
+    anyhow::bail!("Failed to derive valid BLS scalar after 256 attempts")
 }
 
 pub(crate) struct Stage2P2bkTweakInfo {
@@ -1073,6 +1103,73 @@ mod tests {
             .expect_err("zero candidates are invalid scalars");
 
         assert!(error.to_string().contains("after retry"));
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_uses_big_endian_counter() {
+        use std::cell::RefCell;
+
+        let input = b"deterministic output";
+        let candidates = RefCell::new(Vec::new());
+        let scalar = hash_to_bls_scalar(input, |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            let mut valid_scalar = [0; 32];
+            valid_scalar[31] = 1;
+            valid_scalar
+        })
+        .expect("first candidate is a valid BLS scalar");
+
+        assert_eq!(
+            candidates.into_inner(),
+            vec![b"deterministic output\0\0\0\0"]
+        );
+        assert_eq!(scalar.to_bytes()[0], 1);
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_retries_with_incremented_counter() {
+        use std::cell::RefCell;
+
+        let input = b"deterministic output";
+        let candidates = RefCell::new(Vec::new());
+        let scalar = hash_to_bls_scalar(input, |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            if candidate_input.ends_with(&0u32.to_be_bytes()) {
+                [0; 32]
+            } else {
+                let mut valid_scalar = [0; 32];
+                valid_scalar[31] = 1;
+                valid_scalar
+            }
+        })
+        .expect("second candidate is a valid BLS scalar");
+
+        assert_eq!(
+            candidates.into_inner(),
+            vec![
+                b"deterministic output\0\0\0\0".to_vec(),
+                b"deterministic output\0\0\0\x01".to_vec(),
+            ]
+        );
+        assert_eq!(scalar.to_bytes()[0], 1);
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_rejects_after_256_invalid_candidates() {
+        use std::cell::RefCell;
+
+        let candidates = RefCell::new(Vec::new());
+        let error = hash_to_bls_scalar(b"deterministic output", |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            [0xff; 32]
+        })
+        .expect_err("above-order candidates are invalid BLS scalars");
+
+        let candidates = candidates.into_inner();
+        assert_eq!(candidates.len(), 256);
+        assert_eq!(candidates[0], b"deterministic output\0\0\0\0");
+        assert_eq!(candidates[255], b"deterministic output\0\0\0\xff");
+        assert!(error.to_string().contains("after 256 attempts"));
     }
 
     #[test]
