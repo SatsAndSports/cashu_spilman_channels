@@ -1287,26 +1287,9 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
 
     let mut mint_helper = TestMintHelper::new().await.unwrap();
     let v2_keyset_id = mint_helper.keyset_id();
+    let v2_keyset_info_json = mint_helper.keyset_info_json().unwrap();
     let v2_proofs = mint_helper.mint_proofs(1000).await.unwrap();
     assert_eq!(v2_keyset_id.get_version(), KeySetVersion::Version01);
-
-    let v1_keyset_id = mint_helper.rotate_sat_keyset_to_v1().await.unwrap();
-    let v1_keyset_info_json = mint_helper.keyset_info_json().unwrap();
-    assert_eq!(v1_keyset_id.get_version(), KeySetVersion::Version00);
-
-    let keysets = mint_helper.mint().keysets();
-    let v2_keyset = keysets
-        .keysets
-        .iter()
-        .find(|keyset| keyset.id == v2_keyset_id)
-        .expect("rotated mint should retain V2 keyset");
-    let v1_keyset = keysets
-        .keysets
-        .iter()
-        .find(|keyset| keyset.id == v1_keyset_id)
-        .expect("rotated mint should expose V1 keyset");
-    assert!(!v2_keyset.active);
-    assert!(v1_keyset.active);
 
     let router = build_router(mint_helper.mint()).await.unwrap();
     let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1335,14 +1318,59 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
 
     let receiver_secret = SecretKey::generate();
     let server_host = TestServerHost::new(receiver_secret.clone());
-    // The receiver only knows V1, proving the post-rotation funding output uses it.
-    server_host.add_keyset(&mint_url, v1_keyset_id, v1_keyset_info_json);
+    server_host.add_keyset(&mint_url, v2_keyset_id, v2_keyset_info_json);
     let server_bridge = SpilmanBridge::new(server_host);
 
     let sender_secret = SecretKey::generate();
     let mut client_host = ConfigurableClientHost::new_in_memory();
     client_host.add_key(sender_secret.clone());
     let client_bridge = SpilmanClientBridge::new(client_host, ReqwestClientNetworking::new());
+
+    let v2_token = build_cashu_b_token(
+        &mint_url,
+        "sat",
+        &serde_json::to_string(&v2_proofs).unwrap(),
+    )
+    .unwrap();
+    let v2_channel = client_bridge
+        .open_channel_from_token_auto(
+            &v2_token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &mint_url,
+            64,
+        )
+        .expect("V2 keyset should open a channel before rotation");
+    register_channel(&client_bridge, &server_bridge, &v2_channel.channel_id);
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v2_channel.channel_id, 10).balance,
+        10
+    );
+
+    let v1_keyset_id = mint_helper.rotate_sat_keyset_to_v1().await.unwrap();
+    let v1_keyset_info_json = mint_helper.keyset_info_json().unwrap();
+    assert_eq!(v1_keyset_id.get_version(), KeySetVersion::Version00);
+    server_bridge
+        .host()
+        .add_keyset(&mint_url, v1_keyset_id, v1_keyset_info_json);
+    client_bridge
+        .refresh_keysets(&mint_url)
+        .expect("client should refresh both keyset versions after rotation");
+
+    let keysets = mint_helper.mint().keysets();
+    let v2_keyset = keysets
+        .keysets
+        .iter()
+        .find(|keyset| keyset.id == v2_keyset_id)
+        .expect("rotated mint should retain V2 keyset");
+    let v1_keyset = keysets
+        .keysets
+        .iter()
+        .find(|keyset| keyset.id == v1_keyset_id)
+        .expect("rotated mint should expose V1 keyset");
+    assert!(!v2_keyset.active);
+    assert!(v1_keyset.active);
 
     for (keyset_id, expected_version) in [
         (v2_keyset_id, KeySetVersion::Version01),
@@ -1366,26 +1394,35 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
         );
     }
 
-    let token = build_cashu_b_token(
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v2_channel.channel_id, 25).balance,
+        25,
+        "accepted V2 channel should continue after V1 becomes active"
+    );
+
+    let v1_proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    let v1_token = build_cashu_b_token(
         &mint_url,
         "sat",
-        &serde_json::to_string(&v2_proofs).unwrap(),
+        &serde_json::to_string(&v1_proofs).unwrap(),
     )
     .unwrap();
-    let open_result = client_bridge
+    let v1_channel = client_bridge
         .open_channel_from_token_auto(
-            &token,
+            &v1_token,
             &receiver_secret.public_key().to_hex(),
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             &mint_url,
             64,
         )
-        .expect("V2 input proofs should fund a channel with the active V1 keyset");
+        .expect("V1 keyset should open a channel after rotation");
 
-    register_channel(&client_bridge, &server_bridge, &open_result.channel_id);
-    let result = pay_channel(&client_bridge, &server_bridge, &open_result.channel_id, 10);
-    assert_eq!(result.balance, 10);
+    register_channel(&client_bridge, &server_bridge, &v1_channel.channel_id);
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v1_channel.channel_id, 10).balance,
+        10
+    );
 
     let _ = shutdown_tx.send(());
 }
