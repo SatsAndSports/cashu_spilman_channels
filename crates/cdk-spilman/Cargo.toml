@@ -1,6 +1,6 @@
 [package]
 name = "cdk-spilman"
-version = "0.15.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Standalone Spilman payment channels library for Cashu"

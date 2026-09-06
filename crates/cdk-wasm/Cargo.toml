@@ -1,6 +1,6 @@
 [package]
 name = "cdk-wasm"
-version = "0.15.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository.workspace = true
@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cashu.workspace = true
-cdk-spilman = { path = "../cdk-spilman", version = "=0.15.1", features = ["wallet"] }
+cdk-spilman = { path = "../cdk-spilman", version = "=0.1.0", features = ["wallet"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

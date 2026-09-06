@@ -1,6 +1,6 @@
 [package]
 name = "rust-ascii-art"
-version = "0.15.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Rust ASCII Art demo server for Spilman payment channels"
@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 cashu.workspace = true
-cdk-spilman = { path = "../../crates/cdk-spilman", version = "=0.15.1", features = ["spilman-axum", "configurable-host-reqwest"] }
+cdk-spilman = { path = "../../crates/cdk-spilman", version = "=0.1.0", features = ["spilman-axum", "configurable-host-reqwest"] }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
