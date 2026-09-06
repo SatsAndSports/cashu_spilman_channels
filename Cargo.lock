@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-spilman"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-spilman-client-integration-tests"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-spilman-interop-tests"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-spilman-server-integration-tests"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-spilman-test-mint"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-wasm"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -3022,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ascii-art"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3443,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "spilman-test-vectors"
-version = "0.15.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bip39",

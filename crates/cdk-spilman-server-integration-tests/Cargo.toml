@@ -1,6 +1,6 @@
 [package]
 name = "cdk-spilman-server-integration-tests"
-version = "0.15.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Integration tests for Spilman payment channel servers"
@@ -17,7 +17,7 @@ path = "tests/integration.rs"
 
 [dependencies]
 cashu.workspace = true
-cdk-spilman = { path = "../cdk-spilman", version = "=0.15.1", features = ["wallet"] }
+cdk-spilman = { path = "../cdk-spilman", version = "=0.1.0", features = ["wallet"] }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full", "process"] }
 serde = { workspace = true }

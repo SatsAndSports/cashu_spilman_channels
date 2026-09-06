@@ -1,6 +1,6 @@
 [package]
 name = "cdk-spilman-test-mint"
-version = "0.15.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Minimal standalone test mint for Spilman flows"
