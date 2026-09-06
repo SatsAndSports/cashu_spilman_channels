@@ -55,7 +55,7 @@ CONTAINER_CMD ?= podman
 .PHONY: fmt fmt-check lint venv \
 	build-python build-python-wheel install-python \
 	build-go build-rust-server \
-	build-wasm build-ts-wasm build-kit-ts \
+	build-wasm build-ts-wasm build-kit-ts build-ts-server-kit \
 	run-python-server run-python-client \
 	run-go-server run-go-client \
 	run-ts-server run-ts-client \
@@ -273,7 +273,10 @@ test-server-go: test-go
 test-server-rust: build-rust-server
 	SERVER_TYPE=rust cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
-test-server-ts: test-integration-ts
+build-ts-server-kit:
+	$(MAKE) -C crates/cdk-wasm install WASM_DEV=1
+
+test-server-ts: build-ts-server-kit
 	WASM_DEV=1 SERVER_TYPE=ts cargo test -p cdk-spilman-server-integration-tests --manifest-path Cargo.toml --test integration -- --nocapture
 
 test-library-all: test-rust-only test-integration-all test-server-all test-nut00-errors test-selective-retry

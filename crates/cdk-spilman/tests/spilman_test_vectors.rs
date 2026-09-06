@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+use bitcoin::secp256k1::Scalar;
 use cashu::nuts::nut10::SpendingConditionVerification;
 use cashu::nuts::{CurrencyUnit, Id, Keys, PublicKey};
 use cashu::{util::hex, Amount};
@@ -147,6 +148,11 @@ fn spilman_test_vector_output_nonce_and_blinding_keysetv2() {
         secret_json[1]["nonce"],
         hex::encode(vector.nonce),
         "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: production output nonce"
+    );
+    let nonce: [u8; 32] = vector.nonce;
+    assert!(
+        Scalar::from_be_bytes(nonce).is_ok_and(|scalar| scalar != Scalar::ZERO),
+        "{SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME}: nonce is a valid secp256k1 scalar"
     );
     assert_eq!(
         hex::encode(output.blinding_factor.secret_bytes()),

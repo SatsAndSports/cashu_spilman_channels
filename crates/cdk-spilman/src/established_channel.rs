@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::client_storage::ClientChannelFunding;
 use super::deterministic::MintConnection;
 use super::keysets_and_amounts::OrderedListOfAmounts;
-use super::params::ChannelParameters;
+use super::params::{hash_to_secp_scalar, ChannelParameters};
 use super::sender_and_receiver::SpilmanChannelSender;
 use crate::bindings::parse_keyset_info_from_json;
 
@@ -320,8 +320,10 @@ impl EstablishedChannel {
             )
             .as_bytes(),
         );
-        let blinding_hash = sha256::Hash::hash(&blinding_preimage);
-        let blinding_factor = SecretKey::from_slice(blinding_hash.as_byte_array())?;
+        let blinding_scalar = hash_to_secp_scalar(&blinding_preimage, |input| {
+            sha256::Hash::hash(input).to_byte_array()
+        })?;
+        let blinding_factor = SecretKey::from_slice(&blinding_scalar.to_be_bytes())?;
         let (blinded_point, _) =
             cashu::dhke::blind_message(&secret.to_bytes(), Some(blinding_factor.clone()))?;
         let blinded_message = BlindedMessage::new(

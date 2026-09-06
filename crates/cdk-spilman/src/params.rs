@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use bitcoin::hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{Parity, Scalar};
+use bls12_381::Scalar as BlsScalar;
 use cashu::nuts::{CurrencyUnit, SecretKey};
 #[cfg(test)]
 use cashu::nuts::{Id, Keys, PublicKey};
@@ -30,6 +31,59 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     let mut engine = HmacEngine::<sha256::Hash>::new(key);
     engine.input(message);
     Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
+}
+
+/// Hash input to a nonzero secp256k1 scalar, retrying once with `0xff` appended.
+pub(crate) fn hash_to_secp_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<Scalar>
+where
+    F: Fn(&[u8]) -> [u8; 32],
+{
+    let candidate = hash(input);
+    if let Ok(scalar) = Scalar::from_be_bytes(candidate) {
+        if scalar != Scalar::ZERO {
+            return Ok(scalar);
+        }
+    }
+
+    let mut retry_input = input.to_vec();
+    retry_input.push(0xff);
+    let candidate = hash(&retry_input);
+    if let Ok(scalar) = Scalar::from_be_bytes(candidate) {
+        if scalar != Scalar::ZERO {
+            return Ok(scalar);
+        }
+    }
+
+    anyhow::bail!("Failed to derive valid secp256k1 scalar after retry")
+}
+
+/// Hash input to a nonzero BLS12-381 scalar using bounded rejection sampling.
+///
+/// Each candidate is hashed from `input || u32_BE(counter)`, for counters zero
+/// through 255. Candidate encodings are big-endian to match NUT-00 `OS2IP`;
+/// `bls12_381::Scalar` uses little-endian bytes.
+#[allow(dead_code)] // Reserved for the V3 BLS issuance flow.
+pub(crate) fn hash_to_bls_scalar<F>(input: &[u8], hash: F) -> anyhow::Result<BlsScalar>
+where
+    F: Fn(&[u8]) -> [u8; 32],
+{
+    for counter in 0..=255u32 {
+        let mut candidate_input = Vec::with_capacity(input.len() + std::mem::size_of::<u32>());
+        candidate_input.extend_from_slice(input);
+        candidate_input.extend_from_slice(&counter.to_be_bytes());
+        let mut candidate = hash(&candidate_input);
+
+        if candidate == [0; 32] {
+            continue;
+        }
+
+        candidate.reverse();
+        if let Some(scalar) = Option::<BlsScalar>::from(BlsScalar::from_bytes(&candidate)) {
+            return Ok(scalar);
+        }
+    }
+
+    anyhow::bail!("Failed to derive valid BLS scalar after 256 attempts")
 }
 
 pub(crate) struct Stage2P2bkTweakInfo {
@@ -552,34 +606,19 @@ impl ChannelParameters {
     /// - "sender_stage1" / "receiver_stage1" - for funding token 2-of-2
     /// - "sender_stage1_refund" - for funding token expiry refund
     ///
-    /// Computes: HMAC-SHA256(
-    ///     key = channel_secret,
-    ///     message = "Cashu_Spilman_stage1_key_tweak_v1" || "{channel_id}|{context}|{retry_counter}",
-    /// )
-    /// Retries with incrementing retry_counter until a valid scalar in [1, n-1] is found.
+    /// Computes HMAC-SHA256 with `channel_secret` over
+    /// `"Cashu_Spilman_stage1_key_tweak_v1" || "{channel_id}|{context}"`.
+    /// A single invalid candidate is retried with raw `0xff` appended.
     ///
     /// Note: This produces a SHARED blinding scalar for all proofs with the same context.
     /// For per-proof blinding (stage2), use `stage2_tweak_info_for_role()` instead.
     fn derive_blinding_scalar(&self, context: &str) -> anyhow::Result<Scalar> {
         let channel_id = self.get_channel_id();
 
-        for retry_counter in 0u8..=255 {
-            let text = format!("{}|{}|{}", channel_id, context, retry_counter);
-            let mut message = Vec::new();
-            message.extend_from_slice(b"Cashu_Spilman_stage1_key_tweak_v1");
-            message.extend_from_slice(text.as_bytes());
-            let bytes = hmac_sha256(&self.channel_secret, &message);
-
-            // Try to create a valid scalar (must be in range [1, n-1])
-            if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-                // Scalar::from_be_bytes rejects values >= n, and we also reject zero
-                if scalar != Scalar::ZERO {
-                    return Ok(scalar);
-                }
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid blinding scalar after 256 attempts")
+        let mut message = b"Cashu_Spilman_stage1_key_tweak_v1".to_vec();
+        message.extend_from_slice(format!("{channel_id}|{context}").as_bytes());
+        hash_to_secp_scalar(&message, |input| hmac_sha256(&self.channel_secret, input))
+            .map_err(|error| anyhow::anyhow!("Failed to derive stage-1 blinding scalar: {error}"))
     }
 
     /// Derive stage 2 P2BK tweak info for a specific output
@@ -614,8 +653,9 @@ impl ChannelParameters {
 
     /// Derive a per-output ephemeral secret for stage 2 contexts
     ///
-    /// Computes: SHA256("Cashu_Spilman_P2BK_ephemeral_v1" || channel_secret || "{channel_id}|{context}|{amount}|{index}|{retry_counter}")
-    /// Retries with incrementing retry_counter until a valid secret key is found.
+    /// Computes HMAC-SHA256 with `channel_secret` over
+    /// `"Cashu_Spilman_P2BK_ephemeral_v1" || "{channel_id}|{context}|{amount}|{index}"`.
+    /// A single invalid candidate is retried with raw `0xff` appended.
     fn derive_stage2_p2bk_ephemeral_secret_for_output(
         &self,
         context: &str,
@@ -624,25 +664,15 @@ impl ChannelParameters {
     ) -> anyhow::Result<SecretKey> {
         let channel_id = self.get_channel_id();
 
-        for retry_counter in 0u8..=255 {
-            let text = format!(
-                "{}|{}|{}|{}|{}",
-                channel_id, context, amount, index, retry_counter
-            );
-            let mut input = Vec::new();
-            input.extend_from_slice(b"Cashu_Spilman_P2BK_ephemeral_v1");
-            input.extend_from_slice(&self.channel_secret);
-            input.extend_from_slice(text.as_bytes());
-
-            let hash = sha256::Hash::hash(&input);
-            let bytes: [u8; 32] = hash.to_byte_array();
-
-            if let Ok(secret) = SecretKey::from_slice(&bytes) {
-                return Ok(secret);
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid ephemeral secret for output after 256 attempts")
+        let mut message = b"Cashu_Spilman_P2BK_ephemeral_v1".to_vec();
+        message.extend_from_slice(format!("{channel_id}|{context}|{amount}|{index}").as_bytes());
+        let scalar =
+            hash_to_secp_scalar(&message, |input| hmac_sha256(&self.channel_secret, input))
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to derive stage-2 ephemeral secret: {error}")
+                })?;
+        SecretKey::from_slice(&scalar.to_be_bytes())
+            .map_err(|error| anyhow::anyhow!("Invalid stage-2 ephemeral secret: {error}"))
     }
 
     /// Derive the raw x-coordinate used by NUT-28 before the KDF step.
@@ -667,24 +697,9 @@ impl ChannelParameters {
         input.extend_from_slice(zx);
         input.push(i_byte);
 
-        let hash = sha256::Hash::hash(&input);
-        let bytes: [u8; 32] = hash.to_byte_array();
-        if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-            if scalar != Scalar::ZERO {
-                return Ok(scalar);
-            }
-        }
-
-        input.push(0xff);
-        let hash = sha256::Hash::hash(&input);
-        let bytes: [u8; 32] = hash.to_byte_array();
-        if let Ok(scalar) = Scalar::from_be_bytes(bytes) {
-            if scalar != Scalar::ZERO {
-                return Ok(scalar);
-            }
-        }
-
-        anyhow::bail!("Failed to derive valid P2BK scalar")
+        hash_to_secp_scalar(&input, |message| {
+            sha256::Hash::hash(message).to_byte_array()
+        })
     }
 
     /// Get the blinded sender (Alice) pubkey for stage 1 P2BK
@@ -908,23 +923,26 @@ impl ChannelParameters {
     ) -> Result<DeterministicSecretWithBlinding, anyhow::Error> {
         let channel_id = self.get_channel_id();
 
-        // Derive deterministic nonce: HMAC-SHA256(channel_secret, "{channel_id}|{context}|{amount}|nonce|{index}")
+        // The nonce is an output-discriminator scalar so V3 can reuse this
+        // derivation as its deterministic NUMS offset.
         let nonce_text = format!("{}|{}|{}|nonce|{}", channel_id, context, amount, index);
-        let nonce = hex::encode(hmac_sha256(&self.channel_secret, nonce_text.as_bytes()));
-
-        // Derive a valid secp256k1 blinding scalar without reducing candidates modulo n.
-        let blinding_factor = (0u8..=255)
-            .find_map(|retry_counter| {
-                let blinding_text = format!(
-                    "{}|{}|{}|blinding|{}|{}",
-                    channel_id, context, amount, index, retry_counter
-                );
-                SecretKey::from_slice(&hmac_sha256(&self.channel_secret, blinding_text.as_bytes()))
-                    .ok()
+        let nonce = hex::encode(
+            hash_to_secp_scalar(nonce_text.as_bytes(), |message| {
+                hmac_sha256(&self.channel_secret, message)
             })
-            .ok_or_else(|| {
-                anyhow::anyhow!("Failed to derive valid blinding factor after 256 attempts")
-            })?;
+            .map_err(|error| anyhow::anyhow!("Failed to derive deterministic nonce: {error}"))?
+            .to_be_bytes(),
+        );
+
+        let blinding_text = format!("{}|{}|{}|blinding|{}", channel_id, context, amount, index);
+        let blinding_scalar = hash_to_secp_scalar(blinding_text.as_bytes(), |message| {
+            hmac_sha256(&self.channel_secret, message)
+        })
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to derive deterministic blinding factor: {error}")
+        })?;
+        let blinding_factor = SecretKey::from_slice(&blinding_scalar.to_be_bytes())
+            .map_err(|error| anyhow::anyhow!("Invalid deterministic blinding factor: {error}"))?;
 
         // Handle funding context separately (requires 2-of-2 blinded pubkeys + expiry)
         if context == "funding" {
@@ -1053,6 +1071,105 @@ mod tests {
             hex::encode(digest),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
+    }
+
+    #[test]
+    fn test_hash_to_secp_scalar_retries_once_with_ff() {
+        let input = b"deterministic output";
+        let scalar = hash_to_secp_scalar(input, |candidate_input| {
+            if candidate_input == input {
+                [0; 32]
+            } else {
+                assert_eq!(candidate_input, b"deterministic output\xff");
+                let mut valid_scalar = [0; 32];
+                valid_scalar[31] = 1;
+                valid_scalar
+            }
+        })
+        .expect("second candidate is a valid scalar");
+
+        assert_eq!(
+            scalar.to_be_bytes(),
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hash_to_secp_scalar_rejects_two_invalid_candidates() {
+        let error = hash_to_secp_scalar(b"deterministic output", |_| [0; 32])
+            .expect_err("zero candidates are invalid scalars");
+
+        assert!(error.to_string().contains("after retry"));
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_uses_big_endian_counter() {
+        use std::cell::RefCell;
+
+        let input = b"deterministic output";
+        let candidates = RefCell::new(Vec::new());
+        let scalar = hash_to_bls_scalar(input, |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            let mut valid_scalar = [0; 32];
+            valid_scalar[31] = 1;
+            valid_scalar
+        })
+        .expect("first candidate is a valid BLS scalar");
+
+        assert_eq!(
+            candidates.into_inner(),
+            vec![b"deterministic output\0\0\0\0"]
+        );
+        assert_eq!(scalar.to_bytes()[0], 1);
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_retries_with_incremented_counter() {
+        use std::cell::RefCell;
+
+        let input = b"deterministic output";
+        let candidates = RefCell::new(Vec::new());
+        let scalar = hash_to_bls_scalar(input, |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            if candidate_input.ends_with(&0u32.to_be_bytes()) {
+                [0; 32]
+            } else {
+                let mut valid_scalar = [0; 32];
+                valid_scalar[31] = 1;
+                valid_scalar
+            }
+        })
+        .expect("second candidate is a valid BLS scalar");
+
+        assert_eq!(
+            candidates.into_inner(),
+            vec![
+                b"deterministic output\0\0\0\0".to_vec(),
+                b"deterministic output\0\0\0\x01".to_vec(),
+            ]
+        );
+        assert_eq!(scalar.to_bytes()[0], 1);
+    }
+
+    #[test]
+    fn test_hash_to_bls_scalar_rejects_after_256_invalid_candidates() {
+        use std::cell::RefCell;
+
+        let candidates = RefCell::new(Vec::new());
+        let error = hash_to_bls_scalar(b"deterministic output", |candidate_input| {
+            candidates.borrow_mut().push(candidate_input.to_vec());
+            [0xff; 32]
+        })
+        .expect_err("above-order candidates are invalid BLS scalars");
+
+        let candidates = candidates.into_inner();
+        assert_eq!(candidates.len(), 256);
+        assert_eq!(candidates[0], b"deterministic output\0\0\0\0");
+        assert_eq!(candidates[255], b"deterministic output\0\0\0\xff");
+        assert!(error.to_string().contains("after 256 attempts"));
     }
 
     #[test]

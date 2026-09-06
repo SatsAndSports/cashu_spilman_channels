@@ -20,6 +20,7 @@ async-trait.workspace = true
 axum = { workspace = true, optional = true, features = ["macros"] }
 base64 = "0.22"
 bitcoin.workspace = true
+bls12_381.workspace = true
 cashu.workspace = true
 hkdf.workspace = true
 reqwest = { workspace = true, optional = true }

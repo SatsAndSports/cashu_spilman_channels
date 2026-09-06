@@ -1,5 +1,6 @@
 //! V2-keyset reference derivations for stage-2 P2BK key material.
 
+use hmac::{Hmac, Mac};
 use k256::{
     elliptic_curve::sec1::ToEncodedPoint, AffinePoint, ProjectivePoint, PublicKey, SecretKey,
 };
@@ -9,6 +10,12 @@ use crate::channel_id::spilman_test_vector_channel_id_keysetv2;
 
 const EPHEMERAL_PREFIX: &[u8] = b"Cashu_Spilman_P2BK_ephemeral_v1";
 const P2BK_PREFIX: &[u8] = b"Cashu_P2BK_v1";
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(message);
+    mac.finalize().into_bytes().into()
+}
 
 /// Canonical name of the stage-2 P2BK compatibility fixture.
 pub const SPILMAN_TEST_VECTOR_STAGE2_P2BK_KEYSETV2_NAME: &str =
@@ -50,12 +57,12 @@ pub fn spilman_test_vector_stage2_p2bk_keysetv2() -> [Stage2P2bkTestVector; 2] {
             amount: 32,
             index: 0,
             retry_counter: 0,
-            ephemeral_secret: "dc2029be89e39a26f5a49653a7de750807002f9549f4774ed8c6376d1cf4bc7b",
-            ephemeral_pubkey: "02224366f001c35581b8316a62160d4e5733f102757a1a824d8e41a9ad795d5a90",
-            shared_secret_x: "e5198d9a589490993b1edd9c5bf76e31bf9610bdca088654fb2d654b62a0085d",
+            ephemeral_secret: "6736788d5e1325a6ad0aec521c673c80db323ae9cb6e756252d190f658a49da4",
+            ephemeral_pubkey: "03b95460565471b30d35b7b96cb632391c680806dad65379a3bf93e5a66dcc936f",
+            shared_secret_x: "0b205af6f661eb73197e71666e46f8d7acb03dbe79734d5eb6056b3efa9c5c95",
             p2bk_retry_counter: 0,
-            p2bk_scalar: "51db52022fe771a7e084346852a2115fbefd204efe4fb6c5e94cd3844c718e75",
-            blinded_pubkey: "0397dfedc39293131c2d4c5f76169001e2b11057284dc9345e8178f3ce035660df",
+            p2bk_scalar: "40f12c7792828472b303dec3ffd759c374b7646fa73182f737eb4c45a3c9cd61",
+            blinded_pubkey: "02270ea899810d2f4064d4df8bfc356b5706ba8e236c93c1963f620c14794ad601",
         },
         Stage2P2bkTestVector {
             context: "sender_stage2",
@@ -63,12 +70,12 @@ pub fn spilman_test_vector_stage2_p2bk_keysetv2() -> [Stage2P2bkTestVector; 2] {
             amount: 32,
             index: 0,
             retry_counter: 0,
-            ephemeral_secret: "b0a12b2dc14d71c23a27c02d35ebde1eccdc50984fac5b4597099cc653a6d69b",
-            ephemeral_pubkey: "02a1be7b930f67d26fd168214a18f5c208cb21cda5f6f08bbf61930cae109d5a39",
-            shared_secret_x: "a1be7b930f67d26fd168214a18f5c208cb21cda5f6f08bbf61930cae109d5a39",
+            ephemeral_secret: "17809cf637c793619c16f1a26a641ec05cc35237205da5c2c705fe0942e51df5",
+            ephemeral_pubkey: "03600d205df80cea1ea916c7a3ea98009a001483aa4a35cfb96ca20ce707f58a74",
+            shared_secret_x: "600d205df80cea1ea916c7a3ea98009a001483aa4a35cfb96ca20ce707f58a74",
             p2bk_retry_counter: 0,
-            p2bk_scalar: "891005d4ef10bee9b46144fec3d81f051e8d5db42c6078f60a0fd1ad0c4798db",
-            blinded_pubkey: "023725a2912497df0d49de8269b778e664b917e6c919e122fd099e2e99be03f1af",
+            p2bk_scalar: "b0706b1fa1e4c0865243c94e7a114ff6b0f5a16664240d90308b1d04023c9704",
+            blinded_pubkey: "03b5b9b73e75d63ff6a43093ed2604fb056aa932620a80940e25a1d1de4455264f",
         },
     ]
 }
@@ -110,18 +117,18 @@ fn derive_one(
 ) -> Stage2P2bkReference {
     let channel = spilman_test_vector_channel_id_keysetv2();
     let channel_id = hex::encode(channel.channel_id);
-    let (retry_counter, ephemeral_message, ephemeral_secret) = (0u8..=255)
-        .find_map(|retry| {
-            let suffix = format!("{channel_id}|{context}|{amount}|{index}|{retry}");
-            let mut message = EPHEMERAL_PREFIX.to_vec();
-            message.extend_from_slice(&channel.channel_secret);
-            message.extend_from_slice(suffix.as_bytes());
-            let secret: [u8; 32] = Sha256::digest(&message).into();
-            SecretKey::from_slice(&secret)
-                .ok()
-                .map(|_| (retry, message, secret))
-        })
-        .expect("valid fixed ephemeral scalar");
+    let suffix = format!("{channel_id}|{context}|{amount}|{index}");
+    let mut ephemeral_message = EPHEMERAL_PREFIX.to_vec();
+    ephemeral_message.extend_from_slice(suffix.as_bytes());
+    let mut ephemeral_secret = hmac_sha256(&channel.channel_secret, &ephemeral_message);
+    if SecretKey::from_slice(&ephemeral_secret).is_err() {
+        ephemeral_message.push(0xff);
+        ephemeral_secret = hmac_sha256(&channel.channel_secret, &ephemeral_message);
+    }
+    assert!(
+        SecretKey::from_slice(&ephemeral_secret).is_ok(),
+        "valid fixed ephemeral scalar"
+    );
     let ephemeral = SecretKey::from_slice(&ephemeral_secret).expect("valid ephemeral scalar");
     let recipient = PublicKey::from_sec1_bytes(
         &hex::decode(recipient_pubkey).expect("valid recipient public key"),
@@ -160,7 +167,11 @@ fn derive_one(
     Stage2P2bkReference {
         context,
         recipient_pubkey,
-        retry_counter,
+        retry_counter: if ephemeral_message.last() == Some(&0xff) {
+            1
+        } else {
+            0
+        },
         ephemeral_message,
         ephemeral_secret,
         ephemeral_pubkey: hex::encode(ephemeral.public_key().to_encoded_point(true).as_bytes()),
