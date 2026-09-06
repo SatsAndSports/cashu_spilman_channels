@@ -11,6 +11,7 @@ use anyhow::Result;
 use bip39::Mnemonic;
 use cdk::dhke::construct_proofs;
 use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::nuts::nut02::KeySetVersion;
 use cdk::nuts::{
     CurrencyUnit, Id, Keys, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
     PaymentMethod, PreMintSecrets, Proof,
@@ -28,8 +29,12 @@ pub const DEFAULT_TEST_FEE_PPK: u64 = 0;
 
 /// Create an in-memory test mint with FakeWallet backend.
 pub async fn create_test_mint() -> Result<Mint> {
+    create_test_mint_with_keyset_v2(true).await
+}
+
+async fn create_test_mint_with_keyset_v2(use_keyset_v2: bool) -> Result<Mint> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(use_keyset_v2));
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -167,8 +172,33 @@ impl std::fmt::Debug for TestMintHelper {
 impl TestMintHelper {
     /// Create a new TestMintHelper with an in-memory mint.
     pub async fn new() -> Result<Self> {
-        let mint = Arc::new(create_test_mint().await?);
+        Self::new_with_keyset_v2(true).await
+    }
 
+    /// Create a new TestMintHelper whose active SAT keyset uses Cashu V1.
+    pub async fn new_v1() -> Result<Self> {
+        let helper = Self::new_with_keyset_v2(false).await?;
+        if helper.keyset_id().get_version() != KeySetVersion::Version00 {
+            return Err(anyhow::anyhow!(
+                "V1 test mint did not create a Version00 keyset"
+            ));
+        }
+        Ok(helper)
+    }
+
+    async fn new_with_keyset_v2(use_keyset_v2: bool) -> Result<Self> {
+        let mint = Arc::new(create_test_mint_with_keyset_v2(use_keyset_v2).await?);
+        let (active_sat_keyset_id, public_keys, input_fee_ppk) =
+            Self::active_sat_keyset_metadata(&mint)?;
+        Ok(Self {
+            mint,
+            active_sat_keyset_id,
+            public_keys,
+            input_fee_ppk,
+        })
+    }
+
+    fn active_sat_keyset_metadata(mint: &Mint) -> Result<(Id, Keys, u64)> {
         let active_sat_keyset_id = *mint
             .get_active_keysets()
             .get(&CurrencyUnit::Sat)
@@ -190,12 +220,36 @@ impl TestMintHelper {
             .keys
             .clone();
 
-        Ok(Self {
-            mint,
-            active_sat_keyset_id,
-            public_keys,
-            input_fee_ppk,
-        })
+        Ok((active_sat_keyset_id, public_keys, input_fee_ppk))
+    }
+
+    fn refresh_active_sat_keyset(&mut self) -> Result<()> {
+        let (active_sat_keyset_id, public_keys, input_fee_ppk) =
+            Self::active_sat_keyset_metadata(&self.mint)?;
+        self.active_sat_keyset_id = active_sat_keyset_id;
+        self.public_keys = public_keys;
+        self.input_fee_ppk = input_fee_ppk;
+        Ok(())
+    }
+
+    /// Rotate the SAT keyset to Cashu V1 and refresh cached active-keyset metadata.
+    pub async fn rotate_sat_keyset_to_v1(&mut self) -> Result<Id> {
+        self.mint
+            .rotate_keyset(
+                CurrencyUnit::Sat,
+                (0..32).map(|i| 2_u64.pow(i)).collect(),
+                self.input_fee_ppk,
+                false,
+                None,
+            )
+            .await?;
+        self.refresh_active_sat_keyset()?;
+        if self.active_sat_keyset_id.get_version() != KeySetVersion::Version00 {
+            return Err(anyhow::anyhow!(
+                "V1 rotation did not create a Version00 keyset"
+            ));
+        }
+        Ok(self.active_sat_keyset_id)
     }
 
     /// Get the underlying mint as an Arc.

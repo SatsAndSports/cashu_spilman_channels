@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cashu::nuts::SecretKey;
+use cashu::nuts::{nut02::KeySetVersion, SecretKey};
 use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
 use cdk::Mint;
 use cdk_spilman::{
@@ -1169,12 +1169,20 @@ async fn test_fetch_keyset_info_rejects_mismatched_id() {
 
 /// Test the full HTTP round-trip: start a real HTTP mint, use ReqwestClientNetworking
 /// to fetch keyset info and open a channel, then verify the server can process payments.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_reqwest_client_networking_http_round_trip() {
+#[allow(clippy::unwrap_used)]
+async fn assert_reqwest_client_networking_http_round_trip(
+    mint_helper: TestMintHelper,
+    expected_keyset_version: KeySetVersion,
+) {
     use cdk_spilman_test_mint::build_router;
 
+    assert_eq!(
+        mint_helper.keyset_id().get_version(),
+        expected_keyset_version,
+        "test mint should use the expected active keyset version"
+    );
+
     // 1. Create an in-memory mint and serve it over HTTP
-    let mint_helper = TestMintHelper::new().await.unwrap();
     let router = build_router(mint_helper.mint()).await.unwrap();
 
     let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1219,6 +1227,7 @@ async fn test_reqwest_client_networking_http_round_trip() {
         .expect("fetch_keyset_info over HTTP should succeed");
     let parsed = parse_keyset_info_from_json(&fetched_info).unwrap();
     assert_eq!(parsed.keyset_id, mint_helper.keyset_id());
+    assert_eq!(parsed.keyset_id.get_version(), expected_keyset_version);
     eprintln!("Fetched keyset info over HTTP: id={}", keyset_id_str);
 
     // 5. Mint proofs (in-memory, same Mint instance backing the HTTP server)
@@ -1250,6 +1259,170 @@ async fn test_reqwest_client_networking_http_round_trip() {
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
     eprintln!("Server verified payment from HTTP-opened channel");
+
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_reqwest_client_networking_v2_http_round_trip() {
+    assert_reqwest_client_networking_http_round_trip(
+        TestMintHelper::new().await.unwrap(),
+        KeySetVersion::Version01,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_reqwest_client_networking_v1_http_round_trip() {
+    assert_reqwest_client_networking_http_round_trip(
+        TestMintHelper::new_v1().await.unwrap(),
+        KeySetVersion::Version00,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
+    use cdk_spilman_test_mint::build_router;
+
+    let mut mint_helper = TestMintHelper::new().await.unwrap();
+    let v2_keyset_id = mint_helper.keyset_id();
+    let v2_keyset_info_json = mint_helper.keyset_info_json().unwrap();
+    let v2_proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    assert_eq!(v2_keyset_id.get_version(), KeySetVersion::Version01);
+
+    let router = build_router(mint_helper.mint()).await.unwrap();
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mint_url = format!("http://{}", http_listener.local_addr().unwrap());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        axum::serve(http_listener, router)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    let http_client = reqwest::Client::new();
+    for _ in 0..50 {
+        match http_client
+            .get(format!("{mint_url}/v1/keysets"))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => break,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+
+    let receiver_secret = SecretKey::generate();
+    let server_host = TestServerHost::new(receiver_secret.clone());
+    server_host.add_keyset(&mint_url, v2_keyset_id, v2_keyset_info_json);
+    let server_bridge = SpilmanBridge::new(server_host);
+
+    let sender_secret = SecretKey::generate();
+    let mut client_host = ConfigurableClientHost::new_in_memory();
+    client_host.add_key(sender_secret.clone());
+    let client_bridge = SpilmanClientBridge::new(client_host, ReqwestClientNetworking::new());
+
+    let v2_token = build_cashu_b_token(
+        &mint_url,
+        "sat",
+        &serde_json::to_string(&v2_proofs).unwrap(),
+    )
+    .unwrap();
+    let v2_channel = client_bridge
+        .open_channel_from_token_auto(
+            &v2_token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &mint_url,
+            64,
+        )
+        .expect("V2 keyset should open a channel before rotation");
+    register_channel(&client_bridge, &server_bridge, &v2_channel.channel_id);
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v2_channel.channel_id, 10).balance,
+        10
+    );
+
+    let v1_keyset_id = mint_helper.rotate_sat_keyset_to_v1().await.unwrap();
+    let v1_keyset_info_json = mint_helper.keyset_info_json().unwrap();
+    assert_eq!(v1_keyset_id.get_version(), KeySetVersion::Version00);
+    server_bridge
+        .host()
+        .add_keyset(&mint_url, v1_keyset_id, v1_keyset_info_json);
+    client_bridge
+        .refresh_keysets(&mint_url)
+        .expect("client should refresh both keyset versions after rotation");
+
+    let keysets = mint_helper.mint().keysets();
+    let v2_keyset = keysets
+        .keysets
+        .iter()
+        .find(|keyset| keyset.id == v2_keyset_id)
+        .expect("rotated mint should retain V2 keyset");
+    let v1_keyset = keysets
+        .keysets
+        .iter()
+        .find(|keyset| keyset.id == v1_keyset_id)
+        .expect("rotated mint should expose V1 keyset");
+    assert!(!v2_keyset.active);
+    assert!(v1_keyset.active);
+
+    for (keyset_id, expected_version) in [
+        (v2_keyset_id, KeySetVersion::Version01),
+        (v1_keyset_id, KeySetVersion::Version00),
+    ] {
+        let response = http_client
+            .get(format!("{mint_url}/v1/keys/{keyset_id}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let keyset_info = client_bridge
+            .fetch_keyset_info(&mint_url, &keyset_id.to_string())
+            .unwrap();
+        assert_eq!(
+            parse_keyset_info_from_json(&keyset_info)
+                .unwrap()
+                .keyset_id
+                .get_version(),
+            expected_version
+        );
+    }
+
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v2_channel.channel_id, 25).balance,
+        25,
+        "accepted V2 channel should continue after V1 becomes active"
+    );
+
+    let v1_proofs = mint_helper.mint_proofs(1000).await.unwrap();
+    let v1_token = build_cashu_b_token(
+        &mint_url,
+        "sat",
+        &serde_json::to_string(&v1_proofs).unwrap(),
+    )
+    .unwrap();
+    let v1_channel = client_bridge
+        .open_channel_from_token_auto(
+            &v1_token,
+            &receiver_secret.public_key().to_hex(),
+            &sender_secret.public_key().to_hex(),
+            now_seconds() + 3600,
+            &mint_url,
+            64,
+        )
+        .expect("V1 keyset should open a channel after rotation");
+
+    register_channel(&client_bridge, &server_bridge, &v1_channel.channel_id);
+    assert_eq!(
+        pay_channel(&client_bridge, &server_bridge, &v1_channel.channel_id, 10).balance,
+        10
+    );
 
     let _ = shutdown_tx.send(());
 }
