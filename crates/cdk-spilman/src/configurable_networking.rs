@@ -12,6 +12,7 @@
 
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::configurable_host::{ConfigurableHost, KeysetCacheEntry};
 use crate::{SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanClientNetworking};
@@ -159,7 +160,7 @@ pub async fn fetch_and_cache_keysets(
 /// # Example
 ///
 /// ```ignore
-/// let networking = ReqwestClientNetworking::new();
+/// let networking = ReqwestClientNetworking::new(Duration::from_secs(15))?;
 /// let bridge = SpilmanClientBridge::new(client_host, networking);
 /// let keyset_info = bridge.fetch_keyset_info(mint_url, keyset_id)?;
 /// ```
@@ -170,12 +171,24 @@ pub struct ReqwestClientNetworking {
 }
 
 impl ReqwestClientNetworking {
-    /// Create a new `ReqwestClientNetworking` using the current tokio runtime handle.
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            runtime: tokio::runtime::Handle::current(),
+    /// Create a new networking client with a total timeout for each mint request.
+    ///
+    /// The timeout covers connection establishment, response headers, and response body reads.
+    /// A Tokio runtime must be active because the synchronous networking trait bridges to async
+    /// reqwest with `block_in_place`.
+    pub fn new(request_timeout: Duration) -> Result<Self, String> {
+        if request_timeout.is_zero() {
+            return Err("reqwest client request timeout must be non-zero".to_string());
         }
+
+        let client = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .map_err(|e| format!("build reqwest client: {e}"))?;
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|e| format!("get current tokio runtime: {e}"))?;
+
+        Ok(Self { client, runtime })
     }
 
     fn blocking_get(&self, url: &str) -> Result<String, String> {
@@ -222,12 +235,6 @@ impl ReqwestClientNetworking {
                     .map_err(|e| format!("POST {url} read body: {e}"))
             })
         })
-    }
-}
-
-impl Default for ReqwestClientNetworking {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
