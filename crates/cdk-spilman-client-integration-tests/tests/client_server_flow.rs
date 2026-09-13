@@ -7,8 +7,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use axum::{routing::get, Router};
 use cashu::nuts::{nut02::KeySetVersion, SecretKey};
 use cdk::nuts::{CheckStateRequest, CurrencyUnit, Proof, State};
 use cdk::Mint;
@@ -1217,7 +1218,8 @@ async fn assert_reqwest_client_networking_http_round_trip(
     let sender_secret = SecretKey::generate();
     let mut client_host = ConfigurableClientHost::new_in_memory();
     client_host.add_key(sender_secret.clone());
-    let networking = ReqwestClientNetworking::new();
+    let networking =
+        ReqwestClientNetworking::new(Duration::from_secs(15)).expect("construct HTTP networking");
     let client_bridge = SpilmanClientBridge::new(client_host, networking);
 
     // 4. Verify fetch_keyset_info works over HTTP
@@ -1282,6 +1284,49 @@ async fn test_reqwest_client_networking_v1_http_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_reqwest_client_networking_times_out_slow_keyset_request() {
+    let router = Router::new().route(
+        "/v1/keysets",
+        get(|| async {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            "{\"keysets\":[]}"
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind slow mint");
+    let mint_url = format!(
+        "http://{}",
+        listener.local_addr().expect("slow mint address")
+    );
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let mint_task = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve slow mint");
+    });
+
+    let networking = ReqwestClientNetworking::new(Duration::from_millis(25))
+        .expect("construct short-timeout HTTP networking");
+    let started = Instant::now();
+    let error = networking
+        .call_mint_keysets(&mint_url)
+        .expect_err("slow keyset request should time out");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "request exceeded its total timeout: {error}"
+    );
+    assert!(error.contains("GET"), "unexpected timeout error: {error}");
+
+    let _ = shutdown_tx.send(());
+    mint_task.await.expect("slow mint task");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
     use cdk_spilman_test_mint::build_router;
 
@@ -1324,7 +1369,10 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
     let sender_secret = SecretKey::generate();
     let mut client_host = ConfigurableClientHost::new_in_memory();
     client_host.add_key(sender_secret.clone());
-    let client_bridge = SpilmanClientBridge::new(client_host, ReqwestClientNetworking::new());
+    let client_bridge = SpilmanClientBridge::new(
+        client_host,
+        ReqwestClientNetworking::new(Duration::from_secs(15)).expect("construct HTTP networking"),
+    );
 
     let v2_token = build_cashu_b_token(
         &mint_url,
