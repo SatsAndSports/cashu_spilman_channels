@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cashu::nuts::{CurrencyUnit, Id};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OpenFlags, OptionalExtension};
 
 use super::client_storage::{
     ClientChannelFunding, ClientChannelOpeningFromSwap, ClientChannelState, ClientKeysetCacheEntry,
@@ -54,6 +54,22 @@ impl SqliteClientStorage {
         };
         storage.init_schema()?;
         Ok(storage)
+    }
+
+    /// Open an existing SQLite database in true read-only mode.
+    ///
+    /// This does not create the file, enable WAL, initialize schema, or run migrations.
+    pub fn open_read_only(path: &str) -> Result<Self, String> {
+        let conn = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| {
+                format!("failed to open read-only SQLite client storage at {path}: {e}")
+            })?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|e| format!("failed to configure SQLite busy timeout: {e}"))?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            db_path: Some(path.to_string()),
+        })
     }
 
     /// Create an in-memory SQLite database (useful for testing).
@@ -150,22 +166,65 @@ impl ClientStorage for SqliteClientStorage {
     ) -> Result<(), String> {
         let opening_json =
             serde_json::to_string(&opening).map_err(|e| format!("serialize opening: {e}"))?;
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| format!("sqlite lock poisoned: {e}"))?;
-        conn.execute(
-            "INSERT OR REPLACE INTO spilman_client_channels
-             (channel_id, state, opening_json, funding_json, payment_json, failure_json)
-             VALUES (?1, ?2, ?3, NULL, NULL, NULL)",
-            params![
-                channel_id,
-                Self::state_to_string(ClientChannelState::OpeningFromSwap),
-                opening_json
-            ],
-        )
-        .map_err(|e| format!("save_opening_from_swap: {e}"))?;
-        Ok(())
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("save_opening_from_swap: begin transaction: {e}"))?;
+        let existing: Option<(String, Option<String>)> = tx
+            .query_row(
+                "SELECT state, opening_json FROM spilman_client_channels WHERE channel_id = ?1",
+                [channel_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("save_opening_from_swap: query existing: {e}"))?;
+        match existing {
+            None => {
+                tx.execute(
+                    "INSERT INTO spilman_client_channels
+                     (channel_id, state, opening_json, funding_json, payment_json, failure_json)
+                     VALUES (?1, ?2, ?3, NULL, NULL, NULL)",
+                    params![
+                        channel_id,
+                        Self::state_to_string(ClientChannelState::OpeningFromSwap),
+                        opening_json
+                    ],
+                )
+                .map_err(|e| format!("save_opening_from_swap: insert: {e}"))?;
+            }
+            Some((state, Some(existing_json)))
+                if matches!(state.as_str(), "OpeningFromSwap" | "OpeningFailed") =>
+            {
+                let existing_opening: ClientChannelOpeningFromSwap =
+                    serde_json::from_str(&existing_json).map_err(|e| {
+                        format!("save_opening_from_swap: corrupt existing opening: {e}")
+                    })?;
+                if existing_opening != opening {
+                    return Err(format!(
+                        "channel {channel_id} already exists with different opening"
+                    ));
+                }
+                tx.execute(
+                    "UPDATE spilman_client_channels SET state = ?2, failure_json = NULL
+                     WHERE channel_id = ?1 AND state IN ('OpeningFromSwap', 'OpeningFailed')",
+                    params![
+                        channel_id,
+                        Self::state_to_string(ClientChannelState::OpeningFromSwap)
+                    ],
+                )
+                .map_err(|e| format!("save_opening_from_swap: verify retry: {e}"))?;
+            }
+            Some(_) => {
+                return Err(format!(
+                    "channel {channel_id} already exists with different opening or lifecycle state"
+                ))
+            }
+        }
+        tx.commit()
+            .map_err(|e| format!("save_opening_from_swap: commit: {e}"))
     }
 
     fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
@@ -177,25 +236,38 @@ impl ClientStorage for SqliteClientStorage {
             .transaction()
             .map_err(|e| format!("set_open: begin transaction: {e}"))?;
 
-        let opening_json: Option<String> = tx
+        let existing: Option<(String, Option<String>, Option<String>)> = tx
             .query_row(
-                "SELECT opening_json FROM spilman_client_channels
-                 WHERE channel_id = ?1 AND state = ?2",
-                params![
-                    channel_id,
-                    Self::state_to_string(ClientChannelState::OpeningFromSwap)
-                ],
-                |row| row.get(0),
+                "SELECT state, opening_json, funding_json FROM spilman_client_channels WHERE channel_id = ?1",
+                [channel_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|e| format!("set_open: query opening: {e}"))?;
 
-        let opening_json = opening_json.ok_or_else(|| {
-            format!(
-                "channel {channel_id} is not in {} state",
-                Self::state_to_string(ClientChannelState::OpeningFromSwap)
-            )
-        })?;
+        let (state, opening_json, funding_json) = existing
+            .ok_or_else(|| format!("channel {channel_id} is not in OpeningFromSwap state"))?;
+        if matches!(state.as_str(), "Open" | "Closing" | "Closed") {
+            let funding_json = funding_json.ok_or_else(|| {
+                format!("channel {channel_id} has corrupt completed funding state")
+            })?;
+            let funding: ClientChannelFunding = serde_json::from_str(&funding_json)
+                .map_err(|e| format!("set_open: corrupt completed funding: {e}"))?;
+            return if funding.funding_proofs_json == funding_proofs_json {
+                Ok(())
+            } else {
+                Err(format!(
+                    "channel {channel_id} was completed with different funding proofs"
+                ))
+            };
+        }
+        if state != Self::state_to_string(ClientChannelState::OpeningFromSwap) {
+            return Err(format!(
+                "channel {channel_id} is not in OpeningFromSwap state"
+            ));
+        }
+        let opening_json = opening_json
+            .ok_or_else(|| format!("channel {channel_id} has corrupt OpeningFromSwap state"))?;
 
         let opening: ClientChannelOpeningFromSwap = serde_json::from_str(&opening_json)
             .map_err(|e| format!("set_open: deserialize opening: {e}"))?;
@@ -214,36 +286,53 @@ impl ClientStorage for SqliteClientStorage {
         let funding_json =
             serde_json::to_string(&funding).map_err(|e| format!("serialize funding: {e}"))?;
 
-        tx.execute(
-            "UPDATE spilman_client_channels
-             SET state = ?2, opening_json = NULL, funding_json = ?3, payment_json = NULL, failure_json = NULL
-             WHERE channel_id = ?1",
-            params![
-                channel_id,
-                Self::state_to_string(ClientChannelState::Open),
-                funding_json
-            ],
-        )
-        .map_err(|e| format!("set_open: update funding: {e}"))?;
+        let rows = tx
+            .execute(
+                "UPDATE spilman_client_channels
+             SET state = ?2, opening_json = NULL, funding_json = ?3, failure_json = NULL
+             WHERE channel_id = ?1 AND state = ?4",
+                params![
+                    channel_id,
+                    Self::state_to_string(ClientChannelState::Open),
+                    funding_json,
+                    Self::state_to_string(ClientChannelState::OpeningFromSwap)
+                ],
+            )
+            .map_err(|e| format!("set_open: update funding: {e}"))?;
 
+        if rows != 1 {
+            return Err(format!("channel {channel_id} changed during completion"));
+        }
         tx.commit().map_err(|e| format!("set_open: commit: {e}"))
     }
 
-    fn get_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap> {
-        let conn = self.conn.lock().ok()?;
-        let opening_json: Option<String> = conn
+    fn get_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("sqlite lock poisoned: {e}"))?;
+        let row: Option<(String, Option<String>)> = conn
             .query_row(
-                "SELECT opening_json FROM spilman_client_channels
-                 WHERE channel_id = ?1 AND state = ?2",
-                params![
-                    channel_id,
-                    Self::state_to_string(ClientChannelState::OpeningFromSwap)
-                ],
-                |row| row.get(0),
+                "SELECT state, opening_json FROM spilman_client_channels WHERE channel_id = ?1",
+                [channel_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
-            .ok()?;
-        opening_json.and_then(|json| serde_json::from_str(&json).ok())
+            .map_err(|e| format!("get_opening_from_swap: query: {e}"))?;
+        let Some((state, opening_json)) = row else {
+            return Ok(None);
+        };
+        if state != Self::state_to_string(ClientChannelState::OpeningFromSwap) {
+            return Ok(None);
+        }
+        let json = opening_json
+            .ok_or_else(|| format!("channel {channel_id} has corrupt OpeningFromSwap state"))?;
+        serde_json::from_str(&json)
+            .map(Some)
+            .map_err(|e| format!("get_opening_from_swap: deserialize opening: {e}"))
     }
 
     fn set_opening_failed(
@@ -625,7 +714,7 @@ mod tests {
             let funding = storage.get_funding("ch1").unwrap();
             assert_eq!(funding.funding_proofs_json, r#"[{"proof": true}]"#);
             assert_eq!(storage.get_payment_state("ch1").unwrap().balance, 42);
-            assert!(storage.get_opening_from_swap("ch1").is_none());
+            assert!(storage.get_opening_from_swap("ch1").unwrap().is_none());
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -677,5 +766,121 @@ mod tests {
     fn test_sqlite_storage_opening_failed() {
         let mut storage = SqliteClientStorage::open_in_memory().unwrap();
         assert_storage_opening_failed(&mut storage);
+    }
+
+    #[test]
+    fn test_sqlite_storage_opening_hardening() {
+        let mut storage = SqliteClientStorage::open_in_memory().unwrap();
+        assert_storage_opening_hardening(&mut storage);
+    }
+
+    #[test]
+    fn test_sqlite_opening_corruption_is_reported_and_preserved() {
+        let mut storage = SqliteClientStorage::open_in_memory().unwrap();
+        storage
+            .save_opening_from_swap("corrupt", make_test_opening())
+            .unwrap();
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE spilman_client_channels SET opening_json = '{' WHERE channel_id = 'corrupt'",
+                [],
+            )
+            .unwrap();
+
+        assert!(storage.get_opening_from_swap("corrupt").is_err());
+        assert!(storage.set_open("corrupt", "[]").is_err());
+        assert_eq!(
+            storage.get_state("corrupt"),
+            Some(ClientChannelState::OpeningFromSwap)
+        );
+    }
+
+    #[test]
+    fn test_sqlite_completed_corruption_is_not_rewritten() {
+        let mut storage = SqliteClientStorage::open_in_memory().unwrap();
+        seed_open_channel(&mut storage, "corrupt", "[]");
+        storage
+            .save_payment_state("corrupt", make_test_payment_state(55))
+            .unwrap();
+        storage.set_closing("corrupt").unwrap();
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE spilman_client_channels SET funding_json = '{' WHERE channel_id = 'corrupt'",
+                [],
+            )
+            .unwrap();
+
+        assert!(storage.set_open("corrupt", "[]").is_err());
+        assert_eq!(
+            storage.get_state("corrupt"),
+            Some(ClientChannelState::Closing)
+        );
+        assert_eq!(storage.get_payment_state("corrupt").unwrap().balance, 55);
+    }
+
+    #[test]
+    fn test_sqlite_read_only_requires_existing_path_and_performs_no_writes() {
+        let dir = std::env::temp_dir().join(format!(
+            "cdk_spilman_sqlite_client_read_only_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.db");
+        assert!(SqliteClientStorage::open_read_only(missing.to_str().unwrap()).is_err());
+        assert!(!missing.exists());
+
+        let path = dir.join("client.db");
+        {
+            let mut writable = SqliteClientStorage::open(path.to_str().unwrap()).unwrap();
+            seed_open_channel(&mut writable, "existing", "[]");
+        }
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+                .unwrap();
+        }
+        let wal = dir.join("client.db-wal");
+        let shm = dir.join("client.db-shm");
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+
+        let mut read_only = SqliteClientStorage::open_read_only(path.to_str().unwrap()).unwrap();
+        assert!(read_only.get_funding("existing").is_some());
+        assert!(read_only.delete("existing").is_err());
+        assert!(read_only
+            .save_opening_from_swap("new", make_test_opening())
+            .is_err());
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+
+        drop(read_only);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn test_sqlite_read_only_does_not_initialize_schema() {
+        let path = std::env::temp_dir().join(format!(
+            "cdk_spilman_sqlite_client_read_only_blank_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        rusqlite::Connection::open(&path).unwrap();
+        let storage = SqliteClientStorage::open_read_only(path.to_str().unwrap()).unwrap();
+        assert!(storage.get_opening_from_swap("missing").is_err());
+        drop(storage);
+        std::fs::remove_file(path).unwrap();
     }
 }

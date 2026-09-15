@@ -26,7 +26,7 @@ func TestInMemoryClientHost_FundingStorage(t *testing.T) {
 	host.SaveOpeningFromSwapChannel(channelID, fundingJSON)
 
 	// GetChannelOpeningFromSwap retrieves it
-	if got := host.GetChannelOpeningFromSwap(channelID); got != fundingJSON {
+	if got, err := host.GetChannelOpeningFromSwap(channelID); err != nil || got != fundingJSON {
 		t.Errorf("GetChannelOpeningFromSwap() = %q, want %q", got, fundingJSON)
 	}
 
@@ -54,7 +54,7 @@ func TestInMemoryClientHost_OpeningFailed(t *testing.T) {
 	failureJSON := `{"stage":"mint_rejected","message":"inactive keyset","failed_at":1234567890}`
 
 	host.SaveOpeningFromSwapChannel(channelID, openingJSON)
-	if got := host.GetChannelOpeningFromSwap(channelID); got != openingJSON {
+	if got, err := host.GetChannelOpeningFromSwap(channelID); err != nil || got != openingJSON {
 		t.Errorf("GetChannelOpeningFromSwap() = %q, want %q", got, openingJSON)
 	}
 
@@ -62,13 +62,13 @@ func TestInMemoryClientHost_OpeningFailed(t *testing.T) {
 	if got := host.GetChannelState(channelID); got != "opening_failed" {
 		t.Errorf("GetChannelState() after MarkChannelOpeningFailed = %q, want %q", got, "opening_failed")
 	}
-	if got := host.GetChannelOpeningFromSwap(channelID); got != "" {
+	if got, err := host.GetChannelOpeningFromSwap(channelID); err != nil || got != "" {
 		t.Errorf("GetChannelOpeningFromSwap() after failure = %q, want empty", got)
 	}
 
 	// Re-saving the same channel should clear the failure and allow recovery of opening data.
 	host.SaveOpeningFromSwapChannel(channelID, openingJSON)
-	if got := host.GetChannelOpeningFromSwap(channelID); got != openingJSON {
+	if got, err := host.GetChannelOpeningFromSwap(channelID); err != nil || got != openingJSON {
 		t.Errorf("GetChannelOpeningFromSwap() after re-save = %q, want %q", got, openingJSON)
 	}
 	if got := host.GetChannelState(channelID); got != "opening_from_swap" {
@@ -77,6 +77,7 @@ func TestInMemoryClientHost_OpeningFailed(t *testing.T) {
 
 	// MarkChannelOpen should also clear the failure.
 	host.MarkChannelOpeningFailed(channelID, failureJSON)
+	host.SaveOpeningFromSwapChannel(channelID, openingJSON)
 	host.MarkChannelOpen(channelID, "[]")
 	if got := host.GetChannelState(channelID); got != "open" {
 		t.Errorf("GetChannelState() after MarkChannelOpen = %q, want %q", got, "open")
@@ -96,6 +97,49 @@ func TestInMemoryClientHost_OpeningFailed(t *testing.T) {
 	host.DeleteChannel(channelID)
 	if got := host.GetChannelState(channelID); got != "" {
 		t.Errorf("GetChannelState() after delete = %q, want empty", got)
+	}
+}
+
+func TestInMemoryClientHost_OpeningRetriesAreNonDestructive(t *testing.T) {
+	host := NewInMemoryClientHost("unused")
+	channelID := "hardened"
+	openingJSON := `{"capacity":1000,"input_token":"token-a"}`
+	if err := host.SaveOpeningFromSwapChannel(channelID, openingJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.SaveOpeningFromSwapChannel(channelID, openingJSON); err != nil {
+		t.Fatalf("identical retry failed: %v", err)
+	}
+	if err := host.SaveOpeningFromSwapChannel(channelID, `{"capacity":1000,"input_token":"token-b"}`); err == nil {
+		t.Fatal("conflicting opening retry succeeded")
+	}
+	if got, err := host.GetChannelOpeningFromSwap(channelID); err != nil || got != openingJSON {
+		t.Fatalf("opening changed after conflict: got %q, err %v", got, err)
+	}
+
+	if err := host.MarkChannelOpen(channelID, `[{"proof":1}]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RecordPayment(channelID, `{"balance":50}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.MarkChannelClosed(channelID); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.MarkChannelOpen(channelID, `[{"proof":1}]`); err != nil {
+		t.Fatalf("identical completion retry failed: %v", err)
+	}
+	if got := host.GetChannelState(channelID); got != "closed" {
+		t.Fatalf("completion retry changed lifecycle to %q", got)
+	}
+	if got := host.GetPaymentState(channelID); got != `{"balance":50}` {
+		t.Fatalf("completion retry changed payment to %q", got)
+	}
+	if err := host.MarkChannelOpen(channelID, `[{"proof":2}]`); err == nil {
+		t.Fatal("conflicting completion retry succeeded")
+	}
+	if err := host.SaveOpeningFromSwapChannel(channelID, openingJSON); err == nil {
+		t.Fatal("opening save replaced completed channel")
 	}
 }
 

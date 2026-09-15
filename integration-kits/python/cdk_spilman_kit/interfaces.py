@@ -12,11 +12,11 @@ class SpilmanClientHost(Protocol):
     # ========================================================================
 
     def save_opening_from_swap_channel(self, channel_id: str, opening_json: str) -> None:
-        """Persists channel metadata before the funding swap."""
+        """Inserts channel metadata or verifies an identical retry."""
         ...
 
     def mark_channel_open(self, channel_id: str, funding_proofs_json: str) -> None:
-        """Transitions a channel from OpeningFromSwap to Open."""
+        """Completes an opening or verifies identical completed funding."""
         ...
 
     def mark_channel_opening_failed(self, channel_id: str, failure_json: str) -> None:
@@ -28,7 +28,7 @@ class SpilmanClientHost(Protocol):
         ...
 
     def get_channel_opening_from_swap(self, channel_id: str) -> Optional[str]:
-        """Retrieves channel opening data as a JSON string."""
+        """Returns opening JSON/None; raises when storage or decoding fails."""
         ...
 
     # ========================================================================

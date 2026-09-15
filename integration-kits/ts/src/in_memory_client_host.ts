@@ -32,33 +32,55 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
   // ========================================================================
 
   saveOpeningFromSwapChannel(channelId: string, openingJson: string): void {
-    this.opening.set(channelId, openingJson);
+    const opening = JSON.parse(openingJson);
+    const state = this.channelState.get(channelId);
+    if (state !== undefined) {
+      const existingJson = this.opening.get(channelId);
+      if (
+        (state !== "opening_from_swap" && state !== "opening_failed") ||
+        existingJson === undefined
+      ) {
+        throw new Error(`channel ${channelId} already exists`);
+      }
+      if (JSON.stringify(JSON.parse(existingJson)) !== JSON.stringify(opening)) {
+        throw new Error(`channel ${channelId} already has different opening data`);
+      }
+    } else {
+      this.opening.set(channelId, openingJson);
+    }
     this.channelState.set(channelId, "opening_from_swap");
   }
 
   markChannelOpen(channelId: string, fundingProofsJson: string): void {
-    // Read opening data, construct funding, store in funding map, remove from opening map
-    const openingJson = this.opening.get(channelId);
-    if (openingJson) {
-      try {
-        const opening = JSON.parse(openingJson);
-        const funding = {
-          params_json: opening.params_json,
-          funding_proofs_json: fundingProofsJson,
-          channel_secret_hex: opening.channel_secret_hex,
-          keyset_info_json: opening.keyset_info_json,
-          sender_pubkey_hex: opening.sender_pubkey_hex,
-          capacity: opening.capacity,
-          funding_token_amount: opening.funding_token_amount,
-          mint_url: opening.mint_url,
-          created_at: opening.created_at,
-        };
-        this.funding.set(channelId, JSON.stringify(funding));
-      } catch {
-        // If parse fails, just update state
+    const state = this.channelState.get(channelId);
+    if (state === "open" || state === "closing" || state === "closed") {
+      const fundingJson = this.funding.get(channelId);
+      if (fundingJson === undefined) {
+        throw new Error(`channel ${channelId} has corrupt completed funding`);
       }
-      this.opening.delete(channelId);
+      if (JSON.parse(fundingJson).funding_proofs_json !== fundingProofsJson) {
+        throw new Error(`channel ${channelId} was completed with different funding proofs`);
+      }
+      return;
     }
+    const openingJson = this.opening.get(channelId);
+    if (state !== "opening_from_swap" || openingJson === undefined) {
+      throw new Error(`channel ${channelId} is not opening_from_swap`);
+    }
+    const opening = JSON.parse(openingJson);
+    const funding = {
+      params_json: opening.params_json,
+      funding_proofs_json: fundingProofsJson,
+      channel_secret_hex: opening.channel_secret_hex,
+      keyset_info_json: opening.keyset_info_json,
+      sender_pubkey_hex: opening.sender_pubkey_hex,
+      capacity: opening.capacity,
+      funding_token_amount: opening.funding_token_amount,
+      mint_url: opening.mint_url,
+      created_at: opening.created_at,
+    };
+    this.funding.set(channelId, JSON.stringify(funding));
+    this.opening.delete(channelId);
     this.channelState.set(channelId, "open");
   }
 
@@ -67,7 +89,12 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
   }
 
   getChannelOpeningFromSwap(channelId: string): string | null {
-    return this.opening.get(channelId) ?? null;
+    if (this.channelState.get(channelId) !== "opening_from_swap") return null;
+    const opening = this.opening.get(channelId);
+    if (opening === undefined) {
+      throw new Error(`channel ${channelId} has corrupt opening_from_swap state`);
+    }
+    return opening;
   }
 
   // ========================================================================

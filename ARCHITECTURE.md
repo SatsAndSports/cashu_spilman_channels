@@ -246,9 +246,9 @@ The `SpilmanClientBridge` mirrors this pattern, enabling external signers and cu
 ```rust
 trait SpilmanClientHost {
     // Channel Opening (two-phase)
-    fn save_opening_from_swap_channel(&self, channel_id: &str, opening: ClientChannelOpeningFromSwap);
-    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str);
-    fn get_channel_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap>;
+    fn save_opening_from_swap_channel(&self, channel_id: &str, opening: ClientChannelOpeningFromSwap) -> Result<(), String>;
+    fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String>;
+    fn get_channel_opening_from_swap(&self, channel_id: &str) -> Result<Option<ClientChannelOpeningFromSwap>, String>;
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
 
     // Payment State (mutable)
@@ -267,6 +267,14 @@ trait SpilmanClientHost {
     fn sign_with_tweaked_key(&self, signer_pubkey_hex: &str, message_hex: &str, tweak_scalar_hex: &str) -> Result<String, String>;
 }
 ```
+
+Opening persistence is insert-or-verify: an identical retry is accepted, while
+different opening data or an existing funded channel is never replaced.
+Completion is likewise complete-or-verify, so replaying the same funding proofs
+is safe and preserves payment and lifecycle state. Recovery reads distinguish a
+missing opening from storage or deserialization failure. SQLite clients may use
+`SqliteClientStorage::open_read_only` to inspect an existing database without
+creating it, enabling WAL, initializing schema, or running migrations.
 
 ---
 

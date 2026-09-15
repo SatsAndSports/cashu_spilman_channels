@@ -106,11 +106,12 @@ pub trait SpilmanClientHost {
 
     /// Get opening data for a channel in OpeningFromSwap state.
     ///
-    /// Returns `None` if the channel is not in OpeningFromSwap state.
+    /// Returns `None` if the channel is not in OpeningFromSwap state. Storage
+    /// and deserialization failures are returned rather than treated as absent.
     fn get_channel_opening_from_swap(
         &self,
         channel_id: &str,
-    ) -> Option<ClientChannelOpeningFromSwap>;
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String>;
 
     /// Mark a channel opening attempt as explicitly failed.
     fn mark_channel_opening_failed(
@@ -2173,7 +2174,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     pub fn restore_funding_proofs(&self, channel_id: &str) -> Result<String, String> {
         let opening = self
             .host
-            .get_channel_opening_from_swap(channel_id)
+            .get_channel_opening_from_swap(channel_id)?
             .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         let restore_request = create_funding_restore_request(
@@ -2207,7 +2208,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     pub fn restore_change_proofs(&self, channel_id: &str) -> Result<String, String> {
         let opening = self
             .host
-            .get_channel_opening_from_swap(channel_id)
+            .get_channel_opening_from_swap(channel_id)?
             .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         if opening.change_amount_raw == 0 {
@@ -2251,6 +2252,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let opening = self
             .host
             .get_channel_opening_from_swap(channel_id)
+            .map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::BeforeOpeningSaved,
+                    Some(channel_id.to_string()),
+                    e,
+                )
+            })?
             .ok_or_else(|| {
                 OpenChannelError::new(
                     OpenChannelFailureStage::BeforeOpeningSaved,
@@ -2491,7 +2499,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     ) -> Result<String, String> {
         let opening = self
             .host
-            .get_channel_opening_from_swap(channel_id)
+            .get_channel_opening_from_swap(channel_id)?
             .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         let restore_request = create_funding_restore_request(
@@ -2529,7 +2537,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     ) -> Result<String, String> {
         let opening = self
             .host
-            .get_channel_opening_from_swap(channel_id)
+            .get_channel_opening_from_swap(channel_id)?
             .ok_or_else(|| format!("Channel not found in OpeningFromSwap state: {}", channel_id))?;
 
         if opening.change_amount_raw == 0 {
@@ -3226,6 +3234,7 @@ mod tests {
         assert!(bridge
             .host
             .get_channel_opening_from_swap(&prepared.channel_id)
+            .unwrap()
             .is_none());
     }
 
@@ -3427,8 +3436,11 @@ mod tests {
             Err("mark_channel_opening_failed failed".to_string())
         }
 
-        fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {
-            None
+        fn get_channel_opening_from_swap(
+            &self,
+            _: &str,
+        ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
+            Err("opening storage read failed".to_string())
         }
 
         fn get_channel_funding(&self, _: &str) -> Option<ClientChannelFunding> {
@@ -3495,6 +3507,14 @@ mod tests {
         let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
         let err = bridge.delete_channel("ch1").unwrap_err();
         assert!(err.contains("delete_channel failed"));
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn opening_recovery_surfaces_storage_read_error() {
+        let bridge = SpilmanClientBridge::new(FailingLifecycleHost, NoopNetworking);
+        let err = bridge.restore_funding_proofs("ch1").unwrap_err();
+        assert!(err.contains("opening storage read failed"));
     }
 
     #[test]
