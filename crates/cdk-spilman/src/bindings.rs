@@ -12,7 +12,10 @@ use cashu::dhke::blind_message;
 #[cfg(feature = "wallet")]
 use cashu::dhke::construct_proofs as dhke_construct_proofs;
 #[cfg(feature = "wallet")]
-use cashu::nuts::{BlindSignature, BlindSignatureDleq, BlindedMessage, PreMintSecrets};
+use cashu::nuts::{
+    BlindSignature, BlindSignatureDleq, BlindedMessage, PreMintSecrets, RestoreResponse,
+    SwapResponse,
+};
 use cashu::nuts::{CurrencyUnit, Id, Keys, Proof, PublicKey, SecretKey, SwapRequest, Token};
 #[cfg(feature = "wallet")]
 use cashu::secret::Secret;
@@ -1188,19 +1191,21 @@ pub fn complete_plain_change_restore(
     change_secrets_json: &str,
     keyset_info_json: &str,
 ) -> Result<String, String> {
-    let restore_response: serde_json::Value = serde_json::from_str(restore_response_json)
+    let restore_response: RestoreResponse = serde_json::from_str(restore_response_json)
         .map_err(|e| format!("Failed to parse change restore response: {e}"))?;
-    let signatures = restore_response
-        .get("signatures")
-        .ok_or("Missing 'signatures' in change restore response")?;
-    let synthetic_swap_response = serde_json::json!({ "signatures": signatures });
-    let synthetic_swap_response = serde_json::to_string(&synthetic_swap_response)
-        .map_err(|e| format!("Failed to serialize change restore response: {e}"))?;
-    complete_funding_swap_with_plain_change(
-        &synthetic_swap_response,
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let change_secrets = parse_prepared_outputs(change_secrets_json, &keyset_info, "change")?;
+    let expected_outputs = change_secrets
+        .iter()
+        .map(|output| output.blinded_message.clone())
+        .collect::<Vec<_>>();
+    let signatures = match_restore_response(restore_response, &expected_outputs, "change")?;
+    complete_exact_opening_signatures(
+        signatures,
         "[]",
         change_secrets_json,
-        keyset_info_json,
+        &keyset_info,
+        Some(&expected_outputs),
     )
 }
 
@@ -1225,24 +1230,12 @@ pub fn complete_funding_restore(
     channel_secret_hex: &str,
     keyset_info_json: &str,
 ) -> Result<String, String> {
-    // Parse restore response to extract signatures
-    let restore_response: serde_json::Value = serde_json::from_str(restore_response_json)
-        .map_err(|e| format!("Failed to parse restore response: {}", e))?;
-
-    let signatures = restore_response
-        .get("signatures")
-        .ok_or("Missing 'signatures' in restore response")?;
-
-    // Wrap signatures in swap-response format for reuse by complete_funding_swap
-    let swap_response = serde_json::json!({
-        "signatures": signatures
-    });
-    let swap_response_json = serde_json::to_string(&swap_response)
-        .map_err(|e| format!("Failed to serialize swap response: {}", e))?;
-
     // Reconstruct funding secrets deterministically
     let funding_outputs =
         reconstruct_funding_outputs(params_json, channel_secret_hex, keyset_info_json)?;
+    let expected_outputs = funding_outputs
+        .get_blinded_messages(None)
+        .map_err(|e| format!("Failed to get funding blinded messages: {e}"))?;
 
     let funding_secrets = funding_outputs
         .get_secrets_with_blinding()
@@ -1263,8 +1256,17 @@ pub fn complete_funding_restore(
     let funding_secrets_str = serde_json::to_string(&funding_secrets_json)
         .map_err(|e| format!("Failed to serialize funding secrets: {}", e))?;
 
-    // Delegate to complete_funding_swap
-    complete_funding_swap(&swap_response_json, &funding_secrets_str, keyset_info_json)
+    let restore_response: RestoreResponse = serde_json::from_str(restore_response_json)
+        .map_err(|e| format!("Failed to parse restore response: {e}"))?;
+    let signatures = match_restore_response(restore_response, &expected_outputs, "funding")?;
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    complete_exact_opening_signatures(
+        signatures,
+        &funding_secrets_str,
+        "[]",
+        &keyset_info,
+        Some(&expected_outputs),
+    )
 }
 
 /// Complete a funding swap by unblinding the mint's response
@@ -1302,161 +1304,219 @@ pub fn complete_funding_swap_with_plain_change(
     change_secrets_json: &str,
     keyset_info_json: &str,
 ) -> Result<String, String> {
-    // Parse keyset info
     let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
-    let keys = keyset_info.active_keys.clone();
+    let response: SwapResponse = serde_json::from_str(swap_response_json)
+        .map_err(|e| format!("Failed to parse swap response: {e}"))?;
+    complete_exact_opening_signatures(
+        response.signatures,
+        funding_secrets_json,
+        change_secrets_json,
+        &keyset_info,
+        None,
+    )
+}
 
-    // Parse swap response to get signatures
-    let response: serde_json::Value = serde_json::from_str(swap_response_json)
-        .map_err(|e| format!("Failed to parse swap response: {}", e))?;
+#[cfg(feature = "wallet")]
+pub(crate) fn complete_funding_swap_for_outputs(
+    swap_response_json: &str,
+    funding_secrets_json: &str,
+    change_secrets_json: &str,
+    keyset_info_json: &str,
+    expected_outputs: &[BlindedMessage],
+) -> Result<String, String> {
+    let keyset_info = parse_keyset_info_from_json(keyset_info_json)?;
+    let response: SwapResponse = serde_json::from_str(swap_response_json)
+        .map_err(|e| format!("Failed to parse swap response: {e}"))?;
+    complete_exact_opening_signatures(
+        response.signatures,
+        funding_secrets_json,
+        change_secrets_json,
+        &keyset_info,
+        Some(expected_outputs),
+    )
+}
 
-    let signatures_raw = response["signatures"]
-        .as_array()
-        .ok_or("Missing 'signatures' in swap response")?;
+#[cfg(feature = "wallet")]
+#[derive(Debug)]
+struct PreparedOutput {
+    blinded_message: BlindedMessage,
+    secret: Secret,
+    blinding_factor: SecretKey,
+}
 
-    // Parse funding secrets
-    let funding_secrets_raw: Vec<serde_json::Value> = serde_json::from_str(funding_secrets_json)
-        .map_err(|e| format!("Failed to parse funding secrets: {}", e))?;
-    let change_secrets_raw: Vec<serde_json::Value> = serde_json::from_str(change_secrets_json)
-        .map_err(|e| format!("Failed to parse change secrets: {}", e))?;
+#[cfg(feature = "wallet")]
+fn parse_prepared_outputs(
+    secrets_json: &str,
+    keyset_info: &KeysetInfo,
+    role: &str,
+) -> Result<Vec<PreparedOutput>, String> {
+    let values: Vec<serde_json::Value> = serde_json::from_str(secrets_json)
+        .map_err(|e| format!("Failed to parse {role} secrets: {e}"))?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let secret_str = value["secret"]
+                .as_str()
+                .ok_or_else(|| format!("Missing 'secret' in {role} secret {index}"))?;
+            let blinding_factor_hex = value["blinding_factor"]
+                .as_str()
+                .ok_or_else(|| format!("Missing 'blinding_factor' in {role} secret {index}"))?;
+            let amount = Amount::from(
+                value["amount"]
+                    .as_u64()
+                    .ok_or_else(|| format!("Missing 'amount' in {role} secret {index}"))?,
+            );
+            if keyset_info.active_keys.amount_key(amount).is_none() {
+                return Err(format!(
+                    "No denomination key for {role} output {index} amount {amount}"
+                ));
+            }
+            let secret: Secret = secret_str
+                .parse()
+                .map_err(|e| format!("Invalid {role} secret {index}: {e}"))?;
+            let blinding_factor = SecretKey::from_hex(blinding_factor_hex)
+                .map_err(|e| format!("Invalid {role} blinding factor {index}: {e}"))?;
+            let (blinded_secret, _) =
+                blind_message(secret_str.as_bytes(), Some(blinding_factor.clone()))
+                    .map_err(|e| format!("Failed to blind {role} secret {index}: {e}"))?;
+            Ok(PreparedOutput {
+                blinded_message: BlindedMessage::new(amount, keyset_info.keyset_id, blinded_secret),
+                secret,
+                blinding_factor,
+            })
+        })
+        .collect()
+}
 
-    let funding_count = funding_secrets_raw.len();
-    let change_count = change_secrets_raw.len();
-    let expected_count = funding_count
-        .checked_add(change_count)
-        .ok_or_else(|| "Signature count overflow".to_string())?;
-
-    // Verify signature count matches
-    if signatures_raw.len() != expected_count {
+#[cfg(feature = "wallet")]
+fn match_restore_response(
+    response: RestoreResponse,
+    expected_outputs: &[BlindedMessage],
+    role: &str,
+) -> Result<Vec<BlindSignature>, String> {
+    if response.outputs.len() != response.signatures.len() {
         return Err(format!(
-            "Signature count mismatch: expected {}, got {}",
-            expected_count,
-            signatures_raw.len()
+            "{role} restore output/signature count mismatch: {} outputs, {} signatures",
+            response.outputs.len(),
+            response.signatures.len()
+        ));
+    }
+    if response.outputs.len() != expected_outputs.len() {
+        return Err(format!(
+            "{role} restore count mismatch: expected {}, got {}",
+            expected_outputs.len(),
+            response.outputs.len()
         ));
     }
 
-    // Helper to parse and verify signatures
-    let parse_signatures = |sigs: &[serde_json::Value]| -> Result<Vec<BlindSignature>, String> {
-        let mut result = Vec::new();
-        for (i, sig) in sigs.iter().enumerate() {
-            let amount = sig["amount"]
-                .as_u64()
-                .ok_or_else(|| format!("Missing 'amount' in signature {}", i))?;
-            let id_str = sig["id"]
-                .as_str()
-                .ok_or_else(|| format!("Missing 'id' in signature {}", i))?;
-            let c_str = sig["C_"]
-                .as_str()
-                .ok_or_else(|| format!("Missing 'C_' in signature {}", i))?;
-
-            let keyset_id: Id = id_str
-                .parse()
-                .map_err(|e| format!("Invalid keyset id in signature {}: {}", i, e))?;
-            let c = PublicKey::from_str(c_str)
-                .map_err(|e| format!("Invalid C_ in signature {}: {}", i, e))?;
-
-            // Parse DLEQ - required for Spilman channels
-            let dleq_obj = sig["dleq"].as_object().ok_or_else(|| {
-                format!(
-                    "Missing 'dleq' in signature {} - DLEQ proofs are required",
-                    i
-                )
-            })?;
-            let e_str = dleq_obj
-                .get("e")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("Missing 'e' in dleq for signature {}", i))?;
-            let s_str = dleq_obj
-                .get("s")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("Missing 's' in dleq for signature {}", i))?;
-            let e = SecretKey::from_hex(e_str)
-                .map_err(|e| format!("Invalid dleq.e in signature {}: {}", i, e))?;
-            let s = SecretKey::from_hex(s_str)
-                .map_err(|e| format!("Invalid dleq.s in signature {}: {}", i, e))?;
-            let dleq = BlindSignatureDleq { e, s };
-
-            result.push(BlindSignature {
-                amount: Amount::from(amount),
-                keyset_id,
-                c,
-                dleq: Some(dleq),
-            });
+    let mut matched = vec![None; expected_outputs.len()];
+    for (output, signature) in response.outputs.into_iter().zip(response.signatures) {
+        let expected_index = expected_outputs
+            .iter()
+            .position(|expected| expected == &output)
+            .ok_or_else(|| format!("{role} restore returned an unknown output"))?;
+        if matched[expected_index].replace(signature).is_some() {
+            return Err(format!("{role} restore returned a duplicate output"));
         }
-        Ok(result)
-    };
+    }
 
-    // Helper to parse secrets
-    let parse_secrets =
-        |secrets: &[serde_json::Value]| -> Result<(Vec<Secret>, Vec<SecretKey>), String> {
-            let mut result_secrets = Vec::new();
-            let mut result_rs = Vec::new();
-            for (i, swb) in secrets.iter().enumerate() {
-                let secret_str = swb["secret"]
-                    .as_str()
-                    .ok_or_else(|| format!("Missing 'secret' in secrets {}", i))?;
-                let blinding_factor_hex = swb["blinding_factor"]
-                    .as_str()
-                    .ok_or_else(|| format!("Missing 'blinding_factor' in secrets {}", i))?;
+    matched
+        .into_iter()
+        .enumerate()
+        .map(|(index, signature)| {
+            signature.ok_or_else(|| format!("{role} restore omitted expected output {index}"))
+        })
+        .collect()
+}
 
-                let secret: Secret = secret_str
-                    .parse()
-                    .map_err(|e| format!("Invalid secret {}: {}", i, e))?;
-                let r = SecretKey::from_hex(blinding_factor_hex)
-                    .map_err(|e| format!("Invalid blinding factor {}: {}", i, e))?;
+#[cfg(feature = "wallet")]
+fn complete_exact_opening_signatures(
+    signatures: Vec<BlindSignature>,
+    funding_secrets_json: &str,
+    change_secrets_json: &str,
+    keyset_info: &KeysetInfo,
+    exact_outputs: Option<&[BlindedMessage]>,
+) -> Result<String, String> {
+    let funding = parse_prepared_outputs(funding_secrets_json, keyset_info, "funding")?;
+    let change = parse_prepared_outputs(change_secrets_json, keyset_info, "change")?;
+    let funding_count = funding.len();
+    let expected = funding.into_iter().chain(change).collect::<Vec<_>>();
+    if signatures.len() != expected.len() {
+        return Err(format!(
+            "Signature count mismatch: expected {}, got {}",
+            expected.len(),
+            signatures.len()
+        ));
+    }
 
-                result_secrets.push(secret);
-                result_rs.push(r);
-            }
-            Ok((result_secrets, result_rs))
-        };
+    if let Some(exact_outputs) = exact_outputs {
+        if exact_outputs.len() != expected.len()
+            || exact_outputs
+                .iter()
+                .zip(&expected)
+                .any(|(exact, prepared)| exact != &prepared.blinded_message)
+        {
+            return Err("Prepared blinded outputs do not match opening secrets".to_string());
+        }
+    }
 
-    // Parse funding signatures and secrets
-    let funding_blind_sigs = parse_signatures(&signatures_raw[..funding_count])?;
-    let (funding_secrets, funding_rs) = parse_secrets(&funding_secrets_raw)?;
-    let change_blind_sigs = parse_signatures(&signatures_raw[funding_count..])?;
-    let (change_secrets, change_rs) = parse_secrets(&change_secrets_raw)?;
+    let expected_total = expected.iter().try_fold(0u64, |total, output| {
+        total
+            .checked_add(u64::from(output.blinded_message.amount))
+            .ok_or_else(|| "Expected output total overflow".to_string())
+    })?;
+    let response_total = signatures.iter().try_fold(0u64, |total, signature| {
+        total
+            .checked_add(u64::from(signature.amount))
+            .ok_or_else(|| "Response signature total overflow".to_string())
+    })?;
+    if response_total != expected_total {
+        return Err(format!(
+            "Signature total mismatch: expected {expected_total}, got {response_total}"
+        ));
+    }
 
-    // Construct funding proofs (includes DLEQ verification)
-    #[cfg(feature = "wallet")]
-    let funding_proofs =
-        dhke_construct_proofs(funding_blind_sigs, funding_rs, funding_secrets, &keys).map_err(
-            |e| {
-                format!(
-                    "Failed to construct funding proofs (DLEQ verification failed?): {}",
-                    e
-                )
-            },
-        )?;
-    #[cfg(feature = "wallet")]
-    let change_proofs = dhke_construct_proofs(change_blind_sigs, change_rs, change_secrets, &keys)
-        .map_err(|e| {
-            format!(
-                "Failed to construct change proofs (DLEQ verification failed?): {}",
-                e
-            )
-        })?;
+    for (index, (signature, output)) in signatures.iter().zip(&expected).enumerate() {
+        if signature.amount != output.blinded_message.amount {
+            return Err(format!(
+                "Signature {index} amount mismatch: expected {}, got {}",
+                output.blinded_message.amount, signature.amount
+            ));
+        }
+        if signature.keyset_id != output.blinded_message.keyset_id {
+            return Err(format!(
+                "Signature {index} keyset mismatch: expected {}, got {}",
+                output.blinded_message.keyset_id, signature.keyset_id
+            ));
+        }
+        let mint_key = keyset_info
+            .active_keys
+            .amount_key(output.blinded_message.amount)
+            .ok_or_else(|| format!("Missing denomination key for signature {index}"))?;
+        signature
+            .verify_dleq(mint_key, output.blinded_message.blinded_secret)
+            .map_err(|e| format!("Invalid DLEQ for signature {index}: {e}"))?;
+    }
 
-    #[cfg(not(feature = "wallet"))]
-    let funding_proofs: Vec<Proof> = Vec::new(); // Stub for non-wallet builds
-    #[cfg(not(feature = "wallet"))]
-    let change_proofs: Vec<Proof> = Vec::new(); // Stub for non-wallet builds
-    #[cfg(not(feature = "wallet"))]
-    let _ = (
-        funding_blind_sigs,
-        funding_rs,
-        funding_secrets,
-        change_blind_sigs,
-        change_rs,
-        change_secrets,
-        keys,
-    ); // suppress unused warnings
+    let (secrets, blinding_factors): (Vec<_>, Vec<_>) = expected
+        .into_iter()
+        .map(|output| (output.secret, output.blinding_factor))
+        .unzip();
+    let mut proofs = dhke_construct_proofs(
+        signatures,
+        blinding_factors,
+        secrets,
+        &keyset_info.active_keys,
+    )
+    .map_err(|e| format!("Failed to construct opening proofs: {e}"))?;
+    let change_proofs = proofs.split_off(funding_count);
+    let funding_proofs = proofs;
 
-    // Serialize results
     let funding_proofs_json = serde_json::to_string(&funding_proofs)
-        .map_err(|e| format!("Failed to serialize funding proofs: {}", e))?;
+        .map_err(|e| format!("Failed to serialize funding proofs: {e}"))?;
     let change_proofs_json = serde_json::to_string(&change_proofs)
-        .map_err(|e| format!("Failed to serialize change proofs: {}", e))?;
+        .map_err(|e| format!("Failed to serialize change proofs: {e}"))?;
 
     let result = serde_json::json!({
         "funding_proofs_json": funding_proofs_json,
@@ -1845,6 +1905,84 @@ mod tests {
     use super::*;
     use cashu::secret::Secret;
 
+    #[cfg(feature = "wallet")]
+    struct OpeningResponseFixture {
+        keyset_info: KeysetInfo,
+        keyset_info_json: String,
+        secrets_json: String,
+        outputs: Vec<BlindedMessage>,
+        signatures: Vec<BlindSignature>,
+        mint_secrets: BTreeMap<Amount, SecretKey>,
+    }
+
+    #[cfg(feature = "wallet")]
+    fn opening_response_fixture() -> OpeningResponseFixture {
+        let mint_secrets = [1u64, 2]
+            .into_iter()
+            .map(|amount| (Amount::from(amount), SecretKey::generate()))
+            .collect::<BTreeMap<_, _>>();
+        let keys = Keys::new(
+            mint_secrets
+                .iter()
+                .map(|(amount, secret)| (*amount, secret.public_key()))
+                .collect(),
+        );
+        let keyset_info =
+            KeysetInfo::new(Id::v1_from_keys(&keys), CurrencyUnit::Sat, keys, 0, None);
+        let secrets_json = serde_json::to_string(&vec![
+            serde_json::json!({
+                "secret": "opening-response-one",
+                "blinding_factor": SecretKey::generate().to_secret_hex(),
+                "amount": 1,
+            }),
+            serde_json::json!({
+                "secret": "opening-response-two",
+                "blinding_factor": SecretKey::generate().to_secret_hex(),
+                "amount": 2,
+            }),
+        ])
+        .unwrap();
+        let outputs = parse_prepared_outputs(&secrets_json, &keyset_info, "test")
+            .unwrap()
+            .into_iter()
+            .map(|output| output.blinded_message)
+            .collect::<Vec<_>>();
+        let signatures = outputs
+            .iter()
+            .map(|output| {
+                let mint_secret = mint_secrets[&output.amount].clone();
+                let blinded_signature =
+                    cashu::dhke::sign_message(&mint_secret, &output.blinded_secret).unwrap();
+                BlindSignature::new(
+                    output.amount,
+                    blinded_signature,
+                    output.keyset_id,
+                    &output.blinded_secret,
+                    mint_secret,
+                )
+                .unwrap()
+            })
+            .collect();
+        let keyset_info_json = serde_json::to_string(&keyset_info).unwrap();
+        OpeningResponseFixture {
+            keyset_info,
+            keyset_info_json,
+            secrets_json,
+            outputs,
+            signatures,
+            mint_secrets,
+        }
+    }
+
+    #[cfg(feature = "wallet")]
+    fn restore_json(outputs: Vec<BlindedMessage>, signatures: Vec<BlindSignature>) -> String {
+        serde_json::to_string(&RestoreResponse {
+            outputs,
+            signatures,
+        })
+        .unwrap()
+    }
+
     fn proof(amount: u64, keyset_id: Id, secret: &str) -> Proof {
         Proof {
             amount: Amount::from(amount),
@@ -1858,6 +1996,194 @@ mod tests {
             dleq: None,
             p2pk_e: None,
         }
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn opening_completion_verifies_exact_outputs_and_real_dleq() {
+        let fixture = opening_response_fixture();
+        let swap_response =
+            serde_json::to_string(&SwapResponse::new(fixture.signatures.clone())).unwrap();
+        complete_funding_swap_for_outputs(
+            &swap_response,
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+            &fixture.outputs,
+        )
+        .expect("valid exact response");
+
+        let mut wrong_outputs = fixture.outputs.clone();
+        wrong_outputs[0].blinded_secret = SecretKey::generate().public_key();
+        let error = complete_funding_swap_for_outputs(
+            &swap_response,
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+            &wrong_outputs,
+        )
+        .unwrap_err();
+        assert!(error.contains("Prepared blinded outputs do not match"));
+
+        let mut wrong_amount = fixture.signatures.clone();
+        wrong_amount[0].amount = Amount::from(2);
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(wrong_amount)).unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err();
+        assert!(error.contains("Signature total mismatch"));
+
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(
+                fixture.signatures.iter().cloned().rev().collect(),
+            ))
+            .unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err();
+        assert!(error.contains("amount mismatch"));
+
+        let mut wrong_keyset = fixture.signatures.clone();
+        wrong_keyset[0].keyset_id = crate::params::mock_keyset_info(vec![1, 2], 0).keyset_id;
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(wrong_keyset)).unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err();
+        assert!(error.contains("keyset mismatch"));
+
+        let mut wrong_denomination = fixture.signatures.clone();
+        let output = &fixture.outputs[0];
+        let wrong_secret = fixture.mint_secrets[&Amount::from(2)].clone();
+        wrong_denomination[0] = BlindSignature::new(
+            output.amount,
+            cashu::dhke::sign_message(&wrong_secret, &output.blinded_secret).unwrap(),
+            output.keyset_id,
+            &output.blinded_secret,
+            wrong_secret,
+        )
+        .unwrap();
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(wrong_denomination)).unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid DLEQ"));
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn opening_completion_rejects_bad_counts_and_missing_denomination() {
+        let fixture = opening_response_fixture();
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(vec![fixture.signatures[0].clone()]))
+                .unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err();
+        assert!(error.contains("Signature count mismatch"));
+
+        let mut keyset_info = fixture.keyset_info;
+        keyset_info.active_keys = Keys::new(
+            keyset_info
+                .active_keys
+                .iter()
+                .filter(|(amount, _)| **amount != Amount::from(2))
+                .map(|(amount, key)| (*amount, *key))
+                .collect(),
+        );
+        let error = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(fixture.signatures)).unwrap(),
+            &fixture.secrets_json,
+            "[]",
+            &serde_json::to_string(&keyset_info).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("No denomination key"));
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn nut09_restore_accepts_reordering_by_exact_output_match() {
+        let fixture = opening_response_fixture();
+        let direct = complete_funding_swap_with_plain_change(
+            &serde_json::to_string(&SwapResponse::new(fixture.signatures.clone())).unwrap(),
+            "[]",
+            &fixture.secrets_json,
+            &fixture.keyset_info_json,
+        )
+        .unwrap();
+        let restored = complete_plain_change_restore(
+            &restore_json(
+                fixture.outputs.iter().cloned().rev().collect(),
+                fixture.signatures.iter().cloned().rev().collect(),
+            ),
+            &fixture.secrets_json,
+            &fixture.keyset_info_json,
+        )
+        .unwrap();
+        assert_eq!(direct, restored);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn nut09_restore_rejects_duplicate_unknown_partial_and_mismatched_pairs() {
+        let fixture = opening_response_fixture();
+
+        let duplicate = restore_json(
+            vec![fixture.outputs[0].clone(), fixture.outputs[0].clone()],
+            fixture.signatures.clone(),
+        );
+        assert!(complete_plain_change_restore(
+            &duplicate,
+            &fixture.secrets_json,
+            &fixture.keyset_info_json
+        )
+        .unwrap_err()
+        .contains("duplicate output"));
+
+        let mut unknown_outputs = fixture.outputs.clone();
+        unknown_outputs[0].blinded_secret = SecretKey::generate().public_key();
+        assert!(complete_plain_change_restore(
+            &restore_json(unknown_outputs, fixture.signatures.clone()),
+            &fixture.secrets_json,
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err()
+        .contains("unknown output"));
+
+        assert!(complete_plain_change_restore(
+            &restore_json(
+                vec![fixture.outputs[0].clone()],
+                vec![fixture.signatures[0].clone()],
+            ),
+            &fixture.secrets_json,
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err()
+        .contains("restore count mismatch"));
+
+        assert!(complete_plain_change_restore(
+            &restore_json(
+                fixture.outputs,
+                fixture.signatures.into_iter().rev().collect(),
+            ),
+            &fixture.secrets_json,
+            &fixture.keyset_info_json,
+        )
+        .unwrap_err()
+        .contains("amount mismatch"));
     }
 
     fn proofs(count: usize, amount: u64, keyset_id: Id, secret_prefix: &str) -> Vec<Proof> {
