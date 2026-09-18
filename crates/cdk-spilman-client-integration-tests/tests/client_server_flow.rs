@@ -1095,6 +1095,7 @@ async fn test_open_channel_from_proofs_auto_keeps_ambiguous_swap_failure_opening
     );
     assert!(storage_view
         .get_opening_from_swap(&channel_ids[0])
+        .unwrap()
         .is_some());
     assert!(storage_view.get_opening_failure(&channel_ids[0]).is_none());
 }

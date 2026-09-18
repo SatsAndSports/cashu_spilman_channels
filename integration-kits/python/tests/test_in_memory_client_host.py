@@ -71,9 +71,34 @@ class TestInMemorySpilmanClientHost:
 
         # Marking open should clear the failure.
         host.mark_channel_opening_failed(channel_id, failure_json)
+        host.save_opening_from_swap_channel(channel_id, opening_json)
         host.mark_channel_open(channel_id, "[]")
         assert host.get_channel_state(channel_id) == "open"
         assert channel_id in host.list_channel_ids()
+
+    def test_opening_and_completion_retries_are_non_destructive(self, host):
+        channel_id = "channel-hardened"
+        opening_json = '{"capacity": 1000, "input_token": "token-a"}'
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+        host.save_opening_from_swap_channel(channel_id, opening_json)
+
+        with pytest.raises(RuntimeError):
+            host.save_opening_from_swap_channel(
+                channel_id, '{"capacity": 1000, "input_token": "token-b"}'
+            )
+        assert host.get_channel_opening_from_swap(channel_id) == opening_json
+
+        host.mark_channel_open(channel_id, '[{"proof": 1}]')
+        host.record_payment(channel_id, '{"balance": 50}')
+        host.mark_channel_closed(channel_id)
+        host.mark_channel_open(channel_id, '[{"proof": 1}]')
+        assert host.get_channel_state(channel_id) == "closed"
+        assert host.get_payment_state(channel_id) == '{"balance": 50}'
+
+        with pytest.raises(RuntimeError):
+            host.mark_channel_open(channel_id, '[{"proof": 2}]')
+        with pytest.raises(RuntimeError):
+            host.save_opening_from_swap_channel(channel_id, opening_json)
 
     # ========================================================================
     # Payment State

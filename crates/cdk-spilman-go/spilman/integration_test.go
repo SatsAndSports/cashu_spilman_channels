@@ -292,10 +292,10 @@ func (h *testClientHost) GetChannelFunding(channelID string) string {
 	return h.funding[channelID]
 }
 
-func (h *testClientHost) GetChannelOpeningFromSwap(channelID string) string {
+func (h *testClientHost) GetChannelOpeningFromSwap(channelID string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.opening[channelID]
+	return h.opening[channelID], nil
 }
 
 // Payment State

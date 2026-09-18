@@ -140,8 +140,11 @@ extern "C" {
     ) -> Result<(), JsValue>;
     #[wasm_bindgen(method, js_name = getChannelFunding)]
     fn get_channel_funding(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
-    #[wasm_bindgen(method, js_name = getChannelOpeningFromSwap)]
-    fn get_channel_opening_from_swap(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
+    #[wasm_bindgen(method, catch, js_name = getChannelOpeningFromSwap)]
+    fn get_channel_opening_from_swap(
+        this: &JsSpilmanClientHost,
+        channel_id: &str,
+    ) -> Result<JsValue, JsValue>;
     // Payment state (mutable)
     #[wasm_bindgen(method, js_name = getPaymentState)]
     fn get_payment_state(this: &JsSpilmanClientHost, channel_id: &str) -> JsValue;
@@ -519,13 +522,20 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
     fn get_channel_opening_from_swap(
         &self,
         channel_id: &str,
-    ) -> Option<ClientChannelOpeningFromSwap> {
-        let val = self.js_host.get_channel_opening_from_swap(channel_id);
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
+        let val = self
+            .js_host
+            .get_channel_opening_from_swap(channel_id)
+            .map_err(js_error_to_string)?;
         if val.is_null() || val.is_undefined() {
-            return None;
+            return Ok(None);
         }
-        let json_str = val.as_string()?;
-        serde_json::from_str(&json_str).ok()
+        let json_str = val
+            .as_string()
+            .ok_or_else(|| "getChannelOpeningFromSwap must return a string or null".to_string())?;
+        serde_json::from_str(&json_str)
+            .map(Some)
+            .map_err(|e| format!("invalid opening JSON from JavaScript host: {e}"))
     }
 
     // ========================================================================

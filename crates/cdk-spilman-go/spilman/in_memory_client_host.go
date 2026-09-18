@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -46,7 +47,25 @@ func NewInMemoryClientHost(secretKeyHex string) *InMemoryClientHost {
 func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.opening[channelID] = openingJSON
+	var opening any
+	if err := json.Unmarshal([]byte(openingJSON), &opening); err != nil {
+		return fmt.Errorf("invalid opening JSON: %w", err)
+	}
+	if state, exists := h.channelState[channelID]; exists {
+		existingJSON, hasOpening := h.opening[channelID]
+		if (state != "opening_from_swap" && state != "opening_failed") || !hasOpening {
+			return fmt.Errorf("channel %s already exists", channelID)
+		}
+		var existing any
+		if err := json.Unmarshal([]byte(existingJSON), &existing); err != nil {
+			return fmt.Errorf("channel %s has corrupt opening JSON: %w", channelID, err)
+		}
+		if !reflect.DeepEqual(existing, opening) {
+			return fmt.Errorf("channel %s already has different opening data", channelID)
+		}
+	} else {
+		h.opening[channelID] = openingJSON
+	}
 	delete(h.failures, channelID)
 	h.channelState[channelID] = "opening_from_swap"
 	return nil
@@ -55,27 +74,46 @@ func (h *InMemoryClientHost) SaveOpeningFromSwapChannel(channelID, openingJSON s
 func (h *InMemoryClientHost) MarkChannelOpen(channelID, fundingProofsJSON string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Read opening data, construct funding, store in funding map, remove from opening map
-	if openingJSON, ok := h.opening[channelID]; ok {
-		var opening map[string]interface{}
-		if json.Unmarshal([]byte(openingJSON), &opening) == nil {
-			funding := map[string]interface{}{
-				"params_json":          opening["params_json"],
-				"funding_proofs_json":  fundingProofsJSON,
-				"channel_secret_hex":   opening["channel_secret_hex"],
-				"keyset_info_json":     opening["keyset_info_json"],
-				"sender_pubkey_hex":    opening["sender_pubkey_hex"],
-				"capacity":             opening["capacity"],
-				"funding_token_amount": opening["funding_token_amount"],
-				"mint_url":             opening["mint_url"],
-				"created_at":           opening["created_at"],
-			}
-			if updated, err := json.Marshal(funding); err == nil {
-				h.funding[channelID] = string(updated)
-			}
+	state, exists := h.channelState[channelID]
+	if exists && (state == "open" || state == "closing" || state == "closed") {
+		fundingJSON, ok := h.funding[channelID]
+		if !ok {
+			return fmt.Errorf("channel %s has corrupt completed funding", channelID)
 		}
-		delete(h.opening, channelID)
+		var funding map[string]interface{}
+		if err := json.Unmarshal([]byte(fundingJSON), &funding); err != nil {
+			return fmt.Errorf("channel %s has corrupt funding JSON: %w", channelID, err)
+		}
+		if funding["funding_proofs_json"] != fundingProofsJSON {
+			return fmt.Errorf("channel %s was completed with different funding proofs", channelID)
+		}
+		return nil
 	}
+	openingJSON, ok := h.opening[channelID]
+	if !ok || state != "opening_from_swap" {
+		return fmt.Errorf("channel %s is not opening_from_swap", channelID)
+	}
+	var opening map[string]interface{}
+	if err := json.Unmarshal([]byte(openingJSON), &opening); err != nil {
+		return fmt.Errorf("channel %s has corrupt opening JSON: %w", channelID, err)
+	}
+	funding := map[string]interface{}{
+		"params_json":          opening["params_json"],
+		"funding_proofs_json":  fundingProofsJSON,
+		"channel_secret_hex":   opening["channel_secret_hex"],
+		"keyset_info_json":     opening["keyset_info_json"],
+		"sender_pubkey_hex":    opening["sender_pubkey_hex"],
+		"capacity":             opening["capacity"],
+		"funding_token_amount": opening["funding_token_amount"],
+		"mint_url":             opening["mint_url"],
+		"created_at":           opening["created_at"],
+	}
+	updated, err := json.Marshal(funding)
+	if err != nil {
+		return fmt.Errorf("serialize funding: %w", err)
+	}
+	h.funding[channelID] = string(updated)
+	delete(h.opening, channelID)
 	delete(h.failures, channelID)
 	h.channelState[channelID] = "open"
 	return nil
@@ -95,13 +133,17 @@ func (h *InMemoryClientHost) GetChannelFunding(channelID string) string {
 	return h.funding[channelID]
 }
 
-func (h *InMemoryClientHost) GetChannelOpeningFromSwap(channelID string) string {
+func (h *InMemoryClientHost) GetChannelOpeningFromSwap(channelID string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.channelState[channelID] != "opening_from_swap" {
-		return ""
+		return "", nil
 	}
-	return h.opening[channelID]
+	opening, ok := h.opening[channelID]
+	if !ok {
+		return "", fmt.Errorf("channel %s has corrupt opening_from_swap state", channelID)
+	}
+	return opening, nil
 }
 
 // ============================================================================

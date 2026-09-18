@@ -1000,8 +1000,11 @@ pub struct SpilmanClientHostCallbacks {
     ) -> c_int,
     pub get_channel_funding:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
-    pub get_channel_opening_from_swap:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = not found, otherwise JSON
+    pub get_channel_opening_from_swap: extern "C" fn(
+        user_data: *mut libc::c_void,
+        channel_id: *const c_char,
+        response_out: *mut *mut c_char,
+    ) -> c_int, // success with NULL = not found; error response contains message
     // Payment State (mutable)
     pub get_payment_state:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // NULL = no payments yet, otherwise JSON
@@ -1166,16 +1169,31 @@ impl SpilmanClientHost for CGoSpilmanClientHost {
     fn get_channel_opening_from_swap(
         &self,
         channel_id: &str,
-    ) -> Option<ClientChannelOpeningFromSwap> {
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
         let id_c = CString::new(channel_id).unwrap();
-        let ptr =
-            (self.callbacks.get_channel_opening_from_swap)(self.callbacks.user_data, id_c.as_ptr());
-        if ptr.is_null() {
-            return None;
+        let mut response_ptr: *mut c_char = ptr::null_mut();
+        let ok = (self.callbacks.get_channel_opening_from_swap)(
+            self.callbacks.user_data,
+            id_c.as_ptr(),
+            &mut response_ptr,
+        );
+        if ok == 0 {
+            return if response_ptr.is_null() {
+                Err("get_channel_opening_from_swap failed".to_string())
+            } else {
+                unsafe { Err(CString::from_raw(response_ptr).into_string().unwrap()) }
+            };
+        }
+        if response_ptr.is_null() {
+            return Ok(None);
         }
         unsafe {
-            let json_str = CString::from_raw(ptr).into_string().unwrap();
-            serde_json::from_str(&json_str).ok()
+            let json_str = CString::from_raw(response_ptr)
+                .into_string()
+                .map_err(|e| format!("invalid UTF-8 opening response: {e}"))?;
+            serde_json::from_str(&json_str)
+                .map(Some)
+                .map_err(|e| format!("invalid opening JSON from Go host: {e}"))
         }
     }
 

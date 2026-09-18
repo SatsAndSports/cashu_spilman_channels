@@ -6,7 +6,7 @@ extern int go_client_save_opening_from_swap_channel(void*, const char*, const ch
 extern int go_client_mark_channel_open(void*, const char*, const char*, char**);
 extern int go_client_mark_channel_opening_failed(void*, const char*, const char*, char**);
 extern char* go_client_get_channel_funding(void*, const char*);
-extern char* go_client_get_channel_opening_from_swap(void*, const char*);
+extern int go_client_get_channel_opening_from_swap(void*, const char*, char**);
 // Payment State
 extern char* go_client_get_payment_state(void*, const char*);
 extern int go_client_record_payment(void*, const char*, const char*, char**);

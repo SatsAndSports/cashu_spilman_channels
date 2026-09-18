@@ -157,6 +157,12 @@ impl ConfigurableClientHost<crate::SqliteClientStorage> {
         Ok(Self::new(storage))
     }
 
+    /// Open an existing SQLite-backed client host without permitting writes.
+    pub fn open_sqlite_read_only(path: &str) -> Result<Self, String> {
+        let storage = crate::SqliteClientStorage::open_read_only(path)?;
+        Ok(Self::new(storage))
+    }
+
     /// Create a client host backed by an in-memory SQLite database.
     ///
     /// Useful for tests. Data is lost when the host is dropped.
@@ -195,7 +201,7 @@ impl<S: ClientStorage> SpilmanClientHost for ConfigurableClientHost<S> {
     fn get_channel_opening_from_swap(
         &self,
         channel_id: &str,
-    ) -> Option<ClientChannelOpeningFromSwap> {
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
         self.storage.borrow().get_opening_from_swap(channel_id)
     }
 
@@ -400,7 +406,10 @@ mod tests {
         );
 
         // Opening data should be retrievable
-        let o = host.get_channel_opening_from_swap(channel_id).unwrap();
+        let o = host
+            .get_channel_opening_from_swap(channel_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(o.input_token, "cashuAtest");
 
         // Funding not yet available
@@ -411,7 +420,10 @@ mod tests {
             .expect("mark channel open");
 
         // Opening data gone, funding now available
-        assert!(host.get_channel_opening_from_swap(channel_id).is_none());
+        assert!(host
+            .get_channel_opening_from_swap(channel_id)
+            .unwrap()
+            .is_none());
         let retrieved = host.get_channel_funding(channel_id).unwrap();
         assert_eq!(retrieved.capacity, 1000);
         assert_eq!(

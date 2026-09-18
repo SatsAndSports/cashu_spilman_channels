@@ -55,6 +55,29 @@ describe("InMemorySpilmanClientHost", () => {
       host.markChannelOpen(channelId, "[]");
       expect(host.getChannelState(channelId)).toBe("open");
     });
+
+    it("keeps opening and completed state intact across retries", () => {
+      const channelId = "hardened";
+      const openingJson = '{"capacity":100,"input_token":"token-a"}';
+      host.saveOpeningFromSwapChannel(channelId, openingJson);
+      host.saveOpeningFromSwapChannel(channelId, openingJson);
+      expect(() =>
+        host.saveOpeningFromSwapChannel(
+          channelId,
+          '{"capacity":100,"input_token":"token-b"}'
+        )
+      ).toThrow();
+      expect(host.getChannelOpeningFromSwap(channelId)).toBe(openingJson);
+
+      host.markChannelOpen(channelId, '[{"proof":1}]');
+      host.recordPayment(channelId, '{"balance":50}');
+      host.markChannelClosed(channelId);
+      host.markChannelOpen(channelId, '[{"proof":1}]');
+      expect(host.getChannelState(channelId)).toBe("closed");
+      expect(host.getPaymentState(channelId)).toBe('{"balance":50}');
+      expect(() => host.markChannelOpen(channelId, '[{"proof":2}]')).toThrow();
+      expect(() => host.saveOpeningFromSwapChannel(channelId, openingJson)).toThrow();
+    });
   });
 
   describe("payment state", () => {

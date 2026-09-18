@@ -1753,8 +1753,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
         fn get_channel_opening_from_swap(
             &self,
             channel_id: &str,
-        ) -> Option<ClientChannelOpeningFromSwap> {
-            self.opening.lock().unwrap().get(channel_id).cloned()
+        ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
+            Ok(self.opening.lock().unwrap().get(channel_id).cloned())
         }
 
         fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState> {
@@ -2335,8 +2335,11 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
             None
         }
 
-        fn get_channel_opening_from_swap(&self, _: &str) -> Option<ClientChannelOpeningFromSwap> {
-            None
+        fn get_channel_opening_from_swap(
+            &self,
+            _: &str,
+        ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
+            Ok(None)
         }
 
         fn get_payment_state(&self, _: &str) -> Option<ClientPaymentState> {

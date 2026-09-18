@@ -19,7 +19,7 @@ use cashu::nuts::{CurrencyUnit, Id};
 /// It contains everything needed to either complete the channel opening
 /// (via NUT-09 restore) or recover the input token if the swap never
 /// went through.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientChannelOpeningFromSwap {
     /// Serialized channel parameters (JSON)
     pub params_json: String,
@@ -55,7 +55,7 @@ pub struct ClientChannelOpeningFromSwap {
 ///
 /// This is created when the channel transitions from OpeningFromSwap to Open.
 /// The `funding_proofs_json` field is always populated (never empty).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientChannelFunding {
     /// Serialized channel parameters (JSON)
     pub params_json: String,
@@ -153,7 +153,9 @@ impl ClientChannelState {
 pub trait ClientStorage {
     // === Channel Opening (two-phase) ===
 
-    /// Save opening data for a channel entering OpeningFromSwap state.
+    /// Insert opening data, or verify an identical retry.
+    ///
+    /// Existing differing or funded channel records must not be overwritten.
     fn save_opening_from_swap(
         &mut self,
         channel_id: &str,
@@ -163,11 +165,16 @@ pub trait ClientStorage {
     /// Mark a channel as Open by supplying the funding proofs.
     ///
     /// Reads the opening data, constructs funding data with the proofs,
-    /// stores the funding, and removes the opening record.
+    /// stores the funding, and removes the opening record. Retrying with the
+    /// same funding proofs after completion succeeds without changing payment
+    /// or lifecycle state.
     fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String>;
 
     /// Get opening data for a channel in OpeningFromSwap state.
-    fn get_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap>;
+    fn get_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String>;
 
     /// Mark an opening attempt as failed while preserving opening metadata.
     fn set_opening_failed(
@@ -284,40 +291,83 @@ impl ClientStorage for MemoryClientStorage {
         channel_id: &str,
         opening: ClientChannelOpeningFromSwap,
     ) -> Result<(), String> {
-        self.opening.insert(channel_id.to_string(), opening);
-        self.failures.remove(channel_id);
-        self.states
-            .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
-        Ok(())
+        match self.states.get(channel_id) {
+            None => {
+                self.opening.insert(channel_id.to_string(), opening);
+                self.states
+                    .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
+                Ok(())
+            }
+            Some(ClientChannelState::OpeningFromSwap | ClientChannelState::OpeningFailed)
+                if self.opening.get(channel_id) == Some(&opening) =>
+            {
+                self.failures.remove(channel_id);
+                self.states
+                    .insert(channel_id.to_string(), ClientChannelState::OpeningFromSwap);
+                Ok(())
+            }
+            Some(_) => Err(format!(
+                "channel {channel_id} already exists with different opening or lifecycle state"
+            )),
+        }
     }
 
     fn set_open(&mut self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String> {
-        // Read opening data and construct funding record
-        if let Some(opening) = self.opening.remove(channel_id) {
-            let funding = ClientChannelFunding {
-                params_json: opening.params_json,
-                funding_proofs_json: funding_proofs_json.to_string(),
-                channel_secret_hex: opening.channel_secret_hex,
-                keyset_info_json: opening.keyset_info_json,
-                sender_pubkey_hex: opening.sender_pubkey_hex,
-                capacity: opening.capacity,
-                funding_token_amount: opening.funding_token_amount,
-                mint_url: opening.mint_url,
-                created_at: opening.created_at,
-            };
-            self.funding.insert(channel_id.to_string(), funding);
+        match self.states.get(channel_id).copied() {
+            Some(ClientChannelState::OpeningFromSwap) => {
+                let opening = self.opening.get(channel_id).cloned().ok_or_else(|| {
+                    format!("channel {channel_id} has corrupt OpeningFromSwap state")
+                })?;
+                let funding = ClientChannelFunding {
+                    params_json: opening.params_json,
+                    funding_proofs_json: funding_proofs_json.to_string(),
+                    channel_secret_hex: opening.channel_secret_hex,
+                    keyset_info_json: opening.keyset_info_json,
+                    sender_pubkey_hex: opening.sender_pubkey_hex,
+                    capacity: opening.capacity,
+                    funding_token_amount: opening.funding_token_amount,
+                    mint_url: opening.mint_url,
+                    created_at: opening.created_at,
+                };
+                self.funding.insert(channel_id.to_string(), funding);
+                self.opening.remove(channel_id);
+                self.failures.remove(channel_id);
+                self.states
+                    .insert(channel_id.to_string(), ClientChannelState::Open);
+                Ok(())
+            }
+            Some(
+                ClientChannelState::Open | ClientChannelState::Closing | ClientChannelState::Closed,
+            ) => {
+                let funding = self.funding.get(channel_id).ok_or_else(|| {
+                    format!("channel {channel_id} has corrupt completed funding state")
+                })?;
+                if funding.funding_proofs_json == funding_proofs_json {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "channel {channel_id} was completed with different funding proofs"
+                    ))
+                }
+            }
+            _ => Err(format!(
+                "channel {channel_id} is not in OpeningFromSwap state"
+            )),
         }
-        self.failures.remove(channel_id);
-        self.states
-            .insert(channel_id.to_string(), ClientChannelState::Open);
-        Ok(())
     }
 
-    fn get_opening_from_swap(&self, channel_id: &str) -> Option<ClientChannelOpeningFromSwap> {
+    fn get_opening_from_swap(
+        &self,
+        channel_id: &str,
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
         if self.states.get(channel_id) != Some(&ClientChannelState::OpeningFromSwap) {
-            return None;
+            return Ok(None);
         }
-        self.opening.get(channel_id).cloned()
+        self.opening
+            .get(channel_id)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| format!("channel {channel_id} has corrupt OpeningFromSwap state"))
     }
 
     fn set_opening_failed(
@@ -507,7 +557,10 @@ pub(crate) mod fixtures {
             storage.get_state(channel_id),
             Some(ClientChannelState::OpeningFromSwap)
         );
-        let opening = storage.get_opening_from_swap(channel_id).expect("opening");
+        let opening = storage
+            .get_opening_from_swap(channel_id)
+            .expect("read opening")
+            .expect("opening");
         assert_eq!(opening.capacity, 1000);
         assert_eq!(opening.input_token, "cashuAeyJ0ZXN0IjogdHJ1ZX0=");
         assert!(storage.get_funding(channel_id).is_none());
@@ -520,7 +573,7 @@ pub(crate) mod fixtures {
             storage.get_state(channel_id),
             Some(ClientChannelState::Open)
         );
-        assert!(storage.get_opening_from_swap(channel_id).is_none());
+        assert!(storage.get_opening_from_swap(channel_id).unwrap().is_none());
         let funding = storage.get_funding(channel_id).expect("funding");
         assert_eq!(funding.funding_proofs_json, r#"[{"proof": true}]"#);
         assert_eq!(funding.capacity, 1000);
@@ -682,7 +735,7 @@ pub(crate) mod fixtures {
         storage
             .save_opening_from_swap(channel_id, make_test_opening())
             .expect("save opening");
-        assert!(storage.get_opening_from_swap(channel_id).is_some());
+        assert!(storage.get_opening_from_swap(channel_id).unwrap().is_some());
 
         let failure = ClientOpeningFailure {
             stage: "mint_rejected".to_string(),
@@ -697,7 +750,7 @@ pub(crate) mod fixtures {
             storage.get_state(channel_id),
             Some(ClientChannelState::OpeningFailed)
         );
-        assert!(storage.get_opening_from_swap(channel_id).is_none());
+        assert!(storage.get_opening_from_swap(channel_id).unwrap().is_none());
         assert_eq!(
             storage.get_opening_failure(channel_id).unwrap().message,
             failure.message
@@ -714,7 +767,7 @@ pub(crate) mod fixtures {
             Some(ClientChannelState::OpeningFromSwap)
         );
         assert!(storage.get_opening_failure(channel_id).is_none());
-        assert!(storage.get_opening_from_swap(channel_id).is_some());
+        assert!(storage.get_opening_from_swap(channel_id).unwrap().is_some());
 
         storage.set_open(channel_id, "[]").expect("mark open");
         assert_eq!(
@@ -722,7 +775,59 @@ pub(crate) mod fixtures {
             Some(ClientChannelState::Open)
         );
         assert!(storage.get_opening_failure(channel_id).is_none());
-        assert!(storage.get_opening_from_swap(channel_id).is_none());
+        assert!(storage.get_opening_from_swap(channel_id).unwrap().is_none());
+    }
+
+    /// Assert that opening persistence and completion retries never replace channel state.
+    pub fn assert_storage_opening_hardening<S: ClientStorage>(storage: &mut S) {
+        let channel_id = "hardened_open_channel";
+        let opening = make_test_opening();
+        storage
+            .save_opening_from_swap(channel_id, opening.clone())
+            .expect("save opening");
+        storage
+            .save_opening_from_swap(channel_id, opening.clone())
+            .expect("identical opening retry");
+
+        let mut conflicting = opening.clone();
+        conflicting.input_token = "different-token".to_string();
+        assert!(storage
+            .save_opening_from_swap(channel_id, conflicting)
+            .is_err());
+        assert_eq!(
+            storage.get_opening_from_swap(channel_id).unwrap().unwrap(),
+            opening
+        );
+
+        storage.set_open(channel_id, r#"[{"proof":1}]"#).unwrap();
+        let payment = make_test_payment_state(321);
+        storage
+            .save_payment_state(channel_id, payment.clone())
+            .unwrap();
+        storage.set_closing(channel_id).unwrap();
+
+        storage
+            .set_open(channel_id, r#"[{"proof":1}]"#)
+            .expect("identical completion retry");
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Closing)
+        );
+        assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 321);
+        assert!(storage.set_open(channel_id, r#"[{"proof":2}]"#).is_err());
+        assert!(storage.save_opening_from_swap(channel_id, opening).is_err());
+        assert_eq!(
+            storage.get_state(channel_id),
+            Some(ClientChannelState::Closing)
+        );
+        assert_eq!(
+            storage.get_funding(channel_id).unwrap().funding_proofs_json,
+            r#"[{"proof":1}]"#
+        );
+        assert_eq!(storage.get_payment_state(channel_id).unwrap().balance, 321);
+
+        assert!(storage.set_open("missing_open_channel", "[]").is_err());
+        assert_eq!(storage.get_state("missing_open_channel"), None);
     }
 }
 
@@ -770,5 +875,11 @@ mod tests {
     fn test_memory_storage_opening_failed() {
         let mut storage = MemoryClientStorage::new();
         assert_storage_opening_failed(&mut storage);
+    }
+
+    #[test]
+    fn test_memory_storage_opening_hardening() {
+        let mut storage = MemoryClientStorage::new();
+        assert_storage_opening_hardening(&mut storage);
     }
 }

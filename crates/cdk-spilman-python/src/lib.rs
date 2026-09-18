@@ -1219,19 +1219,23 @@ impl SpilmanClientHost for PySpilmanClientHost {
     fn get_channel_opening_from_swap(
         &self,
         channel_id: &str,
-    ) -> Option<ClientChannelOpeningFromSwap> {
+    ) -> Result<Option<ClientChannelOpeningFromSwap>, String> {
         Python::attach(|py| {
             let result = self
                 .py_host
                 .call_method1(py, "get_channel_opening_from_swap", (channel_id,))
-                .ok()?;
+                .map_err(|e| python_error_message(py, e))?;
 
             if result.is_none(py) {
-                return None;
+                return Ok(None);
             }
 
-            let json_str = result.extract::<String>(py).ok()?;
-            serde_json::from_str(&json_str).ok()
+            let json_str = result
+                .extract::<String>(py)
+                .map_err(|e| python_error_message(py, e))?;
+            serde_json::from_str(&json_str)
+                .map(Some)
+                .map_err(|e| format!("invalid opening JSON from Python host: {e}"))
         })
     }
 

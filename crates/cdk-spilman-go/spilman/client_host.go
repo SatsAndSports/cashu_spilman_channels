@@ -11,12 +11,12 @@ type SpilmanClientHost interface {
 	// Channel Opening (two-phase)
 	// ========================================================================
 
-	// SaveOpeningFromSwapChannel persists channel metadata before the funding swap.
-	// The channel enters OpeningFromSwap state. openingJSON is a JSON-serialized
-	// ClientChannelOpeningFromSwap struct.
+	// SaveOpeningFromSwapChannel inserts metadata before the funding swap or
+	// verifies an identical retry. It must not replace a conflicting record.
 	SaveOpeningFromSwapChannel(channelID, openingJSON string) error
 
-	// MarkChannelOpen transitions a channel from OpeningFromSwap to Open.
+	// MarkChannelOpen transitions a channel from OpeningFromSwap to Open, or
+	// verifies an identical completed retry without changing later state.
 	// Called after the funding swap succeeds with the unblinded funding proofs.
 	// The host reads the opening data, constructs a ClientChannelFunding
 	// (copying fields + adding proofs), stores funding, and removes the opening record.
@@ -32,8 +32,8 @@ type SpilmanClientHost interface {
 	GetChannelFunding(channelID string) string
 
 	// GetChannelOpeningFromSwap retrieves channel opening data.
-	// Returns empty string if the channel is not in opening_from_swap state.
-	GetChannelOpeningFromSwap(channelID string) string
+	// Returns empty string if absent and an error if storage cannot be read.
+	GetChannelOpeningFromSwap(channelID string) (string, error)
 
 	// ========================================================================
 	// Payment State (mutable)

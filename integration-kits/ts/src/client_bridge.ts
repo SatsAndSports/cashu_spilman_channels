@@ -9,16 +9,16 @@ export interface SpilmanClientHost {
   // Channel Opening (two-phase)
   // ========================================================================
 
-  /** Save channel metadata before the funding swap. Channel enters OpeningFromSwap state. */
+  /** Insert opening metadata or verify an identical retry; throw on conflict. */
   saveOpeningFromSwapChannel(channelId: string, openingJson: string): void;
 
-  /** Transition channel from OpeningFromSwap to Open with the funding proofs. */
+  /** Complete an opening or verify identical completed funding; throw on conflict. */
   markChannelOpen(channelId: string, fundingProofsJson: string): void;
 
   /** Retrieves channel funding data. Returns null if the channel doesn't exist. */
   getChannelFunding(channelId: string): string | null;
 
-  /** Retrieves channel opening data. Returns null if not in opening_from_swap state. */
+  /** Returns opening data or null; storage and decoding errors must be thrown. */
   getChannelOpeningFromSwap(channelId: string): string | null;
 
   // ========================================================================

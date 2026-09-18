@@ -202,14 +202,19 @@ func go_client_get_channel_funding(userData unsafe.Pointer, channelID *C.char) *
 }
 
 //export go_client_get_channel_opening_from_swap
-func go_client_get_channel_opening_from_swap(userData unsafe.Pointer, channelID *C.char) *C.char {
+func go_client_get_channel_opening_from_swap(userData unsafe.Pointer, channelID *C.char, responseOut **C.char) C.int {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanClientHost)
-	result := host.GetChannelOpeningFromSwap(C.GoString(channelID))
-	if result == "" {
-		return nil
+	result, err := host.GetChannelOpeningFromSwap(C.GoString(channelID))
+	if err != nil {
+		return callbackError(responseOut, err)
 	}
-	return C.CString(result)
+	if result == "" {
+		*responseOut = nil
+		return 1
+	}
+	*responseOut = C.CString(result)
+	return 1
 }
 
 // Payment State
