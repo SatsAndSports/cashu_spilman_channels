@@ -41,14 +41,15 @@
 //! ```
 
 use base64::Engine;
+#[cfg(feature = "wallet")]
+use cashu::nuts::SwapRequest;
 use cashu::nuts::{CurrencyUnit, Id, Proof};
 use serde::{Deserialize, Serialize};
 
 use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{
-    complete_funding_restore, complete_funding_swap_with_plain_change,
-    complete_plain_change_restore,
+    complete_funding_restore, complete_funding_swap_for_outputs, complete_plain_change_restore,
     compute_channel_from_proofs_with_input_keysets_and_funding_amount, compute_channel_from_token,
     compute_channel_from_token_with_input_keysets, create_funding_restore_request,
     create_funding_swap_with_plain_change, create_plain_change_restore_request,
@@ -1823,11 +1824,20 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         prepared: &PreparedOpenChannel,
         swap_response_json: &str,
     ) -> Result<CompletedOpenChannel, OpenChannelError> {
-        let complete_result = complete_funding_swap_with_plain_change(
+        let swap_request: SwapRequest =
+            serde_json::from_str(&prepared.swap_request_json).map_err(|e| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::SwapSubmitted,
+                    Some(prepared.channel_id.clone()),
+                    format!("Failed to parse prepared swap request: {e}"),
+                )
+            })?;
+        let complete_result = complete_funding_swap_for_outputs(
             swap_response_json,
             &prepared.funding_secrets_json,
             &prepared.change_secrets_json,
             &prepared.opening.keyset_info_json,
+            swap_request.outputs(),
         )
         .map_err(|e| {
             OpenChannelError::new(
