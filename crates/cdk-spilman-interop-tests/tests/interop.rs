@@ -129,7 +129,7 @@ impl TestMintHelper {
         amount: Amount,
         spending_conditions: &SpendingConditions,
     ) -> anyhow::Result<(BlindedMessage, cdk::nuts::SecretKey, Secret)> {
-        let nut10_secret: Nut10Secret = spending_conditions.clone().into();
+        let nut10_secret: Nut10Secret = spending_conditions.clone().try_into()?;
         let secret: Secret = nut10_secret.try_into()?;
         let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
         let blinded_msg = BlindedMessage::new(amount, self.active_sat_keyset_id, blinded_point);

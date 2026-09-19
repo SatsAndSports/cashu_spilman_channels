@@ -88,7 +88,7 @@ mod tests {
 
         let vector = super::spilman_test_vector_sig_all_keysetv2();
         assert_eq!(
-            Sha256::digest(derive_sig_all_message_reference()).as_slice(),
+            &Sha256::digest(derive_sig_all_message_reference())[..],
             vector.message_sha256
         );
         assert_eq!(

@@ -1294,7 +1294,7 @@ mod tests {
             sender_pubkey,
             receiver_pubkey,
             "https://testmint.cash".to_string(),
-            CurrencyUnit::Custom("custom|unit".to_string()),
+            CurrencyUnit::custom("custom|unit"),
             1000,
             funding_token_amount,
             1_700_000_000,
@@ -1322,7 +1322,7 @@ mod tests {
             ChannelParameters::get_minimum_funding_token_amount(1000, &keyset_info, 64)
                 .expect("Failed to compute funding token amount");
 
-        let unit = CurrencyUnit::Custom("byte".to_string());
+        let unit = CurrencyUnit::custom("byte");
         let original = ChannelParameters::new_with_secret_key(
             alice_secret.public_key(),
             charlie_secret.public_key(),
