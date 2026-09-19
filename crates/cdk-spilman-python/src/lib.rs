@@ -1117,7 +1117,7 @@ pub struct ClientChannelInfo {
 /// - record_payment(channel_id: str, state_json: str)
 ///
 /// Lifecycle:
-/// - get_channel_state(channel_id: str) -> str  # Returns "opening_from_swap", "open", "closing", or "closed"
+/// - get_channel_state(channel_id: str) -> str  # Returns a lifecycle state, or "" if unknown
 /// - mark_channel_closing(channel_id: str)
 /// - mark_channel_closed(channel_id: str)
 /// - list_channel_ids() -> List[str]
@@ -1137,6 +1137,9 @@ struct PySpilmanClientHost {
 ///
 /// The Python object must implement:
 /// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Raises on error
+/// - call_mint_restore(mint_url: str, restore_request_json: str) -> str  # Raises on error
+/// - call_mint_keysets(mint_url: str) -> str  # Raises on error
+/// - call_mint_keys(mint_url: str, keyset_id: str) -> str  # Raises on error
 struct PySpilmanClientNetworking {
     py_host: Py<PyAny>,
 }
@@ -1463,7 +1466,7 @@ impl ClientBridge {
     ///
     /// Args:
     ///     host: Python object implementing SpilmanClientHost methods
-    ///           (also must implement call_mint_swap for networking)
+    ///           (also implements the four documented mint networking callbacks)
     #[new]
     #[pyo3(signature = (host))]
     fn new(host: Py<PyAny>) -> Self {
@@ -1484,9 +1487,11 @@ impl ClientBridge {
     /// 1. Compute ECDH channel secret via host.compute_channel_secret()
     /// 2. Parse the token and compute channel parameters
     /// 3. Create a funding swap request (deterministic 2-of-2 locked outputs)
-    /// 4. Submit the swap to the mint via host.call_mint_swap()
-    /// 5. Unblind signatures and verify DLEQ proofs
-    /// 6. Save the channel via host.save_channel_funding()
+    /// 4. Persist OpeningFromSwap via host.save_opening_from_swap_channel()
+    /// 5. Submit the swap via host.call_mint_swap()
+    /// 6. Unblind signatures and verify DLEQ proofs
+    /// 7. Verify the mandatory NUT-09 restore path via host.call_mint_restore()
+    /// 8. Commit Open via host.mark_channel_open()
     ///
     /// Args:
     ///     token_string: Cashu token (cashuA... or cashuB...)

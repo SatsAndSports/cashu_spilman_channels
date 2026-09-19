@@ -178,10 +178,11 @@ make test-nut00-errors
 ```
 
 These tests verify that:
-- Keyset errors (`12000..13000`) and NutMix unknown-keyset errors (`99999`) trigger refresh/reselection retry
+- Keyset errors (`12000..13000`) and NutMix unknown-keyset errors (`99999`) are eligible for refresh/reselection retry after an explicit mint rejection
 - Token-spent errors (11001) fail immediately without retry
 - Unparseable errors fail immediately without retry
 - Refresh that still selects the same output keyset skips retry and returns the first mint rejection
+- Auto-open records the explicitly rejected attempt as `OpeningFailed`; ambiguous submission failures remain `OpeningFromSwap` and are not retried
 
 ---
 

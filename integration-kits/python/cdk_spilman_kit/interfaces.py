@@ -48,7 +48,11 @@ class SpilmanClientHost(Protocol):
     # ========================================================================
 
     def get_channel_state(self, channel_id: str) -> str:
-        """Returns the lifecycle state: 'opening_from_swap', 'open', or 'closed'."""
+        """Returns a lifecycle state, or an empty string for an unknown channel."""
+        ...
+
+    def mark_channel_closing(self, channel_id: str) -> None:
+        """Marks a channel unusable while retaining its stored funding."""
         ...
 
     def mark_channel_closed(self, channel_id: str) -> None:
@@ -97,4 +101,12 @@ class SpilmanClientHost(Protocol):
 
     def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
         """Executes a NUT-09 restore with the mint. Returns response JSON string."""
+        ...
+
+    def call_mint_keysets(self, mint_url: str) -> str:
+        """Fetches the mint's keyset list. Returns response JSON string."""
+        ...
+
+    def call_mint_keys(self, mint_url: str, keyset_id: str) -> str:
+        """Fetches keys for one keyset. Returns response JSON string."""
         ...

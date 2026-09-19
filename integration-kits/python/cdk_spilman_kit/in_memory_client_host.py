@@ -58,6 +58,24 @@ class InMemorySpilmanClientHost:
             )
         return resp.text
 
+    def call_mint_keysets(self, mint_url: str) -> str:
+        """Fetch the mint's keyset list."""
+        resp = requests.get(f"{mint_url}/v1/keysets", timeout=30)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                resp.text or f"Mint keyset request failed with status {resp.status_code}"
+            )
+        return resp.text
+
+    def call_mint_keys(self, mint_url: str, keyset_id: str) -> str:
+        """Fetch denomination keys for one keyset."""
+        resp = requests.get(f"{mint_url}/v1/keys/{keyset_id}", timeout=30)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                resp.text or f"Mint keys request failed with status {resp.status_code}"
+            )
+        return resp.text
+
     # ========================================================================
     # Channel Opening (two-phase)
     # ========================================================================
@@ -143,8 +161,17 @@ class InMemorySpilmanClientHost:
     # ========================================================================
 
     def get_channel_state(self, channel_id: str) -> str:
-        """Get the channel state ('opening_from_swap', 'open' or 'closed'). Returns 'open' if unknown."""
-        return self._channel_state.get(channel_id, "open")
+        """Get the lifecycle state, or an empty string for an unknown channel."""
+        return self._channel_state.get(channel_id, "")
+
+    def mark_channel_closing(self, channel_id: str) -> None:
+        """Retain a channel while making it unusable for new payments."""
+        state = self._channel_state.get(channel_id)
+        if state == "closing":
+            return
+        if state != "open":
+            raise RuntimeError(f"channel {channel_id} not found or not open")
+        self._channel_state[channel_id] = "closing"
 
     def mark_channel_closed(self, channel_id: str) -> None:
         """Mark a channel as closed."""
