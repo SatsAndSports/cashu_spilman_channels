@@ -1395,7 +1395,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let parsed_unit = unit
             .parse::<CurrencyUnit>()
-            .unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+            .unwrap_or_else(|_| CurrencyUnit::custom(unit));
         self.ensure_keysets_cached_for_unit(mint_url, &parsed_unit)?;
 
         // Opening from raw proofs has the same stale-output-keyset problem as

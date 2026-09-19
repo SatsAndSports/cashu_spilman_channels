@@ -750,7 +750,7 @@ pub fn compute_channel_from_proofs_with_input_keysets_and_funding_amount(
 ) -> Result<String, String> {
     let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
         .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
-    let unit = CurrencyUnit::from_str(unit).unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+    let unit = CurrencyUnit::from_str(unit).unwrap_or_else(|_| CurrencyUnit::custom(unit));
     let input_keysets: Vec<cashu::nuts::KeySetInfo> = serde_json::from_str(input_keysets_json)
         .map_err(|e| format!("Failed to parse input keysets: {e}"))?;
     let input_fee = compute_post_swap_value_from_input_keysets(&proofs, &input_keysets)?;
@@ -1582,8 +1582,7 @@ pub fn build_cashu_b_token(
 
     let mint_url = MintUrl::from_str(mint_url).map_err(|e| format!("Invalid mint URL: {}", e))?;
 
-    let currency_unit =
-        CurrencyUnit::from_str(unit).unwrap_or(CurrencyUnit::Custom(unit.to_string()));
+    let currency_unit = CurrencyUnit::from_str(unit).unwrap_or_else(|_| CurrencyUnit::custom(unit));
 
     let token = Token::new(mint_url, proofs, None, currency_unit);
 
@@ -1958,7 +1957,7 @@ mod tests {
                     blinded_signature,
                     output.keyset_id,
                     &output.blinded_secret,
-                    mint_secret,
+                    &mint_secret,
                 )
                 .unwrap()
             })
@@ -2067,7 +2066,7 @@ mod tests {
             cashu::dhke::sign_message(&wrong_secret, &output.blinded_secret).unwrap(),
             output.keyset_id,
             &output.blinded_secret,
-            wrong_secret,
+            &wrong_secret,
         )
         .unwrap();
         let error = complete_funding_swap_with_plain_change(
