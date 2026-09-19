@@ -72,9 +72,9 @@ async def ascii_art(payment=Depends(spilman.payment_required)):
 ## Client usage
 
 ```python
-from cdk_spilman_kit import SpilmanClient, InMemoryClientHost
+from cdk_spilman_kit import SpilmanClient, InMemorySpilmanClientHost
 
-host = InMemoryClientHost(alice_secret_hex)
+host = InMemorySpilmanClientHost(alice_secret_hex)
 client = SpilmanClient(host)
 
 # Simplified channel opening
@@ -83,6 +83,10 @@ result = client.open_channel_from_token(
 )
 
 header = client.sign_payment_header(result.channel_id, balance, include_funding=True)
-close_req = client.sign_cooperative_close_request(result.channel_id, final_balance)
-client.process_cooperative_close_response(close_response_json)
 ```
+
+The binding does not currently expose the Rust opening-recovery APIs. A failure
+after funding-swap submission can therefore leave `OpeningFromSwap` state that
+must be recovered through a Rust integration or application-specific tooling.
+Cooperative-close signing and response processing are exposed, but the high-level
+wrapper does not yet provide the post-acceptance final-payment recording operation.

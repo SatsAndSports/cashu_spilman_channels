@@ -16,9 +16,9 @@ use cashu::nuts::{CurrencyUnit, Id};
 /// Data saved when a channel enters the OpeningFromSwap state.
 ///
 /// This is persisted *before* the funding swap is submitted to the mint.
-/// It contains everything needed to either complete the channel opening
-/// (via NUT-09 restore) or recover the input token if the swap never
-/// went through.
+/// It contains everything needed to complete the channel opening via NUT-09
+/// restore and preserves the original serialized input for application-managed
+/// retry or reclamation after submission ambiguity has been resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientChannelOpeningFromSwap {
     /// Serialized channel parameters (JSON)
@@ -39,7 +39,7 @@ pub struct ClientChannelOpeningFromSwap {
     pub mint_url: String,
     /// Unit of the channel (e.g. "sat")
     pub unit: String,
-    /// Original Cashu token (cashuA.../cashuB...) for recovery if the swap fails
+    /// Original serialized funding input: a Cashu token or raw input-proofs JSON.
     pub input_token: String,
     /// Plain change output secrets from the funding swap, persisted before swap submission.
     #[serde(default)]
@@ -121,8 +121,10 @@ pub struct ClientOpeningFailure {
 /// Channel lifecycle state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ClientChannelState {
-    /// Funding swap submitted but not yet confirmed.
-    /// The channel parameters and input token are saved for recovery.
+    /// Opening metadata persisted before mint submission.
+    ///
+    /// The swap may be unsubmitted, submitted and awaiting completion, or
+    /// ambiguously submitted; recovery must determine which case applies.
     OpeningFromSwap,
     /// Channel opening was explicitly rejected and should not be recovered.
     OpeningFailed,

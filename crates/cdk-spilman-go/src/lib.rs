@@ -1016,7 +1016,7 @@ pub struct SpilmanClientHostCallbacks {
     ) -> c_int,
     // Lifecycle
     pub get_channel_state:
-        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "opening_from_swap", "open", "closing", or "closed"
+        extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char, // "opening_from_swap", "opening_failed", "open", "closing", or "closed"
     pub mark_channel_closing: extern "C" fn(
         user_data: *mut libc::c_void,
         channel_id: *const c_char,

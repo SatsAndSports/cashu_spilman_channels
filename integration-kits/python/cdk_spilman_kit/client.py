@@ -38,15 +38,6 @@ class SpilmanClient:
             max_amount,
         )
 
-    def restore_funding_proofs(self, channel_id: str) -> str:
-        """Restores funding proofs for a channel using NUT-09.
-        
-        This can be used to recover from a failed open_channel_from_token
-        where the swap succeeded on the mint's side but the client lost
-        the response.
-        """
-        return self.bridge.restore_funding_proofs(channel_id)
-
     def sign_payment_header(self, channel_id: str, balance: int, include_funding: bool = False) -> str:
         """Signs and builds the base64-encoded payment header without recording."""
         return self.bridge.sign_payment_header(channel_id, balance, include_funding)
@@ -70,6 +61,10 @@ class SpilmanClient:
     def close_channel(self, channel_id: str):
         """Marks a channel as closed locally."""
         return self.bridge.close_channel(channel_id)
+
+    def mark_channel_unusable(self, channel_id: str):
+        """Marks an open channel unusable while retaining its funding."""
+        return self.bridge.mark_channel_unusable(channel_id)
 
     def delete_channel(self, channel_id: str):
         """Removes a channel from storage."""

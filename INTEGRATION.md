@@ -169,11 +169,12 @@ perform the full sequence for simple integrations.
 
 | Store | Purpose |
 |-------|---------|
-| **OpeningFromSwap** | (Client-only) Temporary storage for params and input token before funding completes. |
+| **OpeningFromSwap** | (Client-only) Durable parameters and serialized funding input saved before submission; the swap may be unsubmitted or ambiguous. |
+| **OpeningFailed** | (Client-only) Explicit mint rejection retained with opening/failure metadata. |
 | **Funding** | Store params, proofs, and `_channel secret_` for validation and closing. |
 | **Balance** | Track the highest payment signature seen (monotonic). |
 | **Usage** | Store monotonic counters (e.g., requests, bytes) to compute `amount_due`. |
-| **Closing** | Temporary storage for swap data during the closing transition. |
+| **Closing** | Durable expiry/payment authorization used to reconstruct close execution; the prepared mint swap itself is not stored by the core host contract. |
 | **Closed** | Final audit trail of closed channels and their proofs. |
 
 ---
@@ -193,11 +194,14 @@ For applications that need to own async runtime behavior, persistence, retries, 
 
 The high-level `open_channel_from_*` methods remain convenience wrappers around this same sequence.
 
-Use the `restore_funding_proofs` method to recover:
+The Rust `wallet`-feature method `restore_funding_proofs` is a checked query, not
+a state transition. These recovery methods are not currently exposed by the
+Python, Go, or WASM bridges.
 
 1. **Attempt Restore**: Re-fetches the signatures from the mint via NUT-09.
-2. **Success**: If the swap had succeeded on the mint, you get the funding proofs and the channel transitions to `Open`.
-3. **Failure**: If the mint has no record of the swap, the original `input_token` remains unspent. You can retrieve it from the opening store and retry or reclaim.
+2. **Success**: If the swap succeeded, it returns validated funding-proof JSON and leaves the channel in `OpeningFromSwap`.
+3. **Commit recovery**: Use `recover_open_channel_from_swap`, or the explicit `prepare_open_channel_recovery` / `complete_prepared_open_recovery` / `mark_completed_open_recovery` phases, to restore funding plus any expected plain change and persist `Open`.
+4. **Empty restore**: This establishes only that no outputs were observed. The stored funding input (Cashu token or raw proof JSON) must not be retried or reclaimed until the application has safely resolved whether an earlier submission can still execute.
 
 ---
 

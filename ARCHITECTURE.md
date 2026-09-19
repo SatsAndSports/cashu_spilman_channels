@@ -140,33 +140,33 @@ By delegating these concerns to a "Host" while keeping the protocol logic in the
                payment
                 ┌───┐
                 ▼   │
-      fund ──► Open ──► Closing ──► Closed
-                 │                    ▲
-                 │    (unilateral)    │
-                 └────────────────────┘
+       fund ──► Open ──► Closing ──► Closed
+                         cooperative
+                         or unilateral
 ```
 
 - **Open**: Created when a client registers a funded channel. The server accepts payments, tracks usage, and persists the highest-balance update.
-- **Closing**: A cooperative close has been initiated. The swap request is prepared but not yet submitted to the mint. No further payments are accepted.
+- **Closing**: Close authorization has been durably recorded before mint I/O. The swap may be unsubmitted, in flight, or awaiting completion. No further payments are accepted.
 - **Closed**: The mint has processed the swap. Receiver and sender proofs have been unblinded and stored. The channel is settled.
 
 ### Channel Lifecycle (Client Perspective)
 
 ```
-      open_channel_from_token
-                 │
-                 ▼
-        OpeningFromSwap ──► Open ──► Closed
-                 │           ▲
-                 └───────────┘
-                    restore
+ OpeningFromSwap ───────► Open ───────────────────► Closed
+       │                   │                          ▲
+       ▼                   └─► Closing (optional) ───┘
+ OpeningFailed
+       │
+       └─ identical re-save ──► OpeningFromSwap
 ```
 
-- **OpeningFromSwap**: Initial state when `open_channel_from_token` starts. The channel parameters and input token are persisted *before* the funding swap is submitted. This ensures that if the process crashes or the mint times out, the user doesn't lose their input ecash.
+- **OpeningFromSwap**: The channel parameters and serialized funding input are persisted *before* the funding swap is submitted. The swap may still be unsubmitted, may be in flight, or may have an ambiguous outcome.
+- **OpeningFailed**: The mint explicitly rejected this opening. Opening and failure metadata remain available for audit; an identical opening re-save clears the failure and returns to `OpeningFromSwap`.
 - **Open**: The funding swap has succeeded and the 2-of-2 multisig funding proofs are stored. The channel is ready for payments.
+- **Closing**: An optional caller-controlled local state for retaining the channel while making it unusable for new payments. Client cooperative-close response processing can also transition directly from `Open` to `Closed`.
 - **Closed**: The channel has been closed (cooperatively or unilaterally).
 
-A channel stuck in `OpeningFromSwap` can be recovered using the `restore_funding_proofs` method, which uses NUT-09 to fetch the signatures if the swap actually succeeded on the mint's side. If the swap never reached the mint, the original `input_token` remains unspent and can be reclaimed.
+A channel stuck in `OpeningFromSwap` can query NUT-09 with the Rust `wallet`-feature method `restore_funding_proofs`. That method validates and returns restored funding proofs but does not mutate channel state. To persist the transition to `Open`, use `recover_open_channel_from_swap`, or run `prepare_open_channel_recovery`, `complete_prepared_open_recovery`, and `mark_completed_open_recovery`. Recovery must also account for expected plain change outputs. These recovery methods are not currently exposed by the Python, Go, or WASM bridges. The stored `input_token` field may contain a Cashu token or raw input-proofs JSON; an application must resolve submission ambiguity before treating those inputs as reclaimable.
 
 Client opening is also available as a Sans-IO-style prepare/complete flow. `prepare_open_channel_from_token` and `prepare_open_channel_from_proofs_with_input_keysets` construct the deterministic channel parameters, opening record, and mint swap request without performing network I/O or storage mutation. The caller then persists the opening record, submits the swap to the mint, completes the mint response, optionally verifies NUT-09 restore, and explicitly marks the channel open. The high-level bridge methods are convenience wrappers around this sequence.
 
@@ -175,7 +175,7 @@ Transitions:
 - `Open → Open`: Normal payment — balance increases, usage is recorded.
 - `Open → Closing`: Cooperative close requested, where the server accepts payment for only what's actually due, allowing the client to 'undo' any earlier overpayment.
 - `Closing → Closed`: Mint swap succeeds and proofs are unblinded.
-- `Open → Closed`: Unilateral close (server submits the latest payment directly).
+- `Open → Closing → Closed`: Unilateral close follows the same durable closing boundary as cooperative close.
 
 ---
 
@@ -249,17 +249,25 @@ trait SpilmanClientHost {
     fn save_opening_from_swap_channel(&self, channel_id: &str, opening: ClientChannelOpeningFromSwap) -> Result<(), String>;
     fn mark_channel_open(&self, channel_id: &str, funding_proofs_json: &str) -> Result<(), String>;
     fn get_channel_opening_from_swap(&self, channel_id: &str) -> Result<Option<ClientChannelOpeningFromSwap>, String>;
+    fn mark_channel_opening_failed(&self, channel_id: &str, failure: ClientOpeningFailure) -> Result<(), String>;
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
 
     // Payment State (mutable)
     fn get_payment_state(&self, channel_id: &str) -> Option<ClientPaymentState>;
-    fn record_payment(&self, channel_id: &str, state: ClientPaymentState);
+    fn record_payment(&self, channel_id: &str, state: ClientPaymentState) -> Result<(), String>;
 
     // Lifecycle
-    fn get_channel_state(&self, channel_id: &str) -> ClientChannelState;
-    fn mark_channel_closed(&self, channel_id: &str);
+    fn get_channel_state(&self, channel_id: &str) -> Option<ClientChannelState>;
+    fn mark_channel_closing(&self, channel_id: &str) -> Result<(), String>;
+    fn mark_channel_closed(&self, channel_id: &str) -> Result<(), String>;
     fn list_channel_ids(&self) -> Vec<String>;
-    fn delete_channel(&self, channel_id: &str);
+    fn delete_channel(&self, channel_id: &str) -> Result<(), String>;
+
+    // Persistent keyset cache (default implementations may be unsupported/empty)
+    fn get_keyset(&self, mint: &str, keyset_id: &Id) -> Option<ClientKeysetCacheEntry>;
+    fn set_keyset(&self, mint: &str, keyset_id: Id, entry: ClientKeysetCacheEntry) -> Result<(), String>;
+    fn get_active_keyset_ids(&self, mint: &str, unit: &CurrencyUnit) -> Vec<Id>;
+    fn list_keysets_for_unit(&self, mint: &str, unit: &CurrencyUnit) -> Vec<(Id, ClientKeysetCacheEntry)>;
 
     // Time & Crypto
     fn now_seconds(&self) -> u64;
@@ -322,7 +330,7 @@ The implementation handles mint keyset rotation using a **Persistent Cache** str
 1.  **Retention**: When the keyset cache is refreshed, existing keysets are never removed from the local store, even if they are no longer returned by the mint's `/v1/keysets` endpoint.
 2.  **Validation**: Channels opened while a keyset was active remain valid and closable after the mint deactivates that keyset.
 3.  **Active Flag**: The bridge uses an `active` flag to select output keysets for *new* swap outputs, while input proofs and existing channels may reference old or inactive keysets if the mint still accepts them.
-4.  **Cache-First Retry**: Auto-open and close helpers ensure the cache has at least one keyset for the relevant `(mint, unit)` before entering the retry helper. Selection inside the helper is cache-only. If the mint rejects the first swap with a retryable keyset error, the helper refreshes, reselects, and retries once only if the selected output keyset changed.
+4.  **Cache-First Retry**: Auto-open and close helpers ensure the cache has at least one keyset for the relevant `(mint, unit)` before entering the retry helper. Selection inside the helper is cache-only. If the mint explicitly rejects the first swap with a retryable keyset error, the helper refreshes, reselects, and retries once only if the selected output keyset changed. Auto-open persists the rejected first record as `OpeningFailed`; a changed-keyset retry creates a distinct opening and may leave that audit record in storage. Ambiguous submission failures are not retried and remain `OpeningFromSwap`.
 
 Custom `SpilmanHost` implementations expose this cache preflight through
 `has_keysets_for_unit(mint, unit)`. Its intended meaning is inactive-inclusive:
@@ -331,10 +339,23 @@ active output keyset.
 
 ### Channel Closing Flow
 
-Closing is orchestrated by the bridge in two stages:
+There are two server close orchestration styles.
 
-1. **Sync stage** (`prepare_cooperative_close_for_execution`): Validates signatures, verifies balance, and stores closing data.
-2. **Execution stage**: Ensures keysets are cached for the channel mint/unit, selects an active output keyset from cache, creates the swap request, submits it to the mint, retries once on changed-keyset retryable errors, unblinds signatures, verifies DLEQ, and calls the `mark_channel_closed` host hook.
+**Explicit Sans-IO flow:**
+
+1. `prepare_*_close_transition` validates and returns a pending transition containing the exact `PreparedClose`, without storage mutation.
+2. `mark_prepared_close_closing` durably stores expiry/payment authorization and enters `Closing` before mint I/O.
+3. The caller submits `transition.prepared_close.swap_request`.
+4. `complete_prepared_close` verifies and unblinds without storage mutation.
+5. `mark_completed_close` persists proofs and enters `Closed`.
+
+**Convenience/replay flow:** after `Closing` is durable,
+`execute_close_for_closing_channel` selects an active output keyset, reconstructs
+and submits the close swap, handles completion, and persists `Closed`. It permits
+at most one retry after a recognized rejection when refresh selects a changed
+keyset. An empty-cache preflight refresh failure is returned. Post-rejection
+refresh is best-effort; if it fails or does not produce a changed keyset, the
+first mint rejection is returned without another submission.
 
 ### NUT-00 Error Handling
 

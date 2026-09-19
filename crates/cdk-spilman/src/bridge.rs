@@ -2322,8 +2322,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 self.select_close_output_keyset_for_channel(channel_id)
                     .map_err(CloseError::from_preparation_error)
             },
-            // Build the signed close swap for the selected output keyset.  This
-            // is side-effect free; durable state changes happen in finalize.
+            // Build the signed close swap for the selected output keyset. This
+            // step is side-effect free: Closing is already durable, and
+            // finalization later persists the Closed transition.
             |selected| {
                 self.prepare_close_for_closing_channel_with_keyset(
                     channel_id,

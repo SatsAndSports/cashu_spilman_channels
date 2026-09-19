@@ -132,10 +132,27 @@ class TestInMemorySpilmanClientHost:
     # Channel Lifecycle
     # ========================================================================
 
-    def test_get_channel_state_default_open(self, host):
-        """Test that unknown channel state defaults to 'open'."""
+    def test_get_channel_state_unknown(self, host):
+        """Test that an unknown channel has no lifecycle state."""
         result = host.get_channel_state("unknown-channel")
-        assert result == "open"
+        assert result == ""
+
+    def test_mark_channel_closing(self, host):
+        """Test that only an open channel can enter closing."""
+        channel_id = "channel-123"
+        host.save_opening_from_swap_channel(channel_id, '{"capacity": 1000}')
+
+        with pytest.raises(RuntimeError, match="not found or not open"):
+            host.mark_channel_closing(channel_id)
+
+        host.mark_channel_open(channel_id, "[]")
+        host.mark_channel_closing(channel_id)
+        host.mark_channel_closing(channel_id)
+
+        assert host.get_channel_state(channel_id) == "closing"
+
+        with pytest.raises(RuntimeError, match="not found or not open"):
+            host.mark_channel_closing("unknown-channel")
 
     def test_mark_channel_closed(self, host):
         """Test marking a channel as closed."""
@@ -175,8 +192,7 @@ class TestInMemorySpilmanClientHost:
         assert host.get_channel_funding(channel_id) is None
         assert host.get_payment_state(channel_id) is None
         assert channel_id not in host.list_channel_ids()
-        # After deletion, state should default back to "open"
-        assert host.get_channel_state(channel_id) == "open"
+        assert host.get_channel_state(channel_id) == ""
 
     def test_delete_nonexistent_channel(self, host):
         """Test deleting a non-existent channel doesn't raise."""

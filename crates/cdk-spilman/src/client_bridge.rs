@@ -86,11 +86,11 @@ pub trait SpilmanClientHost {
     ///
     /// Called before submitting the funding swap to the mint. The channel
     /// enters `OpeningFromSwap` state. The opening data includes the original
-    /// input token for recovery if the swap fails.
+    /// serialized funding input for application-managed recovery.
     ///
     /// If the swap fails or the client crashes, the channel remains in
     /// `OpeningFromSwap` state with enough data to attempt NUT-09 restore
-    /// or reclaim the input token.
+    /// or resolve whether the original input may safely be retried/reclaimed.
     fn save_opening_from_swap_channel(
         &self,
         channel_id: &str,
@@ -120,9 +120,10 @@ pub trait SpilmanClientHost {
         failure: ClientOpeningFailure,
     ) -> Result<(), String>;
 
-    /// Get funding data for an open channel.
+    /// Get funding data for a channel with stored funding.
     ///
-    /// Returns `None` if the channel is not in Open (or Closed) state.
+    /// Returns funding for `Open`, `Closing`, or `Closed`; returns `None` for
+    /// opening, failed, or missing records.
     fn get_channel_funding(&self, channel_id: &str) -> Option<ClientChannelFunding>;
 
     // ========================================================================
@@ -1346,10 +1347,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// 1. Compute ECDH channel secret via `host.compute_channel_secret()`
     /// 2. Parse the token and compute channel parameters
     /// 3. Create a funding swap request (deterministic 2-of-2 locked outputs)
-    /// 4. Save channel in Opening state via `host.save_opening_channel()`
+    /// 4. Save `OpeningFromSwap` via `host.save_opening_from_swap_channel()`
     /// 5. Submit the swap to the mint via `networking.call_mint_swap()`
     /// 6. Unblind signatures and verify DLEQ proofs
-    /// 7. Verify restore path via `networking.call_mint_restore()` (temporary)
+    /// 7. Perform the all-in-one wrapper's mandatory NUT-09 restore verification
     /// 8. Transition to Open via `host.mark_channel_open()`
     ///
     /// # Arguments

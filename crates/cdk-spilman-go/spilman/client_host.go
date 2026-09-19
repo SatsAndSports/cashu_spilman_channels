@@ -54,7 +54,7 @@ type SpilmanClientHost interface {
 
 	// GetChannelState returns the lifecycle state of a channel.
 	// Returns an empty string if the channel is unknown.
-	// Otherwise returns "opening_from_swap", "open", "closing", or "closed".
+	// Otherwise returns "opening_from_swap", "opening_failed", "open", "closing", or "closed".
 	GetChannelState(channelID string) string
 
 	// MarkChannelClosing marks a channel as unusable while retaining it in storage.
@@ -150,5 +150,5 @@ type ClientChannelInfo struct {
 	MintURL            string `json:"mint_url"`
 	CurrentBalance     uint64 `json:"current_balance"`
 	PaymentCount       uint64 `json:"payment_count"`
-	State              string `json:"state"` // "opening_from_swap", "open", "closing", or "closed"
+	State              string `json:"state"` // "opening_from_swap", "opening_failed", "open", "closing", or "closed"
 }

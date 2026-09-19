@@ -78,9 +78,11 @@ func (b *ClientBridge) Free() {
 //  1. Compute ECDH channel secret via host.ComputeChannelSecret()
 //  2. Parse the token and compute channel parameters
 //  3. Create a funding swap request (deterministic 2-of-2 locked outputs)
-//  4. Submit the swap to the mint via host.CallMintSwap()
-//  5. Unblind signatures and verify DLEQ proofs
-//  6. Save the channel via host.SaveChannelFunding()
+//  4. Persist OpeningFromSwap via host.SaveOpeningFromSwapChannel()
+//  5. Submit the swap via host.CallMintSwap()
+//  6. Unblind signatures and verify DLEQ proofs
+//  7. Verify the mandatory NUT-09 restore path via host.CallMintRestore()
+//  8. Commit Open via host.MarkChannelOpen()
 func (b *ClientBridge) OpenChannelFromToken(token, receiverPubkeyHex, senderPubkeyHex string, expiryTimestamp uint64, keysetInfoJSON string, maxAmount uint64) (*OpenChannelResult, error) {
 	return clientBridgeOpenChannel(b.ptr, token, receiverPubkeyHex, senderPubkeyHex, expiryTimestamp, keysetInfoJSON, maxAmount)
 }

@@ -2,9 +2,10 @@
 //!
 //! Available when the `client-sqlite` feature is enabled.
 //!
-//! The schema is intentionally simple: one table with JSON columns for the
-//! immutable opening/funding data and the mutable payment state. This mirrors
-//! the server-side [`crate::configurable_host::SqliteStorage`] design.
+//! The schema uses one channel-state table with JSON columns for immutable
+//! opening/funding data and mutable payment state, plus a persistent client
+//! keyset-cache table. This mirrors the server-side
+//! [`crate::configurable_host::SqliteStorage`] design.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
