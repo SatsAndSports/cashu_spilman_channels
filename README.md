@@ -49,6 +49,21 @@ Experimental protocol. APIs and data models are subject to breaking changes.
    npm install && npm start
    ```
 
+## Sender Refunds (Rust)
+
+After `now_seconds > expiry_timestamp`, use
+`EstablishedChannel::prepare_sender_refund_after_expiry(sender_secret, now_seconds, output_keyset, derivation_context)`.
+Choose an active `KeysetInfo` for the channel's mint/unit independently of the
+funding keyset, and use a fresh `[u8; 32]` context for each successor attempt.
+Persist the entire `PreparedSenderRefund::to_json()` result before submitting.
+It contains confidential output secrets and blindings: protect it and do not log
+it. Derivation requires the sender private key; never expose derivation preimages.
+Checked submission and NUT-09 recovery use the persisted output keys, including
+after rotation; there is no automatic keyset selection or changed-request retry.
+See [the refund integration guide](INTEGRATION.md#post-expiry-sender-refunds-rust)
+for exact completion APIs and ambiguity handling. These APIs require no feature
+flag and are currently Rust-only.
+
 ## Project Structure
 
 ```
