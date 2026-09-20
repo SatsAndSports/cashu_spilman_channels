@@ -97,6 +97,20 @@ With P2BK:
 - Mint sees uncorrelated random-looking keys
 - No pattern linking channels to identities
 
+### Loose Sender Refund Security
+
+Post-expiry loose refund outputs are bearer proofs, unlike the key-locked channel
+outputs. Their secret and blinding derivations must both include the sender's
+private key bytes: the receiver also knows the channel secret and could otherwise
+derive the outputs and recover spendable proofs through mint restore.
+
+This fix changes newly prepared outputs without migrating existing records.
+Legacy prepared attempts cannot be made private retrospectively, and upgrading
+does not protect outputs already submitted using the shared-only derivation.
+Do not rewrite an ambiguous submitted attempt or assume its funds are unspent;
+retain its exact recovery data. Prepared records contain bearer secrets and
+blindings and must be protected; never log them or derivation preimages.
+
 ### Blinding Derivation
 
 Channel-secret based derivations use **pipe-delimited decimal text** for hash inputs to ensure 100% cross-platform consistency.

@@ -182,7 +182,8 @@ impl EstablishedChannel {
             &self.params.keyset_info,
         )?;
 
-        let outputs = self.prepare_loose_refund_outputs(output_amounts.amounts())?;
+        let outputs =
+            self.prepare_loose_refund_outputs(&sender_secret, output_amounts.amounts())?;
         let blinded_messages = outputs
             .iter()
             .map(|output| output.blinded_message.clone())
@@ -273,6 +274,7 @@ impl EstablishedChannel {
 
     fn prepare_loose_refund_outputs(
         &self,
+        sender_secret: &SecretKey,
         amounts: &[u64],
     ) -> Result<Vec<PreparedSenderRefundOutput>, anyhow::Error> {
         let mut per_amount_index = std::collections::BTreeMap::<u64, usize>::new();
@@ -280,7 +282,7 @@ impl EstablishedChannel {
             .iter()
             .map(|&amount| {
                 let index = per_amount_index.entry(amount).or_insert(0);
-                let output = self.prepare_loose_refund_output(amount, *index)?;
+                let output = self.prepare_loose_refund_output(sender_secret, amount, *index)?;
                 *index += 1;
                 Ok(output)
             })
@@ -289,12 +291,15 @@ impl EstablishedChannel {
 
     fn prepare_loose_refund_output(
         &self,
+        sender_secret: &SecretKey,
         amount: u64,
         index: usize,
     ) -> Result<PreparedSenderRefundOutput, anyhow::Error> {
         let channel_id = self.params.get_channel_id();
         let mut secret_preimage = Vec::new();
         secret_preimage.extend_from_slice(&self.params.channel_secret);
+        // The receiver also knows channel_secret; loose refunds must be sender-only.
+        secret_preimage.extend_from_slice(sender_secret.as_secret_bytes());
         secret_preimage.extend_from_slice(
             format!(
                 "{}|{}|{}|{}|secret",
@@ -313,6 +318,7 @@ impl EstablishedChannel {
 
         let mut blinding_preimage = Vec::new();
         blinding_preimage.extend_from_slice(&self.params.channel_secret);
+        blinding_preimage.extend_from_slice(sender_secret.as_secret_bytes());
         blinding_preimage.extend_from_slice(
             format!(
                 "{}|{}|{}|{}|blinding",
@@ -411,5 +417,71 @@ impl PreparedSenderRefund {
     /// Restore a prepared refund attempt from durable storage.
     pub fn from_json(json: &str) -> Result<Self, anyhow::Error> {
         serde_json::from_str(json).map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod refund_privacy_tests {
+    use super::*;
+    use crate::params::mock_keyset_info;
+    use cashu::nuts::CurrencyUnit;
+
+    #[test]
+    fn loose_refund_derivation_requires_sender_private_material() {
+        let sender = SecretKey::from_slice(&[1; 32]).unwrap();
+        let receiver = SecretKey::from_slice(&[2; 32]).unwrap();
+        let params = ChannelParameters::new_with_secret_key(
+            sender.public_key(),
+            receiver.public_key(),
+            "https://mint.example".to_string(),
+            CurrencyUnit::Sat,
+            8,
+            14,
+            100,
+            1,
+            mock_keyset_info(vec![1, 2, 4, 8], 0),
+            4,
+            &sender,
+        )
+        .unwrap();
+        let channel = EstablishedChannel {
+            params,
+            funding_proofs: vec![],
+        };
+        let derive = |key: &SecretKey| channel.prepare_loose_refund_output(key, 4, 0).unwrap();
+        let output = derive(&sender);
+        let repeated = derive(&sender);
+        assert_eq!(output.secret, repeated.secret);
+        assert_eq!(output.blinding_factor, repeated.blinding_factor);
+        assert_eq!(output.blinded_message, repeated.blinded_message);
+        let receiver_output = derive(&receiver);
+        assert_ne!(output.secret, receiver_output.secret);
+        assert_ne!(output.blinding_factor, receiver_output.blinding_factor);
+        assert_ne!(output.blinded_message, receiver_output.blinded_message);
+
+        // Reproduce the vulnerable derivation using only receiver-known material.
+        let channel_id = channel.params.get_channel_id();
+        let legacy_preimage = |suffix| {
+            let mut bytes = channel.params.channel_secret.to_vec();
+            bytes.extend_from_slice(
+                format!("{channel_id}|{SENDER_REFUND_LOOSE_CONTEXT}|4|0|{suffix}").as_bytes(),
+            );
+            bytes
+        };
+        let legacy_secret = Secret::new(format!(
+            "{SENDER_REFUND_LOOSE_CONTEXT}:{channel_id}:4:{}",
+            hex::encode(sha256::Hash::hash(&legacy_preimage("secret")).to_byte_array())
+        ));
+        let scalar = hash_to_secp_scalar(&legacy_preimage("blinding"), |input| {
+            sha256::Hash::hash(input).to_byte_array()
+        })
+        .unwrap();
+        let legacy_blinding = SecretKey::from_slice(&scalar.to_be_bytes()).unwrap();
+        let (legacy_point, _) =
+            cashu::dhke::blind_message(&legacy_secret.to_bytes(), Some(legacy_blinding.clone()))
+                .unwrap();
+        assert_ne!(output.secret, legacy_secret);
+        assert_ne!(output.blinding_factor, legacy_blinding);
+        assert_ne!(output.blinded_message.blinded_secret, legacy_point);
     }
 }
