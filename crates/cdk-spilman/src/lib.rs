@@ -80,6 +80,7 @@ pub use deterministic::{
 };
 pub use established_channel::{
     EstablishedChannel, FundingSpendKind, PreparedSenderRefund, PreparedSenderRefundOutput,
+    SenderRefundError,
 };
 pub use keyset_retry::{
     with_active_keyset_retry, with_active_keyset_retry_async, ActiveKeysetSelection,

@@ -205,6 +205,126 @@ Python, Go, or WASM bridges.
 
 ---
 
+## Post-Expiry Sender Refunds (Rust)
+
+These `cdk-spilman` APIs are available without the `wallet` feature. This is a
+breaking prepared-refund schema/API: old serialized attempts are not supported.
+
+1. Reconstruct the trusted `EstablishedChannel` from stored funding, for example
+   with `EstablishedChannel::from_client_channel_funding(&funding)`.
+2. Select a currently active output `KeysetInfo` for that channel's mint and unit.
+   Do not replace `channel.params.keyset_info`: it describes the funding inputs
+   and their fees. `KeysetInfo` itself has no mint URL or active flag; the
+   application must associate its keyset cache and connection with the right mint.
+3. Prepare only at a caller-supplied Unix time strictly greater than expiry.
+   Use a fresh random 32-byte context (or a durable unique 32-byte attempt ID)
+   for a new request. The output keyset may differ in keys, denominations, format,
+   and fees from funding. The funding input fees alone determine refund value.
+4. Persist the complete prepared JSON atomically before any submission. Treat it
+   as immutable and secret-bearing. Keep previous attempts while unresolved.
+5. Submit that exact request once. Validate before network I/O and import only
+   proofs returned by checked completion. Persist proof custody and completion
+   together, deduplicating replayed proofs.
+
+```rust,ignore
+let prepared = channel.prepare_sender_refund_after_expiry(
+    sender_secret.clone(), now_seconds, output_keyset, attempt_context,
+)?;
+let durable_json = prepared.to_json()?;
+// Application persists durable_json before any network request.
+let prepared = PreparedSenderRefund::from_json(&durable_json)?;
+prepared.verify(&channel, &sender_secret)?; // pure, no clock/network/signing
+
+let proofs = channel.submit_prepared_sender_refund(
+    &prepared, &sender_secret, now_seconds, &mint_connection,
+).await?;
+```
+
+For application-owned networking, submit `prepared.swap_request.clone()` to
+`prepared.mint`, then pass the response's `Vec<BlindSignature>` to:
+
+```rust,ignore
+let proofs = channel.complete_prepared_sender_refund(
+    &prepared, &sender_secret, response.signatures,
+)?;
+```
+
+Following a lost/invalid response, or on restart, restore the immutable attempt:
+
+```rust,ignore
+let outcome: Option<Vec<Proof>> = channel.restore_prepared_sender_refund_outputs(
+    &prepared, &sender_secret, &mint_connection,
+).await?;
+```
+
+For application-owned NUT-09 networking, build `RestoreRequest { outputs }` from
+`prepared.outputs.iter().map(|o| o.blinded_message.clone()).collect()` and call
+`channel.complete_prepared_sender_refund_restore(&prepared, &sender_secret, response)`
+with the complete `RestoreResponse`, not just its signatures.
+
+- `Ok(Some(proofs))` means all expected outputs were validated. Proof order is
+  canonicalized to prepared order even if the restore response was reordered.
+- `Ok(None)` means both response arrays were empty. It does **not** prove a
+  previous request failed or cannot still execute. Keep reservations and resolve
+  ambiguity before creating a changed request.
+- `Err` includes partial, duplicate, unknown, or mismatched restore outputs,
+  incorrect counts/amounts/keysets/totals, and missing/invalid DLEQ. Never import
+  partial results or treat these errors as absence.
+
+All completion uses `prepared.output_keyset.active_keys`. Despite that historical
+field name, the keys need not still be active; never substitute current mint keys.
+Pure verification checks channel/mint/unit binding, keyset identity and metadata,
+version/context-derived outputs, exact funding inputs, net value, sender identity,
+and the single refund SIG_ALL signature. Deserialization alone is not validation.
+Completion and restore do not consult wall-clock time or reject historical keys.
+
+Refund derivation requires the sender private key, not just the shared channel
+secret. The private key is not serialized in `PreparedSenderRefund`, but the
+record contains confidential output secrets and blindings. Protect the record
+and never log it or the derivation preimages, which contain the sender private
+key. Send only the swap/restore request to the mint, not the prepared record.
+
+Preparation and checked submission return downcastable `SenderRefundError::NotExpired`
+at/before expiry; zero net value returns `SenderRefundError::ZeroNetValue` without
+building an empty swap. Overflow and fees exceeding funding value are errors.
+`MintConnection` still returns `anyhow::Result`: its errors propagate unchanged,
+preserving concrete error types and source chains where the adapter provides them.
+The library cannot recover structured NUT-00 data already flattened by an adapter.
+
+There is **no hidden retry or refresh**. After a conclusive retryable keyset
+rejection, the application may refresh/select another output keyset, prepare a
+successor with a fresh context, persist it, and submit it under its own retry
+budget. Do not mutate the old attempt or use a changed-request retry on an
+ambiguous timeout, empty restore, or invalid response.
+
+If funding was already spent, `channel.check_funding_token_state(&connection)`
+checks exactly the first funding proof's Y and rejects missing, extra, or
+mismatched states. Supported generated close/refund transactions spend all
+funding inputs atomically, so one representative suffices under that assumption;
+this is not a guarantee about arbitrary transactions. The first proof is used
+specifically because generated SIG_ALL transactions attach the witness only to
+the first input.
+
+`EstablishedChannel::classify_funding_spend_witness(&state)` is only an advisory
+witness-shape hint: one signature suggests a generated refund and two suggest a
+generated receiver close. An honest pinned mint can accept an unrelated extra
+signature on a valid receiver close, causing the exact-count classifier to return
+`Unknown`. The hint is neither cryptographic settlement proof nor a prerequisite
+for checked recovery. After exact persisted-refund restore, callers may fall back
+to checked sender-close discovery for `Unknown` as well as `RelayClose`. Do not
+convert invalid/partial restore errors to absence, infer failure from an empty
+restore, or import proofs solely from witness classification. Validated output
+recovery, not a recognized witness shape, is the basis for importing proofs.
+
+For a receiver close, `SpilmanChannelSender::new(sender_secret, channel)` exposes
+`restore_sender_proofs(&connection)`. Its existing ascending-denomination,
+per-denomination-index discovery algorithm now validates every NUT-09 pair and
+DLEQ before signing the restored sender proof. Only a fully empty response ends
+one denomination's search; any malformed response or network error aborts the
+entire discovery with no partial proof result.
+
+---
+
 ## Working Examples
 
 | Component | Location |

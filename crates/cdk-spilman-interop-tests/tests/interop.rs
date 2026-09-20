@@ -713,7 +713,6 @@ async fn test_spilman_refund_spending_with_blinded_key() -> anyhow::Result<()> {
 
 struct RefundFixture {
     mint: Mint,
-    keys: Keys,
     alice_secret: cdk::nuts::SecretKey,
     charlie_secret: cdk::nuts::SecretKey,
     established: EstablishedChannel,
@@ -779,7 +778,6 @@ async fn create_refund_fixture(expiry_timestamp: u64) -> anyhow::Result<RefundFi
 
     Ok(RefundFixture {
         mint,
-        keys: test_mint.public_keys_of_the_active_sat_keyset,
         alice_secret,
         charlie_secret,
         established: EstablishedChannel::new(params, funding_proofs)?,
@@ -791,7 +789,12 @@ async fn test_sender_refund_prepare_rejects_before_expiry() -> anyhow::Result<()
     let fixture = create_refund_fixture(unix_time() + 3600).await?;
     let err = fixture
         .established
-        .prepare_sender_refund_after_expiry(fixture.alice_secret, unix_time())
+        .prepare_sender_refund_after_expiry(
+            fixture.alice_secret,
+            unix_time(),
+            fixture.established.params.keyset_info.clone(),
+            [0; 32],
+        )
         .unwrap_err();
     assert!(err.to_string().contains("channel has not expired"));
     Ok(())
@@ -802,13 +805,49 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
     let fixture = create_refund_fixture(unix_time() + REFUND_TEST_EXPIRY_DELAY_SECS).await?;
     tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;
     let connection = DirectMintConnection::new(fixture.mint.clone());
-    let prepared = fixture
+    let stale = fixture.established.prepare_sender_refund_after_expiry(
+        fixture.alice_secret.clone(),
+        unix_time(),
+        fixture.established.params.keyset_info.clone(),
+        [0; 32],
+    )?;
+    let rotated = fixture
+        .mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8, 16, 32, 64],
+            987,
+            true,
+            None,
+        )
+        .await?;
+    let output_keys = fixture.mint.keyset_pubkeys(&rotated.id)?.keysets[0]
+        .keys
+        .clone();
+    let output_keyset = KeysetInfo::new(rotated.id, CurrencyUnit::Sat, output_keys, 987, None);
+    assert_ne!(
+        output_keyset.keyset_id,
+        fixture.established.params.keyset_info.keyset_id
+    );
+    // No hidden retry: the old immutable request is rejected, then the caller
+    // explicitly selects B and persists a distinct successor.
+    assert!(fixture
         .established
-        .prepare_sender_refund_after_expiry(fixture.alice_secret, unix_time())?;
+        .submit_prepared_sender_refund(&stale, &fixture.alice_secret, unix_time(), &connection)
+        .await
+        .is_err());
+    let prepared = fixture.established.prepare_sender_refund_after_expiry(
+        fixture.alice_secret.clone(),
+        unix_time(),
+        output_keyset,
+        [1; 32],
+    )?;
+    let prepared = cdk_spilman::PreparedSenderRefund::from_json(&prepared.to_json()?)?;
 
-    let proofs =
-        EstablishedChannel::submit_prepared_sender_refund(&prepared, &connection, &fixture.keys)
-            .await?;
+    let proofs = fixture
+        .established
+        .submit_prepared_sender_refund(&prepared, &fixture.alice_secret, unix_time(), &connection)
+        .await?;
     assert_eq!(
         proofs
             .iter()
@@ -817,6 +856,7 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
         prepared.output_amount_raw
     );
     assert!(proofs.iter().all(|proof| proof.p2pk_e.is_none()));
+    assert!(proofs.iter().all(|proof| proof.keyset_id == rotated.id));
     let funding_state = fixture
         .established
         .check_funding_token_state(&connection)
@@ -827,12 +867,26 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
         FundingSpendKind::PostExpiryRefund
     );
 
-    let restored = EstablishedChannel::restore_prepared_sender_refund_outputs(
-        &prepared,
-        &connection,
-        &fixture.keys,
-    )
-    .await?;
+    // B is now inactive too; restore still uses the persisted B keys, not C.
+    fixture
+        .mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8, 16, 32, 64],
+            0,
+            false,
+            None,
+        )
+        .await?;
+    let restored = fixture
+        .established
+        .restore_prepared_sender_refund_outputs(&prepared, &fixture.alice_secret, &connection)
+        .await?
+        .expect("refund outputs exist");
+    assert_eq!(
+        serde_json::to_value(&proofs)?,
+        serde_json::to_value(&restored)?
+    );
     assert_eq!(
         restored
             .iter()
@@ -875,24 +929,32 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
     );
 
     tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;
-    let prepared = fixture
-        .established
-        .prepare_sender_refund_after_expiry(fixture.alice_secret.clone(), unix_time())?;
+    let prepared = fixture.established.prepare_sender_refund_after_expiry(
+        fixture.alice_secret.clone(),
+        unix_time(),
+        fixture.established.params.keyset_info.clone(),
+        [0; 32],
+    )?;
 
     assert!(
-        EstablishedChannel::submit_prepared_sender_refund(&prepared, &connection, &fixture.keys)
+        fixture
+            .established
+            .submit_prepared_sender_refund(
+                &prepared,
+                &fixture.alice_secret,
+                unix_time(),
+                &connection
+            )
             .await
             .is_err(),
         "refund submit should fail after the relay close already spent funding proofs"
     );
     assert!(
-        EstablishedChannel::restore_prepared_sender_refund_outputs(
-            &prepared,
-            &connection,
-            &fixture.keys,
-        )
-        .await
-        .is_err(),
+        fixture
+            .established
+            .restore_prepared_sender_refund_outputs(&prepared, &fixture.alice_secret, &connection,)
+            .await?
+            .is_none(),
         "refund outputs should not exist when relay close won"
     );
 

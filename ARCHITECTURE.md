@@ -113,7 +113,10 @@ blindings and must be protected; never log them or derivation preimages.
 
 ### Blinding Derivation
 
-Channel-secret based derivations use **pipe-delimited decimal text** for hash inputs to ensure 100% cross-platform consistency.
+The stage-1/stage-2 channel-secret derivations below use **pipe-delimited decimal
+text** for hash inputs. The versioned loose sender-refund derivation described
+under Keyset Rotation Handling additionally uses binary secret/context prefixes
+and serialized output-keyset metadata.
 
 #### Stage 1 (Funding / Refund)
 
@@ -338,6 +341,59 @@ pricing:
 ## System Behavior
 
 ### Keyset Rotation Handling
+
+Post-expiry sender refunds deliberately do not use the automatic retry helpers
+below. The application selects a separate output keyset and persists one immutable
+`PreparedSenderRefund` containing channel ID, mint/unit, complete output keyset
+metadata, net amount, deterministic output secrets/blindings, and the signed
+all-funding-input swap. The old funding keyset still determines input fees;
+output-keyset fees are not fees for this transaction's inputs. Time eligibility
+is strict (`now > expiry`); fee multiplication, totals and subtraction are checked,
+and zero-net refunds are rejected explicitly.
+
+Refund output derivation version 1 domain-separates loose outputs with
+`sender_refund_loose`. Secret and blinding preimages begin with the channel
+secret, sender's 32-byte private key, caller-owned 32-byte attempt context,
+canonical serialized output `KeysetInfo`, and big-endian `u32` version 1; they end
+with
+`channel_id|sender_refund_loose|amount|per_amount_index|secret` or `|blinding`.
+Amounts use the existing largest-first decomposition, limited by the channel's
+maximum output amount. A new context produces distinct successor outputs even
+on the same keyset. Binding to the sender's private key prevents the receiver,
+who also knows the shared channel secret, from deriving loose refund proofs even
+if the context is known. Derivation preimages contain the sender private key and
+must never be logged or exposed. The prepared record does not serialize that key,
+but its output secrets and blindings are confidential too; protect storage and
+do not log the record or send it to the mint. The entire prepared record is
+re-derived and compared during pure verification, and the actual refund SIG_ALL
+authorization is checked against the channel's sender refund pubkey. Verification
+neither signs nor performs I/O.
+
+Opening, refund completion, and sender-close discovery share exact signature
+validation: count, per-output amount and keyset, checked totals, mandatory DLEQ
+against the expected blinded point, and unblinding with persisted denomination
+keys. NUT-09 matching rejects unknown/duplicate/missing outputs and canonicalizes
+complete responses into request order. Only two empty arrays mean absent, never
+a partial or invalid response. Existing sender-close discovery retains its
+ascending-denomination/index algorithm and returns no partial results on errors.
+Prepared refund recovery works with historical inactive output keys, not today's
+active keyset. Empty restore cannot resolve submission ambiguity by itself.
+
+Supported generated close/refund transactions spend all funding inputs atomically;
+under that assumption one representative suffices for NUT-07 state checks. This
+is not a guarantee about arbitrary transactions. Exactly the first funding proof's
+Y must be returned: the first proof is selected specifically because generated
+SIG_ALL transactions attach the witness only to the first input.
+
+Witness-shape classification is advisory, not cryptographic settlement proof or
+a prerequisite for checked recovery. A valid receiver close accepted by an honest
+mint may contain unrelated extra signatures and thus classify as `Unknown` under
+the exact-count heuristic. After exact persisted-refund restore, checked
+sender-close discovery remains available for `Unknown`; neither malformed restore
+responses nor an unrecognized witness justify skipping validation or importing
+partial results. Applications own retry budgets, keyset refresh, ambiguous-attempt
+reconciliation, proof custody, and persistence. See the
+[integration guide](INTEGRATION.md#post-expiry-sender-refunds-rust).
 
 The implementation handles mint keyset rotation using a **Persistent Cache** strategy:
 

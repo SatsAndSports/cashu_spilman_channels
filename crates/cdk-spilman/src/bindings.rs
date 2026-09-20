@@ -9,15 +9,11 @@ use super::{
 };
 #[cfg(feature = "wallet")]
 use cashu::dhke::blind_message;
-#[cfg(feature = "wallet")]
 use cashu::dhke::construct_proofs as dhke_construct_proofs;
+use cashu::nuts::{BlindSignature, BlindedMessage, RestoreResponse};
 #[cfg(feature = "wallet")]
-use cashu::nuts::{
-    BlindSignature, BlindSignatureDleq, BlindedMessage, PreMintSecrets, RestoreResponse,
-    SwapResponse,
-};
+use cashu::nuts::{BlindSignatureDleq, PreMintSecrets, SwapResponse};
 use cashu::nuts::{CurrencyUnit, Id, Keys, Proof, PublicKey, SecretKey, SwapRequest, Token};
-#[cfg(feature = "wallet")]
 use cashu::secret::Secret;
 use cashu::util::{hex, unix_time};
 use cashu::Amount;
@@ -1336,12 +1332,11 @@ pub(crate) fn complete_funding_swap_for_outputs(
     )
 }
 
-#[cfg(feature = "wallet")]
 #[derive(Debug)]
-struct PreparedOutput {
-    blinded_message: BlindedMessage,
-    secret: Secret,
-    blinding_factor: SecretKey,
+pub(crate) struct PreparedOutput {
+    pub(crate) blinded_message: BlindedMessage,
+    pub(crate) secret: Secret,
+    pub(crate) blinding_factor: SecretKey,
 }
 
 #[cfg(feature = "wallet")]
@@ -1389,8 +1384,7 @@ fn parse_prepared_outputs(
         .collect()
 }
 
-#[cfg(feature = "wallet")]
-fn match_restore_response(
+pub(crate) fn match_restore_response(
     response: RestoreResponse,
     expected_outputs: &[BlindedMessage],
     role: &str,
@@ -1442,6 +1436,25 @@ fn complete_exact_opening_signatures(
     let change = parse_prepared_outputs(change_secrets_json, keyset_info, "change")?;
     let funding_count = funding.len();
     let expected = funding.into_iter().chain(change).collect::<Vec<_>>();
+    let mut proofs = complete_exact_signatures(signatures, expected, keyset_info, exact_outputs)?;
+    let change_proofs = proofs.split_off(funding_count);
+    let funding_proofs_json = serde_json::to_string(&proofs)
+        .map_err(|e| format!("Failed to serialize funding proofs: {e}"))?;
+    let change_proofs_json = serde_json::to_string(&change_proofs)
+        .map_err(|e| format!("Failed to serialize change proofs: {e}"))?;
+    Ok(serde_json::json!({
+        "funding_proofs_json": funding_proofs_json,
+        "change_proofs_json": change_proofs_json
+    })
+    .to_string())
+}
+
+pub(crate) fn complete_exact_signatures(
+    signatures: Vec<BlindSignature>,
+    expected: Vec<PreparedOutput>,
+    keyset_info: &KeysetInfo,
+    exact_outputs: Option<&[BlindedMessage]>,
+) -> Result<Vec<Proof>, String> {
     if signatures.len() != expected.len() {
         return Err(format!(
             "Signature count mismatch: expected {}, got {}",
@@ -1503,27 +1516,13 @@ fn complete_exact_opening_signatures(
         .into_iter()
         .map(|output| (output.secret, output.blinding_factor))
         .unzip();
-    let mut proofs = dhke_construct_proofs(
+    dhke_construct_proofs(
         signatures,
         blinding_factors,
         secrets,
         &keyset_info.active_keys,
     )
-    .map_err(|e| format!("Failed to construct opening proofs: {e}"))?;
-    let change_proofs = proofs.split_off(funding_count);
-    let funding_proofs = proofs;
-
-    let funding_proofs_json = serde_json::to_string(&funding_proofs)
-        .map_err(|e| format!("Failed to serialize funding proofs: {e}"))?;
-    let change_proofs_json = serde_json::to_string(&change_proofs)
-        .map_err(|e| format!("Failed to serialize change proofs: {e}"))?;
-
-    let result = serde_json::json!({
-        "funding_proofs_json": funding_proofs_json,
-        "change_proofs_json": change_proofs_json
-    });
-
-    Ok(result.to_string())
+    .map_err(|e| format!("Failed to construct proofs: {e}"))
 }
 
 // ============================================================================

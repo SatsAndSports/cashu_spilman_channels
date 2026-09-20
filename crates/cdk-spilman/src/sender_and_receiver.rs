@@ -383,39 +383,39 @@ impl SpilmanChannelSender {
 
                 // Try to restore this single output
                 let restore_request = RestoreRequest {
-                    outputs: vec![blinded_message],
+                    outputs: vec![blinded_message.clone()],
                 };
 
                 let restore_response = mint_connection
                     .post_restore(restore_request)
                     .await
                     .map_err(|error| {
-                        anyhow::anyhow!(
-                            "failed to restore sender output for amount {} index {}: {}",
-                            amount,
-                            index,
-                            error
-                        )
+                        error.context(format!(
+                            "failed to restore sender output for amount {} index {}",
+                            amount, index
+                        ))
                     })?;
-                let mut signatures = restore_response.signatures.into_iter();
-                let Some(blind_signature) = signatures.next() else {
+                if restore_response.outputs.is_empty() && restore_response.signatures.is_empty() {
                     // No signature found for this (amount, index), move to the next amount.
                     break;
-                };
-                if signatures.next().is_some() {
-                    anyhow::bail!(
-                        "mint restore response returned multiple signatures for amount {} index {}",
-                        amount,
-                        index
-                    );
                 }
-
-                let mut proofs = cashu::dhke::construct_proofs(
-                    vec![blind_signature],
-                    vec![det_output.blinding_factor.clone()],
-                    vec![det_output.secret.clone()],
-                    &params.keyset_info.active_keys,
-                )?;
+                let signatures = crate::bindings::match_restore_response(
+                    restore_response,
+                    std::slice::from_ref(&blinded_message),
+                    "sender close",
+                )
+                .map_err(anyhow::Error::msg)?;
+                let mut proofs = crate::bindings::complete_exact_signatures(
+                    signatures,
+                    vec![crate::bindings::PreparedOutput {
+                        blinded_message,
+                        blinding_factor: det_output.blinding_factor.clone(),
+                        secret: det_output.secret.clone(),
+                    }],
+                    &params.keyset_info,
+                    None,
+                )
+                .map_err(anyhow::Error::msg)?;
                 let proof = proofs
                     .pop()
                     .ok_or_else(|| anyhow::anyhow!("construct_proofs returned no proofs"))?;
@@ -477,7 +477,7 @@ mod tests {
             self.attempted_amounts.lock().unwrap().push(amount);
 
             Ok(RestoreResponse {
-                outputs: request.outputs,
+                outputs: vec![],
                 signatures: vec![],
             })
         }
@@ -585,5 +585,117 @@ mod tests {
 
         assert!(proofs.is_empty(), "mock restore returns no proofs");
         assert_eq!(mint.attempted_amounts(), vec![1, 2, 4]);
+    }
+
+    struct ScriptedRestoreMint {
+        secret: SecretKey,
+        calls: Mutex<usize>,
+        fault: usize,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("discovery transport failure")]
+    struct DiscoveryFailure;
+
+    #[async_trait]
+    impl MintConnection for ScriptedRestoreMint {
+        async fn process_swap(&self, _: cashu::nuts::SwapRequest) -> anyhow::Result<SwapResponse> {
+            unreachable!()
+        }
+
+        async fn post_restore(&self, request: RestoreRequest) -> anyhow::Result<RestoreResponse> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls > 2 || (*calls == 2 && self.fault == 0) {
+                return Ok(RestoreResponse {
+                    outputs: vec![],
+                    signatures: vec![],
+                });
+            }
+            if *calls == 2 && self.fault == 1 {
+                return Err(DiscoveryFailure.into());
+            }
+            let message = &request.outputs[0];
+            let c = cashu::dhke::sign_message(&self.secret, &message.blinded_secret)?;
+            let signature = cashu::nuts::BlindSignature::new(
+                message.amount,
+                c,
+                message.keyset_id,
+                &message.blinded_secret,
+                &self.secret,
+            )?;
+            let mut response = RestoreResponse {
+                outputs: request.outputs,
+                signatures: vec![signature],
+            };
+            // Always return one valid proof first, then fault the next index.
+            if *calls == 2 {
+                match self.fault {
+                    2 => response.outputs[0].blinded_secret = SecretKey::generate().public_key(),
+                    3 => response.signatures[0].dleq = None,
+                    4 => response.signatures[0].c = SecretKey::generate().public_key(),
+                    5 => response.signatures[0].amount = Amount::from(2),
+                    6 => {
+                        response.signatures[0].keyset_id =
+                            crate::params::mock_keyset_info(vec![1], 0).keyset_id
+                    }
+                    7 => response.signatures.clear(),
+                    8 => response.outputs.clear(),
+                    9 => {
+                        response.outputs.push(response.outputs[0].clone());
+                        response.signatures.push(response.signatures[0].clone());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Ok(response)
+        }
+
+        async fn check_state(
+            &self,
+            _: Vec<cashu::nuts::PublicKey>,
+        ) -> anyhow::Result<CheckStateResponse> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn sender_discovery_validates_each_output_and_never_returns_partial_on_error() {
+        for fault in 0..=9 {
+            let mut sender = create_test_sender(0);
+            let secret = SecretKey::generate();
+            let keys = cashu::nuts::Keys::new(
+                [1u64, 2, 4, 8]
+                    .into_iter()
+                    .map(|amount| (Amount::from(amount), secret.public_key()))
+                    .collect(),
+            );
+            sender.channel.params.keyset_info = crate::KeysetInfo::new(
+                cashu::nuts::Id::v1_from_keys(&keys),
+                CurrencyUnit::Sat,
+                keys,
+                0,
+                None,
+            );
+            let mint = ScriptedRestoreMint {
+                secret,
+                calls: Mutex::new(0),
+                fault,
+            };
+            let result = sender.restore_sender_proofs(&mint).await;
+            if fault == 0 {
+                let proofs = result.unwrap();
+                assert_eq!(proofs.len(), 1);
+                assert!(proofs[0].witness.is_some());
+                assert_eq!(*mint.calls.lock().unwrap(), 5);
+            } else {
+                let error =
+                    result.expect_err("must not return the first valid proof as partial recovery");
+                if fault == 1 {
+                    assert!(error.downcast_ref::<DiscoveryFailure>().is_some());
+                }
+                assert_eq!(*mint.calls.lock().unwrap(), 2);
+            }
+        }
     }
 }
