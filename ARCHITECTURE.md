@@ -475,6 +475,16 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 
 Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
 
+## Output Keyset Expiry
+
+New close and automatic opening output selectors skip expired active keysets and
+refresh when no usable cached output exists. Activity and final expiry are
+independent: CDK treats `now > final_expiry` as expired. Historical restore uses
+saved keys without rejecting them based on the current wall clock. Expired mint
+signatures can disappear from NUT-09 responses, so empty restore is not evidence
+that the request never executed. This selection change does not expand the set of
+errors authorizing request replacement.
+
 ## Wallet SQLite Durability
 
 Writable file-backed client and host wallet connections explicitly set and verify

@@ -1838,16 +1838,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         )
         .map_err(|e| BridgeError::Internal(e.to_string()))?;
         let active = self.host.get_active_keyset_ids(&params.mint, &params.unit);
-        let id = active
-            .first()
-            .ok_or_else(|| BridgeError::Internal("No active keysets".into()))?;
-        super::parse_keyset_info_from_json(
-            &self
-                .host
-                .get_keyset_info(&params.mint, id)
-                .ok_or_else(|| BridgeError::Internal("Missing keyset info".into()))?,
-        )
-        .map_err(|e| BridgeError::Internal(e.to_string()))
+        active
+            .iter()
+            .filter_map(|id| {
+                let json = self.host.get_keyset_info(&params.mint, id)?;
+                let info = super::parse_keyset_info_from_json(&json).ok()?;
+                (info.keyset_id == *id
+                    && info.unit == params.unit
+                    && info.is_unexpired_at(self.host.now_seconds()))
+                .then_some(info)
+            })
+            .next()
+            .ok_or_else(|| BridgeError::Internal("No usable active close keysets".into()))
     }
 
     fn close_mint_unit_for_channel(
@@ -1877,10 +1879,13 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         keyset_refresher: &R,
     ) -> Result<(), CloseError> {
-        let (mint, unit) = self
+        let (mint, _unit) = self
             .close_mint_unit_for_channel(channel_id)
             .map_err(CloseError::from_preparation_error)?;
-        if !self.host.has_keysets_for_unit(&mint, &unit) {
+        if self
+            .select_close_output_keyset_for_channel(channel_id)
+            .is_err()
+        {
             keyset_refresher.refresh(&mint).map_err(|e| {
                 CloseError::storage_failed(format!("refresh keysets before close: {e}"))
             })?;
@@ -1893,10 +1898,13 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         keyset_refresher: &R,
     ) -> Result<(), CloseError> {
-        let (mint, unit) = self
+        let (mint, _unit) = self
             .close_mint_unit_for_channel(channel_id)
             .map_err(CloseError::from_preparation_error)?;
-        if !self.host.has_keysets_for_unit(&mint, &unit) {
+        if self
+            .select_close_output_keyset_for_channel(channel_id)
+            .is_err()
+        {
             keyset_refresher.refresh(&mint).await.map_err(|e| {
                 CloseError::storage_failed(format!("refresh keysets before close: {e}"))
             })?;

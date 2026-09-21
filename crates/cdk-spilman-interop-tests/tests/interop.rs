@@ -45,6 +45,80 @@ const DEFAULT_TEST_FEE_PPK: u64 = 400;
 const REFUND_TEST_EXPIRY_DELAY_SECS: u64 = 10;
 const REFUND_TEST_EXPIRY_SLEEP_SECS: u64 = 12;
 
+#[tokio::test]
+async fn final_keyset_expiry_rejects_inputs_outputs_and_hides_restore_signatures(
+) -> anyhow::Result<()> {
+    let mint = create_test_mint().await?;
+    let initial = mint_test_proofs(&mint, Amount::from(32)).await?;
+    let retained = mint_test_proofs(&mint, Amount::from(32)).await?;
+    let expiry = unix_time() + 10;
+    let expired = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8, 16, 32, 64],
+            0,
+            true,
+            Some(expiry),
+        )
+        .await?;
+    let input_fee = (initial.len() as u64 * DEFAULT_TEST_FEE_PPK).div_ceil(1000);
+    let (outputs, secrets) =
+        create_test_blinded_messages(&mint, Amount::from(32 - input_fee)).await?;
+    let response = mint
+        .process_swap_request(SwapRequest::new(initial, outputs.clone()))
+        .await?;
+    let keys = mint.keyset_pubkeys(&expired.id)?.keysets[0].keys.clone();
+    let proofs = construct_proofs(response.signatures, secrets.rs(), secrets.secrets(), &keys)?;
+    assert!(!mint
+        .restore(RestoreRequest {
+            outputs: outputs.clone()
+        })
+        .await?
+        .signatures
+        .is_empty());
+    while unix_time() <= expiry {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The v2 ID was created with its expiry; no metadata or ID is rewritten.
+    let restored = mint.restore(RestoreRequest { outputs }).await?;
+    assert!(restored.signatures.is_empty());
+    assert!(restored.outputs.is_empty());
+    let retained_fee = (retained.len() as u64 * DEFAULT_TEST_FEE_PPK).div_ceil(1000);
+    let (expired_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - retained_fee)).await?;
+    let error = mint
+        .process_swap_request(SwapRequest::new(retained.clone(), expired_outputs))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        serde_json::to_value(cdk_common::error::ErrorResponse::from(error))?["code"],
+        12003
+    );
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        vec![1, 2, 4, 8, 16, 32, 64],
+        0,
+        true,
+        None,
+    )
+    .await?;
+    let (valid_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - input_fee)).await?;
+    let error = mint
+        .process_swap_request(SwapRequest::new(proofs, valid_outputs))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        serde_json::to_value(cdk_common::error::ErrorResponse::from(error))?["code"],
+        12003
+    );
+    let (valid_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - retained_fee)).await?;
+    mint.process_swap_request(SwapRequest::new(retained, valid_outputs))
+        .await?;
+    Ok(())
+}
+
 struct TestMintHelper {
     mint: Mint,
     active_sat_keyset_id: Id,
