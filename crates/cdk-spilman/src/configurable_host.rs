@@ -631,7 +631,7 @@ impl std::fmt::Debug for SqliteStorage {
 impl SqliteStorage {
     /// Open (or create) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, String> {
-        let conn = rusqlite::Connection::open(path)
+        let conn = crate::sqlite_durability::open_wallet_database(path)
             .map_err(|e| format!("failed to open SQLite at {path}: {e}"))?;
         let storage = Self {
             conn: std::sync::Mutex::new(conn),

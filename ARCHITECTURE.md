@@ -474,3 +474,20 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 #### WASM Error Boundary
 
 Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
+
+## Wallet SQLite Durability
+
+Writable file-backed client and host wallet connections explicitly set and verify
+`synchronous=EXTRA` before schema or wallet writes. Client storage retains WAL;
+host storage retains the database's existing durable journal mode. EXTRA provides
+FULL synchronization in WAL mode and additionally synchronizes directory changes
+when rollback journals are deleted. OFF and MEMORY journal modes are rejected for
+file-backed wallet connections. In-memory test constructors and read-only
+inspection do not apply this policy.
+
+These guarantees depend on SQLite, the OS, filesystem, and hardware honoring
+synchronization requests; process-kill tests do not demonstrate power-loss safety.
+Separate wallet databases are not one atomic transaction. Back up each database
+using SQLite's backup API or an equivalent consistent SQLite snapshot, retaining
+all wallet databases together. Copying only a live database file can omit committed
+WAL data; do not treat a raw file copy as a wallet backup.

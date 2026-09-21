@@ -24,6 +24,8 @@ pub mod configurable_host;
 pub mod configurable_networking;
 #[cfg(feature = "client-sqlite")]
 pub mod sqlite_client_storage;
+#[cfg(any(feature = "client-sqlite", feature = "configurable-host"))]
+pub mod sqlite_durability;
 #[cfg(feature = "configurable-host-reqwest")]
 pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
