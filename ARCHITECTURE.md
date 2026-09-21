@@ -475,6 +475,15 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 
 Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
 
+## Persistent Test Mint
+
+`cdk-spilman-test-mint::build_persistent_test_mint(config, path)` uses a file-backed
+CDK mint/signatory database and the same public test seed/configuration on reopen.
+It is opt-in; existing in-memory builders and standalone defaults are unchanged.
+The caller owns private-directory permissions and process/database cleanup. Never
+use this public fixed-seed fixture with real funds. Process restart tests must gate
+a completed HTTP response, not merely request arrival, before killing the mint.
+
 ## Sender Refund Terminal State
 
 `SenderRefundedAfterExpiry` is distinct from `Closed` and has no `ClosedDataView`.
