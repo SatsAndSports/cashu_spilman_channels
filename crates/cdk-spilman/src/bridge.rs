@@ -337,7 +337,7 @@ pub struct UnblindResult {
 }
 
 /// Everything needed to execute a close operation after sync validation.
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PreparedClose {
     pub channel_id: String,
     pub balance: u64,
@@ -351,7 +351,7 @@ pub struct PreparedClose {
 }
 
 /// Prepared close plus the host state transition data needed before mint I/O.
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PreparedCloseTransition {
     pub prepared_close: PreparedClose,
     pub expiry_timestamp: u64,
@@ -359,7 +359,7 @@ pub struct PreparedCloseTransition {
 }
 
 /// Result of completing a close mint response before marking the channel closed.
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CompletedClose {
     pub channel_id: String,
     pub expiry_timestamp: u64,
@@ -368,6 +368,25 @@ pub struct CompletedClose {
     pub sender_proofs_json: String,
     pub receiver_sum: u64,
     pub sender_sum: u64,
+}
+
+impl core::fmt::Debug for PreparedClose {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedClose").finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for PreparedCloseTransition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedCloseTransition")
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for CompletedClose {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CompletedClose").finish_non_exhaustive()
+    }
 }
 
 /// HTTP-friendly error for close preparation.
@@ -910,35 +929,36 @@ pub fn unblind_and_verify_stage1_response(
             "Length mismatch between signatures and secrets".into(),
         ));
     }
-    let mut secrets = Vec::with_capacity(secrets_with_blinding.len());
-    let mut blinding_factors = Vec::with_capacity(secrets_with_blinding.len());
+    let mut expected = Vec::with_capacity(secrets_with_blinding.len());
     let mut is_receiver_flags = Vec::with_capacity(secrets_with_blinding.len());
     let mut amount_index_pairs = Vec::with_capacity(secrets_with_blinding.len());
 
     for (swb, is_receiver) in secrets_with_blinding {
-        secrets.push(swb.secret);
-        blinding_factors.push(swb.blinding_factor);
+        let (blinded_secret, _) = cashu::dhke::blind_message(
+            swb.secret.to_bytes().as_ref(),
+            Some(swb.blinding_factor.clone()),
+        )
+        .map_err(|e| BridgeError::Internal(e.to_string()))?;
+        expected.push(crate::bindings::PreparedOutput {
+            blinded_message: cashu::nuts::BlindedMessage::new(
+                swb.amount.into(),
+                output_keyset_info.keyset_id,
+                blinded_secret,
+            ),
+            secret: swb.secret,
+            blinding_factor: swb.blinding_factor,
+        });
         is_receiver_flags.push(is_receiver);
         amount_index_pairs.push((swb.amount, swb.index));
     }
 
-    let proofs = cashu::dhke::construct_proofs(
+    let proofs = crate::bindings::complete_exact_signatures(
         blind_signatures,
-        blinding_factors,
-        secrets,
-        &output_keyset_info.active_keys,
+        expected,
+        output_keyset_info,
+        None,
     )
-    .map_err(|e| BridgeError::Internal(format!("Failed to construct proofs: {}", e)))?;
-
-    for (i, proof) in proofs.iter().enumerate() {
-        let mint_pubkey = output_keyset_info
-            .active_keys
-            .amount_key(proof.amount)
-            .ok_or_else(|| BridgeError::Internal("Missing mint key".into()))?;
-        proof.verify_dleq(mint_pubkey).map_err(|e| {
-            BridgeError::ValidationFailed(format!("DLEQ failed for proof {}: {}", i, e))
-        })?;
-    }
+    .map_err(BridgeError::ValidationFailed)?;
 
     let mut receiver_proofs = Vec::new();
     let mut sender_proofs = Vec::new();
@@ -2028,6 +2048,31 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         Ok(proof)
     }
 
+    /// Complete an exact NUT-09 restore without mutating storage or selecting keys.
+    /// Only two empty arrays mean absence, not successful close or spent funding.
+    /// The caller must authenticate the persisted preparation against its journal.
+    pub fn complete_prepared_close_restore(
+        &self,
+        resp_json: &str,
+        prep: &PreparedClose,
+    ) -> Result<Option<CompletedClose>, CloseError> {
+        let response: cashu::nuts::RestoreResponse = serde_json::from_str(resp_json)
+            .map_err(|_| CloseError::unblind_failed("Invalid close restore response"))?;
+        let request: SwapRequest = serde_json::from_value(prep.swap_request.clone())
+            .map_err(|_| CloseError::unblind_failed("Invalid prepared close request"))?;
+        if response.outputs.is_empty() && response.signatures.is_empty() {
+            return Ok(None);
+        }
+        let signatures =
+            crate::bindings::match_restore_response(response, request.outputs(), "close")
+                .map_err(CloseError::unblind_failed)?;
+        self.complete_prepared_close(
+            &serde_json::json!({ "signatures": signatures }).to_string(),
+            prep,
+        )
+        .map(Some)
+    }
+
     /// Complete a prepared close from a mint swap response without mutating storage.
     pub fn complete_prepared_close(
         &self,
@@ -2038,11 +2083,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         use cashu::nuts::SecretKey;
         use cashu::secret::Secret;
 
-        let resp: serde_json::Value =
-            serde_json::from_str(resp_json).map_err(|e| CloseError::UnblindFailed {
-                reason: e.to_string(),
-                status: 500,
-            })?;
+        let resp: serde_json::Value = serde_json::from_str(resp_json)
+            .map_err(|_| CloseError::unblind_failed("Invalid close swap response"))?;
         let sigs_value = resp
             .get("signatures")
             .ok_or_else(|| CloseError::UnblindFailed {
@@ -2077,11 +2119,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             status: 500,
         })?;
 
-        let blind_signatures: Vec<BlindSignature> = serde_json::from_str(&sigs_value.to_string())
-            .map_err(|e| CloseError::UnblindFailed {
-            reason: e.to_string(),
-            status: 500,
-        })?;
+        let blind_signatures: Vec<BlindSignature> = serde_json::from_value(sigs_value.clone())
+            .map_err(|_| CloseError::unblind_failed("Invalid close signatures"))?;
         let swb_raw: Vec<serde_json::Value> =
             serde_json::from_str(&prep.secrets_with_blinding.to_string()).map_err(|e| {
                 CloseError::UnblindFailed {
@@ -2145,6 +2184,73 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 },
                 is_receiver,
             ));
+        }
+
+        if params.get_channel_id() != prep.channel_id
+            || params.mint != prep.mint_url
+            || params.unit != output_keyset_info.unit
+            || prep.balance > params.capacity
+        {
+            return Err(CloseError::unblind_failed(
+                "Prepared close binding mismatch",
+            ));
+        }
+        let commitment = CommitmentOutputs::for_balance(prep.balance, &params)
+            .map_err(|_| CloseError::unblind_failed("Invalid close commitment"))?;
+        let mut expected_secrets: Vec<_> = commitment
+            .receiver_outputs
+            .get_secrets_with_blinding()
+            .map_err(|_| CloseError::unblind_failed("Invalid receiver close secrets"))?
+            .into_iter()
+            .map(|secret| (secret, true))
+            .chain(
+                commitment
+                    .sender_outputs
+                    .get_secrets_with_blinding()
+                    .map_err(|_| CloseError::unblind_failed("Invalid sender close secrets"))?
+                    .into_iter()
+                    .map(|secret| (secret, false)),
+            )
+            .collect();
+        expected_secrets.sort_by_key(|(secret, _)| secret.amount);
+        if expected_secrets.len() != secrets_with_blinding.len()
+            || expected_secrets.iter().zip(&secrets_with_blinding).any(
+                |((expected, role), (actual, actual_role))| {
+                    role != actual_role
+                        || expected.secret != actual.secret
+                        || expected.blinding_factor != actual.blinding_factor
+                        || expected.amount != actual.amount
+                        || expected.index != actual.index
+                },
+            )
+        {
+            return Err(CloseError::unblind_failed(
+                "Prepared close secrets do not match commitment",
+            ));
+        }
+        let request: SwapRequest = serde_json::from_value(prep.swap_request.clone())
+            .map_err(|_| CloseError::unblind_failed("Invalid prepared close request"))?;
+        if request.outputs().len() != secrets_with_blinding.len() {
+            return Err(CloseError::unblind_failed(
+                "Prepared close output count mismatch",
+            ));
+        }
+        for (output, (secret, _)) in request.outputs().iter().zip(&secrets_with_blinding) {
+            let (blinded_secret, _) = cashu::dhke::blind_message(
+                secret.secret.to_bytes().as_ref(),
+                Some(secret.blinding_factor.clone()),
+            )
+            .map_err(|_| CloseError::unblind_failed("Invalid prepared close output"))?;
+            let expected = cashu::nuts::BlindedMessage::new(
+                secret.amount.into(),
+                output_keyset_info.keyset_id,
+                blinded_secret,
+            );
+            if output != &expected {
+                return Err(CloseError::unblind_failed(
+                    "Prepared close outputs do not match secrets",
+                ));
+            }
         }
 
         // Unblind and verify (returns enriched proofs with amount/index metadata)

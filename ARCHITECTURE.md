@@ -419,6 +419,17 @@ There are two server close orchestration styles.
 4. `complete_prepared_close` verifies and unblinds without storage mutation.
 5. `mark_completed_close` persists proofs and enters `Closed`.
 
+The preparation, transition, and completion are serializable secret-bearing
+values with redacted `Debug`. Applications can persist them as immutable journal
+payloads. Completion validates the deterministic output commitment and exact
+signature amounts/keysets/DLEQ with historical keys, using the same checked
+signature primitive as opening and refund completion. NUT-09 completion through
+`complete_prepared_close_restore` matches exact output identities and canonicalizes
+reordered pairs; two empty arrays are absence, while partial results are errors.
+Neither this API nor the core host's `Closing` marker implements execution
+history, funding/payment journal binding, replay authorization, or atomic
+payment-versus-close coordination. Those remain application responsibilities.
+
 **Convenience/replay flow:** after `Closing` is durable,
 `execute_close_for_closing_channel` selects an active output keyset, reconstructs
 and submits the close swap, handles completion, and persists `Closed`. It permits

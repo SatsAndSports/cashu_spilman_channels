@@ -72,6 +72,32 @@ For other stacks, implement the `SpilmanHost` interface defined in [ARCHITECTURE
 
 ## Technical Guidelines
 
+### Exact Close Completion
+
+`PreparedClose`, `PreparedCloseTransition`, and `CompletedClose` implement Serde
+serialization. Their serialized forms contain secrets or spendable proofs; protect
+them as wallet data and never log them. Their `Debug` implementations are redacted.
+
+`complete_prepared_close` checks the channel/mint/unit binding, deterministic
+commitment secrets and role/index metadata, exact request outputs, signature
+count/amount/keyset, and DLEQ using the preparation's historical output keyset.
+It does not consult active keysets or the clock and does not mutate storage.
+
+For NUT-09, send the saved swap's `outputs` as the restore request, then call
+`complete_prepared_close_restore(response_json, &prepared)`. A valid response may
+reorder output/signature pairs; completion returns them in prepared order.
+Unknown, duplicate, missing, partial, or invalid results are errors. Only two
+empty arrays return `None`; this is not a zero-value close, proof that funding
+was spent, or permission to change outputs or replay a request.
+
+These are completion primitives, not a recovery protocol. The application must
+bind the saved preparation to the receiver, funding and accepted payment, persist
+execution uncertainty before HTTP, serialize payment/close transitions, validate
+input state before any replay, and journal finalization before installing the
+closed state. In particular, `mark_prepared_close_closing` still stores only
+expiry/payment authorization, not the exact preparation. The convenience close
+wrappers do not implement this application-owned journal.
+
 ### HTTP Protocol (Reference)
 
 The reference implementations use HTTP headers to transport payments.
