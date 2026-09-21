@@ -409,6 +409,12 @@ active output keyset.
 
 ### Channel Closing Flow
 
+Application close journals use storage-level compare-and-swap, not a mutex on a
+single bridge instance. Freezing compares the exact current payment and persists
+the journal with Closing in one transaction. Final journal/payout/Closed commit
+atomically; payments cannot update a frozen channel. The journal payload is
+application-owned and is never logged or reconstructed from legacy closing data.
+
 There are two server close orchestration styles.
 
 **Explicit Sans-IO flow:**

@@ -263,6 +263,46 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         .expect("complete close");
     let prepared: cdk_spilman::PreparedClose =
         serde_json::from_str(&serde_json::to_string(&transition.prepared_close).unwrap()).unwrap();
+    let funding = server_bridge
+        .host()
+        .get_funding(&prepared.channel_id)
+        .unwrap();
+    server_bridge
+        .verify_prepared_close(
+            &prepared,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key(),
+        )
+        .unwrap();
+    let mut wrong = prepared.clone();
+    wrong.swap_request["inputs"][0]["witness"] = serde_json::Value::Null;
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
+    let mut wrong = prepared.clone();
+    wrong.swap_request["inputs"][0]["amount"] = serde_json::json!(999);
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
+    assert!(server_bridge
+        .verify_prepared_close(
+            &prepared,
+            &funding,
+            &transition.payment,
+            &SecretKey::generate().public_key()
+        )
+        .is_err());
     assert_eq!(format!("{prepared:?}"), "PreparedClose { .. }");
     assert_eq!(format!("{completed:?}"), "CompletedClose { .. }");
     assert_eq!(format!("{transition:?}"), "PreparedCloseTransition { .. }");

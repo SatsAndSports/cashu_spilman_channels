@@ -74,6 +74,22 @@ For other stacks, implement the `SpilmanHost` interface defined in [ARCHITECTURE
 
 ### Exact Close Completion
 
+Durable hosts implement the `SpilmanStorage` close-journal methods:
+`freeze_close` atomically compares the accepted payment, enters Closing, and
+inserts the application's opaque secret-bearing journal; `advance_close` uses
+exact journal compare-and-swap and can atomically install Closed plus payout.
+`get_close_journal` propagates storage errors rather than treating them as absence.
+Memory and SQLite stores implement this contract. Balance updates reject Closing
+and Closed, and legacy lifecycle setters cannot bypass an installed journal.
+No old close authorization is converted into a journal automatically.
+
+Before restore or replay, `verify_prepared_close` authenticates the saved request
+against separately persisted funding, payment, and expected receiver. It verifies
+the receiver signature instead of regenerating its random signature bytes, and
+checks exact inputs and outputs against the authorized commitment without using
+current time, lifecycle state, or active keysets. Journal schema and replay policy
+remain application-owned.
+
 `PreparedClose`, `PreparedCloseTransition`, and `CompletedClose` implement Serde
 serialization. Their serialized forms contain secrets or spendable proofs; protect
 them as wallet data and never log them. Their `Debug` implementations are redacted.

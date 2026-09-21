@@ -1034,6 +1034,98 @@ pub fn unblind_and_verify_stage1_response(
 }
 
 impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
+    /// Authenticate an immutable close request against separately stored funding
+    /// and payment authorization. Does not read lifecycle state, time, or active
+    /// keys. Receiver signatures may use randomness and are verified, not rebuilt.
+    pub fn verify_prepared_close(
+        &self,
+        prepared: &PreparedClose,
+        funding: &ChannelFunding,
+        payment: &PaymentProof,
+        receiver: &PublicKey,
+    ) -> Result<(), CloseError> {
+        use cashu::nuts::nut10::SpendingConditionVerification;
+        let invalid = || CloseError::unblind_failed("Invalid immutable close binding");
+        if prepared.balance != payment.balance
+            || prepared.params_json != funding.params_json
+            || prepared.keyset_info_json != funding.keyset_info_json
+            || prepared.channel_secret != funding.channel_secret_hex
+        {
+            return Err(invalid());
+        }
+        let secret: [u8; 32] = hex::decode(&funding.channel_secret_hex)
+            .map_err(|_| invalid())?
+            .try_into()
+            .map_err(|_| invalid())?;
+        let params = ChannelParameters::from_json_with_channel_secret(
+            &funding.params_json,
+            super::parse_keyset_info_from_json(&funding.keyset_info_json).map_err(|_| invalid())?,
+            secret,
+        )
+        .map_err(|_| invalid())?;
+        let output_keyset =
+            super::parse_keyset_info_from_json(&prepared.output_keyset_info.to_string())
+                .map_err(|_| invalid())?;
+        if &params.receiver_pubkey != receiver
+            || params.get_channel_id() != prepared.channel_id
+            || params.mint != prepared.mint_url
+            || params.unit != output_keyset.unit
+        {
+            return Err(invalid());
+        }
+        let expected = self
+            .prepare_close_data_impl(
+                &prepared.channel_id,
+                payment.balance,
+                &payment.signature,
+                funding.clone(),
+                output_keyset,
+                false,
+            )
+            .map_err(|_| invalid())?;
+        let expected = Self::wrap_close_data(
+            expected,
+            &prepared.channel_id,
+            payment.balance,
+            funding.clone(),
+        )
+        .map_err(|_| invalid())?;
+        if expected.secrets_with_blinding != prepared.secrets_with_blinding {
+            return Err(invalid());
+        }
+        let mut request: SwapRequest =
+            serde_json::from_value(prepared.swap_request.clone()).map_err(|_| invalid())?;
+        let signatures = super::balance_update::get_signatures_from_swap_request(&request)
+            .map_err(|_| invalid())?;
+        if signatures.len() != 2 || signatures[0].to_string() != payment.signature {
+            return Err(invalid());
+        }
+        params
+            .get_receiver_blinded_pubkey_for_stage1()
+            .map_err(|_| invalid())?
+            .verify(request.sig_all_msg_to_sign().as_bytes(), &signatures[1])
+            .map_err(|_| invalid())?;
+        let mut expected_request: SwapRequest =
+            serde_json::from_value(expected.swap_request).map_err(|_| invalid())?;
+        // Only the two first-input signatures vary between preparations.
+        request
+            .inputs_mut()
+            .first_mut()
+            .ok_or_else(invalid)?
+            .witness = None;
+        expected_request
+            .inputs_mut()
+            .first_mut()
+            .ok_or_else(invalid)?
+            .witness = None;
+        if serde_json::to_value(request).map_err(|_| invalid())?
+            != serde_json::to_value(expected_request).map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     pub fn new(host: H) -> Self {
         Self {
             host,

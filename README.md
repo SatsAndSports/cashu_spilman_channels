@@ -10,6 +10,10 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
+Durable receiver integrations can authenticate exact close preparations and use
+atomic `SpilmanStorage` close-journal CAS operations. Custom storage implementations
+must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exact-close-completion).
+
 ## Key Features
 
 - **Efficiency**: Unlimited micropayments via a single funding transaction.
