@@ -83,6 +83,10 @@ Memory and SQLite stores implement this contract. Balance updates reject Closing
 and Closed, and legacy lifecycle setters cannot bypass an installed journal.
 No old close authorization is converted into a journal automatically.
 
+`compare_payment` atomically accepts a new payment only against the exact previous
+Open-channel authorization. Applications computing credit deltas must use this
+CAS rather than treating a monotonic no-op as newly accepted funds.
+
 Before restore or replay, `verify_prepared_close` authenticates the saved request
 against separately persisted funding, payment, and expected receiver. It verifies
 the receiver signature instead of regenerating its random signature bytes, and

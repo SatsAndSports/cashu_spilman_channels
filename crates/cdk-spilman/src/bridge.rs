@@ -1099,6 +1099,18 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
         let mut request: SwapRequest =
             serde_json::from_value(prepared.swap_request.clone()).map_err(|_| invalid())?;
+        if serde_json::to_value(&request).map_err(|_| invalid())? != prepared.swap_request {
+            return Err(invalid());
+        }
+        match request
+            .inputs()
+            .first()
+            .and_then(|proof| proof.witness.as_ref())
+        {
+            Some(cashu::nuts::Witness::P2PKWitness(witness))
+                if witness.signatures.len() == 2 && witness.signatures[0] == payment.signature => {}
+            _ => return Err(invalid()),
+        }
         let signatures = super::balance_update::get_signatures_from_swap_request(&request)
             .map_err(|_| invalid())?;
         if signatures.len() != 2 || signatures[0].to_string() != payment.signature {

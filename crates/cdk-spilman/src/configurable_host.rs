@@ -170,6 +170,14 @@ pub struct KeysetCacheEntry {
 /// (`Send + Sync`). The default implementation is [`MemoryStorage`];
 /// [`SqliteStorage`] provides persistence across restarts.
 pub trait SpilmanStorage: Send + Sync {
+    /// Accept a payment only if the exact previously observed authorization is
+    /// still current and the channel is Open. A rejected CAS grants no credit.
+    fn compare_payment(
+        &self,
+        channel_id: &str,
+        expected: &PaymentProof,
+        payment: PaymentProof,
+    ) -> Result<(), String>;
     /// Load the application's secret-bearing close journal, propagating errors.
     fn get_close_journal(&self, channel_id: &str) -> Result<Option<String>, String>;
 
@@ -292,6 +300,24 @@ impl MemoryStorage {
 }
 
 impl SpilmanStorage for MemoryStorage {
+    fn compare_payment(
+        &self,
+        channel_id: &str,
+        expected: &PaymentProof,
+        payment: PaymentProof,
+    ) -> Result<(), String> {
+        let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
+        if self.get_state(channel_id) != ChannelState::Open || payment.balance <= expected.balance {
+            return Err("payment state conflict".to_string());
+        }
+        let mut balances = self.balance.write().map_err(|_| "balance lock")?;
+        let current = balances.get(channel_id).ok_or("missing payment")?;
+        if current.balance != expected.balance || current.signature != expected.signature {
+            return Err("payment snapshot conflict".to_string());
+        }
+        balances.insert(channel_id.to_string(), payment);
+        Ok(())
+    }
     fn get_close_journal(&self, channel_id: &str) -> Result<Option<String>, String> {
         Ok(self
             .close_journals
@@ -313,7 +339,8 @@ impl SpilmanStorage for MemoryStorage {
         }
         let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
         let payment = self.get_balance(channel_id).ok_or("missing payment")?;
-        if self.get_state(channel_id) != ChannelState::Open
+        if self.get_funding(channel_id).is_none()
+            || self.get_state(channel_id) != ChannelState::Open
             || payment.balance != expected.balance
             || payment.signature != expected.signature
             || self.get_close_journal(channel_id)?.is_some()
@@ -666,6 +693,26 @@ impl SqliteStorage {
 }
 
 impl SpilmanStorage for SqliteStorage {
+    fn compare_payment(
+        &self,
+        channel_id: &str,
+        expected: &PaymentProof,
+        payment: PaymentProof,
+    ) -> Result<(), String> {
+        if payment.balance <= expected.balance {
+            return Err("payment state conflict".to_string());
+        }
+        let balance = i64::try_from(payment.balance).map_err(|_| "payment overflow")?;
+        let previous = i64::try_from(expected.balance).map_err(|_| "payment overflow")?;
+        let changed = self.conn.lock().map_err(|_| "sqlite lock")?.execute(
+            "UPDATE spilman_channels SET balance=?4, signature=?5 WHERE channel_id=?1 AND state='Open' AND balance=?2 AND signature=?3",
+            rusqlite::params![channel_id, previous, expected.signature, balance, payment.signature],
+        ).map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err("payment snapshot or state conflict".to_string());
+        }
+        Ok(())
+    }
     fn get_close_journal(&self, channel_id: &str) -> Result<Option<String>, String> {
         use rusqlite::OptionalExtension;
         self.conn
@@ -799,6 +846,7 @@ impl SpilmanStorage for SqliteStorage {
     }
 
     fn update_balance(&self, channel_id: &str, payment: PaymentProof) -> Result<(), String> {
+        let balance = i64::try_from(payment.balance).map_err(|_| "payment overflow")?;
         let mut connection = self.conn.lock().expect("sqlite lock");
         let conn = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -821,7 +869,7 @@ impl SpilmanStorage for SqliteStorage {
              SET balance = ?2, signature = ?3
              WHERE channel_id = ?1
                AND state = 'Open' AND (balance < ?2 OR signature = '')",
-            rusqlite::params![channel_id, payment.balance as i64, payment.signature],
+            rusqlite::params![channel_id, balance, payment.signature],
         )
         .map_err(|e| format!("update_balance: {e}"))?;
         conn.commit().map_err(|e| e.to_string())
@@ -1601,7 +1649,24 @@ mod tests {
                 balance: 5,
                 signature: "signature".to_string(),
             };
-            storage.update_balance("channel", payment.clone()).unwrap();
+            let previous = PaymentProof {
+                balance: 4,
+                signature: "previous".to_string(),
+            };
+            storage.update_balance("channel", previous.clone()).unwrap();
+            storage
+                .compare_payment("channel", &previous, payment.clone())
+                .unwrap();
+            assert!(storage
+                .compare_payment(
+                    "channel",
+                    &previous,
+                    PaymentProof {
+                        balance: 6,
+                        signature: "racing".to_string()
+                    }
+                )
+                .is_err());
             let closing = ClosingData {
                 balance: 5,
                 signature: payment.signature.clone(),
@@ -1618,6 +1683,16 @@ mod tests {
             storage
                 .freeze_close("channel", &payment, closing.clone(), "prepared")
                 .unwrap();
+            assert!(storage
+                .compare_payment(
+                    "channel",
+                    &payment,
+                    PaymentProof {
+                        balance: 6,
+                        signature: "late".to_string()
+                    }
+                )
+                .is_err());
             assert!(storage
                 .update_balance(
                     "channel",
