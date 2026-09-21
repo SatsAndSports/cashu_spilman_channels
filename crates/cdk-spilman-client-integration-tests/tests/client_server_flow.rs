@@ -30,6 +30,32 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+#[tokio::test]
+async fn keyset_metadata_rejects_error_status_without_echoing_body() {
+    for fail_listing in [true, false] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route("/v1/keysets", get(move || async move {
+                (if fail_listing { axum::http::StatusCode::INTERNAL_SERVER_ERROR } else { axum::http::StatusCode::OK },
+                 axum::Json(serde_json::json!({"keysets":[{"id":"0000000000000000","unit":"sat","active":true}],"detail":"secret-sentinel"})))
+            }))
+            .route("/v1/keys/{id}", get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"keysets":[],"detail":"secret-sentinel"}))) }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let error = cdk_spilman::configurable_networking::fetch_all_keysets_from_mint(&format!(
+            "http://{address}"
+        ))
+        .await
+        .unwrap_err();
+        assert!(error.contains("500"));
+        assert!(!error.contains("secret-sentinel"));
+        task.abort();
+        let _ = task.await;
+    }
+}
+
 async fn assert_proofs_state(mint: &Mint, proofs: &[Proof], expected: State) {
     let ys = proofs
         .iter()

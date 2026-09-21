@@ -49,6 +49,13 @@ pub async fn fetch_all_keysets_from_mint(
         .send()
         .await
         .map_err(|e| format!("Failed to fetch keysets: {e}"))?
+        .error_for_status()
+        .map_err(|error| {
+            format!(
+                "keyset metadata HTTP failure: {:?}",
+                error.status().map(|status| status.as_u16())
+            )
+        })?
         .json()
         .await
         .map_err(|e| format!("Failed to parse keysets response: {e}"))?;
@@ -88,6 +95,13 @@ pub async fn fetch_all_keysets_from_mint(
             .send()
             .await
             .map_err(|e| format!("Failed to fetch keys for {id}: {e}"))?
+            .error_for_status()
+            .map_err(|error| {
+                format!(
+                    "keyset keys HTTP failure: {:?}",
+                    error.status().map(|status| status.as_u16())
+                )
+            })?
             .json()
             .await
             .map_err(|e| format!("Failed to parse keys response for {id}: {e}"))?;
