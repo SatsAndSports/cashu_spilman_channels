@@ -45,6 +45,7 @@ pub async fn fetch_all_keysets_from_mint(
     let keysets_url = format!("{mint_url}/v1/keysets");
     let keysets_resp: serde_json::Value = client
         .get(&keysets_url)
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| format!("Failed to fetch keysets: {e}"))?
@@ -83,6 +84,7 @@ pub async fn fetch_all_keysets_from_mint(
         let keys_url = format!("{mint_url}/v1/keys/{id}");
         let keys_resp: serde_json::Value = client
             .get(&keys_url)
+            .timeout(Duration::from_secs(15))
             .send()
             .await
             .map_err(|e| format!("Failed to fetch keys for {id}: {e}"))?

@@ -1014,7 +1014,11 @@ pub fn unblind_and_verify_stage1_response(
         }
     }
 
-    let expected_nominal = output_keyset_info
+    // Payment authorization fixes the nominal split using funding metadata.
+    // Rotated output keys may charge different fees on a later spend; those
+    // fees cannot change the already signed commitment amounts.
+    let expected_nominal = params
+        .keyset_info
         .inverse_deterministic_value_after_fees(balance, params.maximum_amount_for_one_output)
         .map_err(|e| BridgeError::Internal(e.to_string()))?
         .nominal_value;
