@@ -3274,14 +3274,29 @@ mod retry_tests {
         pub channel_id: String,
         pub balance: u64,
         pub close_signature: String,
+        pub sender: SpilmanChannelSender,
     }
 
     pub(super) async fn setup_retry_scenario() -> RetryScenario {
+        setup_fee_scenario(DEFAULT_TEST_FEE_PPK, DEFAULT_TEST_FEE_PPK).await
+    }
+
+    pub(super) async fn setup_fee_scenario(funding_fee: u64, output_fee: u64) -> RetryScenario {
         let shared_mint = Arc::new(
             create_test_mint()
                 .await
                 .expect("test mint should be created successfully"),
         );
+        shared_mint
+            .rotate_keyset(
+                CurrencyUnit::Sat,
+                vec![1, 2, 4, 8, 16, 32, 64],
+                funding_fee,
+                false,
+                None,
+            )
+            .await
+            .expect("funding keyset");
 
         let keyset_a_id = shared_mint
             .get_active_keysets()
@@ -3320,7 +3335,7 @@ mod retry_tests {
             keyset_a_fee_ppk,
             None,
         );
-        let capacity = 10u64;
+        let capacity = if funding_fee == output_fee { 10u64 } else { 50 };
         let expiry_timestamp = unix_time() + 7200;
         let mint_amount = 100u64;
 
@@ -3379,7 +3394,7 @@ mod retry_tests {
         let channel =
             EstablishedChannel::new(params.clone(), funding_proofs.clone()).expect("channel");
         let sender = SpilmanChannelSender::new(alice_secret.clone(), channel);
-        let balance = 5u64;
+        let balance = if funding_fee == output_fee { 5u64 } else { 35 };
         let (balance_update, _) = sender
             .create_signed_balance_update(balance)
             .expect("balance update should be signed");
@@ -3389,7 +3404,7 @@ mod retry_tests {
             .rotate_keyset(
                 CurrencyUnit::Sat,
                 vec![1, 2, 4, 8, 16, 32, 64],
-                keyset_a_fee_ppk,
+                output_fee,
                 false,
                 None,
             )
@@ -3448,8 +3463,75 @@ mod retry_tests {
             channel_id,
             balance,
             close_signature: balance_update.signature.to_string(),
+            sender,
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotated_close_preserves_both_signed_entitlements_and_later_net_fees() -> anyhow::Result<()>
+{
+    for (funding_fee, output_fee) in [(25u64, 999u64), (999, 25)] {
+        let s = retry_tests::setup_fee_scenario(funding_fee, output_fee).await;
+        // Independent oracle for this fixture's binary denominations capped at 64.
+        let count = |value: u64| value / 64 + u64::from((value % 64).count_ones());
+        let funding = &s.sender.channel.funding_proofs;
+        let funding_sum: u64 = funding.iter().map(|p| u64::from(p.amount)).sum();
+        let close_total = funding_sum - (funding.len() as u64 * funding_fee).div_ceil(1000);
+        let receiver_nominal = (s.balance..=close_total)
+            .find(|value| {
+                value.saturating_sub((count(*value) * funding_fee).div_ceil(1000)) >= s.balance
+            })
+            .expect("receiver entitlement");
+        let sender_nominal = close_total - receiver_nominal;
+        let success =
+            s.bridge
+                .execute_unilateral_close(&s.channel_id, s.bridge.host(), s.bridge.host())?;
+        assert_eq!(success.receiver_sum, receiver_nominal);
+        assert_eq!(success.sender_sum, sender_nominal);
+        assert_eq!(success.total_value, close_total);
+        let (_, _, receiver_json, _) = s.bridge.host().closed_data.borrow().clone().unwrap();
+        let receiver: Vec<Proof> = serde_json::from_str(&receiver_json)?;
+        let output_info = cdk_spilman::parse_keyset_info_from_json(
+            &s.bridge.host().keyset_infos[&s.bridge.host().fresh_keyset_id],
+        )
+        .map_err(anyhow::Error::msg)?;
+        let connection = DirectMintConnection::new((*s.bridge.host().mint).clone());
+        let sender = s
+            .sender
+            .restore_sender_proofs_with_keysets(&connection, std::slice::from_ref(&output_info))
+            .await?;
+        assert_eq!(
+            sender.iter().map(|p| u64::from(p.amount)).sum::<u64>(),
+            sender_nominal
+        );
+        for (proofs, nominal) in [(receiver, receiver_nominal), (sender, sender_nominal)] {
+            assert!(!proofs.is_empty());
+            assert_eq!(proofs.len() as u64, count(nominal));
+            let old_fee = (proofs.len() as u64 * funding_fee).div_ceil(1000);
+            let new_fee = (proofs.len() as u64 * output_fee).div_ceil(1000);
+            assert_ne!(
+                old_fee, new_fee,
+                "fixture must cross fee rounding for each party"
+            );
+            for proof in &proofs {
+                assert_eq!(proof.keyset_id, output_info.keyset_id);
+                proof.verify_dleq(output_info.active_keys.amount_key(proof.amount).unwrap())?;
+            }
+            let wallet = WalletBuilder::new()
+                .mint_url("http://localhost:3338".parse()?)
+                .unit(CurrencyUnit::Sat)
+                .localstore(Arc::new(memory::empty().await?))
+                .seed(random::<[u8; 64]>())
+                .client(DirectMintConnection::new((*s.bridge.host().mint).clone()))
+                .build()?;
+            let net = wallet
+                .receive_proofs(proofs, ReceiveOptions::default(), None, None)
+                .await?;
+            assert_eq!(u64::from(net), nominal - new_fee);
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
