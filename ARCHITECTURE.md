@@ -475,6 +475,20 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 
 Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
 
+## Sender Refund Terminal State
+
+`SenderRefundedAfterExpiry` is distinct from `Closed` and has no `ClosedDataView`.
+Storage atomically CASes the application's close journal and terminal state.
+The contextual `EstablishedChannel::sender_refund_attested` helper requires valid
+generated funding, two distinct x-only close keys, exact coverage of every
+funding Y as spent, and exactly one well-formed Schnorr signature in the complete
+mint-recorded witness of the original first input. Under the honest-mint model
+this attests the refund branch, not independently verified full-request evidence.
+Two signatures are ambiguous: the mint accepts a valid refund with an unrelated
+extra signature. Applications must finish exact restoration of every saved close
+attempt before installing terminal refund evidence. Unknown spend is recoverable,
+not a third authorized spending path or a zero-value close payout.
+
 ## Output Keyset Expiry
 
 New close and automatic opening output selectors skip expired active keysets and

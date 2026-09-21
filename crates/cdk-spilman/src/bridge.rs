@@ -63,6 +63,8 @@ pub enum ChannelState {
     Closing,
     /// Channel is closed (swap completed, proofs stored)
     Closed,
+    /// Mint-attested sender refund; no receiver-close payout exists.
+    SenderRefundedAfterExpiry,
 }
 
 /// Data stored when a channel enters CLOSING state
@@ -1377,7 +1379,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
         match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed => Err(BridgeError::ChannelClosed),
+            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+                Err(BridgeError::ChannelClosed)
+            }
             ChannelState::Closing => Err(BridgeError::ChannelClosing),
             ChannelState::Open => Ok(()),
         }
@@ -1400,7 +1404,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
         match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed => return Err(BridgeError::ChannelClosed),
+            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+                return Err(BridgeError::ChannelClosed)
+            }
             ChannelState::Closing => return Err(BridgeError::ChannelClosing),
             ChannelState::Open => {}
         }
@@ -1453,7 +1459,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
         match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed => return Err(BridgeError::ChannelClosed),
+            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+                return Err(BridgeError::ChannelClosed)
+            }
             ChannelState::Closing => return Err(BridgeError::ChannelClosing),
             ChannelState::Open => {}
         }
