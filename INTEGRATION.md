@@ -90,6 +90,14 @@ checks exact inputs and outputs against the authorized commitment without using
 current time, lifecycle state, or active keysets. Journal schema and replay policy
 remain application-owned.
 
+Receiver close output-keyset rotation preserves the nominal split fixed by the
+payment authorization, even when the new output keyset charges different fees
+on subsequent spends. Sender discovery can use
+`SpilmanChannelSender::restore_sender_proofs_with_keysets` with same-unit historical
+keys without changing channel derivation. `SenderCloseKeysetMissing` requests a
+metadata refresh; invalid cryptographic evidence remains an error, never partial
+success. This discovery API is distinct from exact prepared-request restoration.
+
 `PreparedClose`, `PreparedCloseTransition`, and `CompletedClose` implement Serde
 serialization. Their serialized forms contain secrets or spendable proofs; protect
 them as wallet data and never log them. Their `Debug` implementations are redacted.

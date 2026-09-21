@@ -16,6 +16,16 @@ use super::deterministic::{CommitmentOutputs, DeterministicOutputsForOneContext,
 use super::established_channel::EstablishedChannel;
 use super::params::{ChannelParameters, Stage2Role};
 
+#[derive(Debug)]
+pub struct SenderCloseKeysetMissing;
+
+impl core::fmt::Display for SenderCloseKeysetMissing {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("sender close discovery needs historical output key metadata")
+    }
+}
+impl std::error::Error for SenderCloseKeysetMissing {}
+
 // ============================================================================
 // Channel Verification
 // ============================================================================
@@ -352,6 +362,22 @@ impl SpilmanChannelSender {
         &self,
         mint_connection: &M,
     ) -> anyhow::Result<Vec<Proof>> {
+        self.restore_sender_proofs_with_keysets(
+            mint_connection,
+            std::slice::from_ref(&self.channel.params.keyset_info),
+        )
+        .await
+    }
+
+    /// Checked discovery retains original channel derivation but may verify
+    /// signatures under a different, caller-supplied same-unit historical keyset.
+    /// Unlike exact request recovery, NUT-09 discovery does not know the output
+    /// keyset chosen by the receiver in advance.
+    pub async fn restore_sender_proofs_with_keysets<M: MintConnection + ?Sized>(
+        &self,
+        mint_connection: &M,
+        output_keysets: &[super::KeysetInfo],
+    ) -> anyhow::Result<Vec<Proof>> {
         let params = &self.channel.params;
         let keyset_id = params.keyset_info.keyset_id;
         let max_amount = params.maximum_amount_for_one_output;
@@ -399,12 +425,34 @@ impl SpilmanChannelSender {
                     // No signature found for this (amount, index), move to the next amount.
                     break;
                 }
+                let signature_id = restore_response
+                    .signatures
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("sender restore lacks signature"))?
+                    .keyset_id;
+                let output_keyset = output_keysets
+                    .iter()
+                    .find(|keyset| keyset.keyset_id == signature_id && keyset.unit == params.unit)
+                    .ok_or(SenderCloseKeysetMissing)?;
+                // Mints may echo the request's ID or report the stored output ID.
+                // The blinded point and amount must still match exactly, and the
+                // signature is verified under its actual historical keyset.
+                let mut restore_expected = blinded_message.clone();
+                if restore_response
+                    .outputs
+                    .first()
+                    .is_some_and(|output| output.keyset_id == signature_id)
+                {
+                    restore_expected.keyset_id = signature_id;
+                }
                 let signatures = crate::bindings::match_restore_response(
                     restore_response,
-                    std::slice::from_ref(&blinded_message),
+                    std::slice::from_ref(&restore_expected),
                     "sender close",
                 )
                 .map_err(anyhow::Error::msg)?;
+                let mut blinded_message = blinded_message;
+                blinded_message.keyset_id = signature_id;
                 let mut proofs = crate::bindings::complete_exact_signatures(
                     signatures,
                     vec![crate::bindings::PreparedOutput {
@@ -412,7 +460,7 @@ impl SpilmanChannelSender {
                         blinding_factor: det_output.blinding_factor.clone(),
                         secret: det_output.secret.clone(),
                     }],
-                    &params.keyset_info,
+                    output_keyset,
                     None,
                 )
                 .map_err(anyhow::Error::msg)?;
@@ -591,6 +639,7 @@ mod tests {
         secret: SecretKey,
         calls: Mutex<usize>,
         fault: usize,
+        output_keyset: Option<cashu::nuts::Id>,
     }
 
     #[derive(Debug, thiserror::Error)]
@@ -620,7 +669,7 @@ mod tests {
             let signature = cashu::nuts::BlindSignature::new(
                 message.amount,
                 c,
-                message.keyset_id,
+                self.output_keyset.unwrap_or(message.keyset_id),
                 &message.blinded_secret,
                 &self.secret,
             )?;
@@ -681,6 +730,7 @@ mod tests {
                 secret,
                 calls: Mutex::new(0),
                 fault,
+                output_keyset: None,
             };
             let result = sender.restore_sender_proofs(&mint).await;
             if fault == 0 {
@@ -697,5 +747,55 @@ mod tests {
                 assert_eq!(*mint.calls.lock().unwrap(), 2);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn sender_discovery_verifies_rotated_output_keys_without_changing_derivation() {
+        let sender = create_test_sender(0);
+        let secret = SecretKey::generate();
+        let keys = cashu::nuts::Keys::new(
+            [1u64, 2, 4, 8]
+                .into_iter()
+                .map(|amount| (Amount::from(amount), secret.public_key()))
+                .collect(),
+        );
+        let keyset = crate::KeysetInfo::new(
+            cashu::nuts::Id::v1_from_keys(&keys),
+            CurrencyUnit::Sat,
+            keys,
+            250,
+            None,
+        );
+        let mint = ScriptedRestoreMint {
+            secret,
+            calls: Mutex::new(0),
+            fault: 0,
+            output_keyset: Some(keyset.keyset_id),
+        };
+        assert!(sender
+            .restore_sender_proofs(&mint)
+            .await
+            .unwrap_err()
+            .is::<SenderCloseKeysetMissing>());
+        *mint.calls.lock().unwrap() = 0;
+        let proofs = sender
+            .restore_sender_proofs_with_keysets(&mint, std::slice::from_ref(&keyset))
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].keyset_id, keyset.keyset_id);
+        let expected = sender
+            .channel
+            .params
+            .create_deterministic_output_with_blinding("sender", 1, 0)
+            .unwrap();
+        assert_eq!(proofs[0].secret, expected.secret);
+        *mint.calls.lock().unwrap() = 0;
+        let mut wrong_unit = keyset;
+        wrong_unit.unit = CurrencyUnit::Msat;
+        assert!(sender
+            .restore_sender_proofs_with_keysets(&mint, &[wrong_unit])
+            .await
+            .is_err());
     }
 }
