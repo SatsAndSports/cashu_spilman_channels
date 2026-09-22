@@ -321,6 +321,26 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
             &receiver_secret.public_key()
         )
         .is_err());
+    let mut wrong = prepared.clone();
+    wrong.sig_all_message_hash = "00".repeat(32);
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
+    let mut wrong = prepared.clone();
+    wrong.blinded_receiver_pubkey = SecretKey::generate().public_key().to_hex();
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
     assert!(server_bridge
         .verify_prepared_close(
             &prepared,

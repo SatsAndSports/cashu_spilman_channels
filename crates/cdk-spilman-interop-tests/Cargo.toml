@@ -9,6 +9,7 @@ publish = false
 anyhow.workspace = true
 async-trait.workspace = true
 bip39 = "2.0"
+bitcoin.workspace = true
 cdk = { workspace = true, features = ["mint", "wallet"] }
 cdk-common.workspace = true
 cdk-fake-wallet.workspace = true
