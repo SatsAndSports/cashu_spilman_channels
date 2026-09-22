@@ -155,7 +155,10 @@ impl EstablishedChannel {
             .get_receiver_blinded_pubkey_for_stage1()?
             .to_hex();
         let prepared_closes = prepared_closes.into_iter().collect::<Vec<_>>();
-        anyhow::ensure!(!prepared_closes.is_empty(), "no authenticated close attempts");
+        anyhow::ensure!(
+            !prepared_closes.is_empty(),
+            "no authenticated close attempts"
+        );
         for prepared in &prepared_closes {
             anyhow::ensure!(
                 prepared.channel_id == channel_id
