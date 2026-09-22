@@ -29,6 +29,8 @@ pub struct MintKeysetWithKeys {
     pub active: bool,
     /// Input fee rate in parts per thousand.
     pub input_fee_ppk: u64,
+    /// Final redemption expiry; zero is explicitly expired, not absent.
+    pub final_expiry: Option<u64>,
     /// Raw key map payload returned by the mint.
     pub keys: serde_json::Value,
 }
@@ -87,6 +89,10 @@ pub async fn fetch_all_keysets_from_mint(
             .get("input_fee_ppk")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let final_expiry = match keyset.get("final_expiry") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or("Invalid keyset final_expiry")?),
+        };
 
         let keys_url = format!("{mint_url}/v1/keys/{id}");
         let keys_resp: serde_json::Value = client
@@ -119,6 +125,7 @@ pub async fn fetch_all_keysets_from_mint(
             unit,
             active,
             input_fee_ppk,
+            final_expiry,
             keys,
         });
     }
@@ -134,12 +141,14 @@ pub fn build_keyset_info_json(
     unit: &CurrencyUnit,
     keys: &serde_json::Value,
     input_fee_ppk: u64,
+    final_expiry: Option<u64>,
 ) -> String {
     serde_json::json!({
         "keysetId": keyset_id.to_string(),
         "unit": unit.to_string(),
         "keys": keys,
         "inputFeePpk": input_fee_ppk,
+        "final_expiry": final_expiry,
     })
     .to_string()
 }
@@ -151,7 +160,13 @@ pub async fn fetch_and_cache_keysets(
 ) -> Result<(), String> {
     let keysets = fetch_all_keysets_from_mint(mint_url).await?;
     for ks in keysets {
-        let info_json = build_keyset_info_json(&ks.id, &ks.unit, &ks.keys, ks.input_fee_ppk);
+        let info_json = build_keyset_info_json(
+            &ks.id,
+            &ks.unit,
+            &ks.keys,
+            ks.input_fee_ppk,
+            ks.final_expiry,
+        );
         host.set_keyset(
             mint_url,
             ks.id,
@@ -163,6 +178,61 @@ pub async fn fetch_and_cache_keysets(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn discovery_preserves_final_expiry_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for expiry in [None, Some(0), Some(123_456)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let mut metadata = serde_json::json!({
+                "id": "0000000000000001", "unit": "sat", "active": false,
+                "input_fee_ppk": 42,
+            });
+            if let Some(expiry) = expiry {
+                metadata["final_expiry"] = serde_json::json!(expiry);
+            }
+            let server = tokio::spawn(async move {
+                for body in [
+                    serde_json::json!({"keysets": [metadata]}),
+                    serde_json::json!({"keysets": [{"keys": {}}]}),
+                ] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        request.push(stream.read_u8().await.unwrap());
+                    }
+                    let body = body.to_string();
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let keysets = fetch_all_keysets_from_mint(&url).await.unwrap();
+            assert_eq!(keysets.len(), 1);
+            assert_eq!(keysets[0].final_expiry, expiry);
+            assert_eq!(keysets[0].input_fee_ppk, 42);
+            assert!(!keysets[0].active);
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn keyset_json_preserves_absent_zero_and_finite_expiry() {
+        let id: Id = "0000000000000001".parse().unwrap();
+        let keys = serde_json::json!({});
+        for expiry in [None, Some(0), Some(123_456)] {
+            let json = build_keyset_info_json(&id, &CurrencyUnit::Sat, &keys, 42, expiry);
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value["final_expiry"].as_u64(), expiry);
+            assert_eq!(value["inputFeePpk"], 42);
+        }
+    }
 }
 
 /// Ready-made [`SpilmanClientNetworking`] implementation using `reqwest`.
