@@ -107,6 +107,63 @@ pub struct EstablishedChannel {
 }
 
 impl EstablishedChannel {
+    /// Infer the refund branch from an honest mint's complete recorded NUT-07
+    /// witness, not from an independently verified full spending request.
+    /// Only our exact generated 2-distinct-key close / 1-key SIG_ALL refund model
+    /// permits this inference. Callers must finish exact close restores first.
+    pub fn sender_refund_attested(
+        &self,
+        response: &cashu::nuts::CheckStateResponse,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            crate::sender_and_receiver::verify_valid_channel(&self.funding_proofs, &self.params)
+                .valid,
+            "invalid generated funding model"
+        );
+        let sender = self.params.get_sender_blinded_pubkey_for_stage1()?.to_hex();
+        let receiver = self
+            .params
+            .get_receiver_blinded_pubkey_for_stage1()?
+            .to_hex();
+        anyhow::ensure!(
+            sender[2..] != receiver[2..],
+            "close requires distinct x-only keys"
+        );
+        let ys = self
+            .funding_proofs
+            .iter()
+            .map(Proof::y)
+            .collect::<Result<Vec<_>, _>>()?;
+        anyhow::ensure!(
+            !ys.is_empty() && ys.iter().collect::<std::collections::HashSet<_>>().len() == ys.len(),
+            "invalid funding identities"
+        );
+        anyhow::ensure!(
+            response.states.len() == ys.len()
+                && ys
+                    .iter()
+                    .all(|y| response.states.iter().filter(|s| s.y == *y).count() == 1),
+            "incomplete funding state coverage"
+        );
+        if response.states.iter().any(|s| s.state != State::Spent) {
+            return Ok(false);
+        }
+        let first = response
+            .states
+            .iter()
+            .find(|s| s.y == ys[0])
+            .ok_or_else(|| anyhow::anyhow!("missing first funding state"))?;
+        let Some(Witness::P2PKWitness(witness)) = &first.witness else {
+            return Ok(false);
+        };
+        if witness.signatures.len() != 1 {
+            return Ok(false);
+        }
+        let signature = hex::decode(&witness.signatures[0])?;
+        bitcoin::secp256k1::schnorr::Signature::from_slice(&signature)?;
+        Ok(true)
+    }
+
     /// Create new established channel
     pub fn new(
         params: ChannelParameters,
@@ -549,8 +606,8 @@ impl EstablishedChannel {
     /// Classify a spent funding proof from its NUT-07 witness signature shape.
     ///
     /// Advisory only: generated refunds normally carry one signature and receiver
-    /// closes two. An honest mint can accept unrelated extra signatures on a valid
-    /// close, yielding `Unknown`. No signatures are cryptographically verified here.
+    /// closes two, but a refund plus an extra unrelated signature also has two.
+    /// Two or more therefore remain `Unknown`. No signatures are cryptographically verified here.
     /// This result is neither settlement proof nor a prerequisite for checked
     /// recovery. After exact persisted-refund restore, callers may use checked
     /// sender-close discovery for `Unknown` too; do not treat invalid/partial
@@ -565,7 +622,8 @@ impl EstablishedChannel {
         match &proof_state.witness {
             Some(Witness::P2PKWitness(witness)) => match witness.signatures.len() {
                 1 => FundingSpendKind::PostExpiryRefund,
-                2 => FundingSpendKind::RelayClose,
+                // A valid refund plus an unrelated signature has this shape too.
+                2 => FundingSpendKind::Unknown,
                 _ => FundingSpendKind::Unknown,
             },
             _ => FundingSpendKind::Unknown,

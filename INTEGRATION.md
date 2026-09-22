@@ -72,6 +72,60 @@ For other stacks, implement the `SpilmanHost` interface defined in [ARCHITECTURE
 
 ## Technical Guidelines
 
+### Exact Close Completion
+
+Durable hosts implement the `SpilmanStorage` close-journal methods:
+`freeze_close` atomically compares the accepted payment, enters Closing, and
+inserts the application's opaque secret-bearing journal; `advance_close` uses
+exact journal compare-and-swap and can atomically install Closed plus payout.
+`get_close_journal` propagates storage errors rather than treating them as absence.
+Memory and SQLite stores implement this contract. Balance updates reject Closing
+and Closed, and legacy lifecycle setters cannot bypass an installed journal.
+No old close authorization is converted into a journal automatically.
+
+`compare_payment` atomically accepts a new payment only against the exact previous
+Open-channel authorization. Applications computing credit deltas must use this
+CAS rather than treating a monotonic no-op as newly accepted funds.
+
+Before restore or replay, `verify_prepared_close` authenticates the saved request
+against separately persisted funding, payment, and expected receiver. It verifies
+the receiver signature instead of regenerating its random signature bytes, and
+checks exact inputs and outputs against the authorized commitment without using
+current time, lifecycle state, or active keysets. Journal schema and replay policy
+remain application-owned.
+
+Receiver close output-keyset rotation preserves the nominal split fixed by the
+payment authorization, even when the new output keyset charges different fees
+on subsequent spends. Sender discovery can use
+`SpilmanChannelSender::restore_sender_proofs_with_keysets` with same-unit historical
+keys without changing channel derivation. `SenderCloseKeysetMissing` requests a
+metadata refresh; invalid cryptographic evidence remains an error, never partial
+success. This discovery API is distinct from exact prepared-request restoration.
+
+`PreparedClose`, `PreparedCloseTransition`, and `CompletedClose` implement Serde
+serialization. Their serialized forms contain secrets or spendable proofs; protect
+them as wallet data and never log them. Their `Debug` implementations are redacted.
+
+`complete_prepared_close` checks the channel/mint/unit binding, deterministic
+commitment secrets and role/index metadata, exact request outputs, signature
+count/amount/keyset, and DLEQ using the preparation's historical output keyset.
+It does not consult active keysets or the clock and does not mutate storage.
+
+For NUT-09, send the saved swap's `outputs` as the restore request, then call
+`complete_prepared_close_restore(response_json, &prepared)`. A valid response may
+reorder output/signature pairs; completion returns them in prepared order.
+Unknown, duplicate, missing, partial, or invalid results are errors. Only two
+empty arrays return `None`; this is not a zero-value close, proof that funding
+was spent, or permission to change outputs or replay a request.
+
+These are completion primitives, not a recovery protocol. The application must
+bind the saved preparation to the receiver, funding and accepted payment, persist
+execution uncertainty before HTTP, serialize payment/close transitions, validate
+input state before any replay, and journal finalization before installing the
+closed state. In particular, `mark_prepared_close_closing` still stores only
+expiry/payment authorization, not the exact preparation. The convenience close
+wrappers do not implement this application-owned journal.
+
 ### HTTP Protocol (Reference)
 
 The reference implementations use HTTP headers to transport payments.

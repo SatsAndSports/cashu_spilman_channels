@@ -30,6 +30,32 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+#[tokio::test]
+async fn keyset_metadata_rejects_error_status_without_echoing_body() {
+    for fail_listing in [true, false] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route("/v1/keysets", get(move || async move {
+                (if fail_listing { axum::http::StatusCode::INTERNAL_SERVER_ERROR } else { axum::http::StatusCode::OK },
+                 axum::Json(serde_json::json!({"keysets":[{"id":"0000000000000000","unit":"sat","active":true}],"detail":"secret-sentinel"})))
+            }))
+            .route("/v1/keys/{id}", get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"keysets":[],"detail":"secret-sentinel"}))) }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let error = cdk_spilman::configurable_networking::fetch_all_keysets_from_mint(&format!(
+            "http://{address}"
+        ))
+        .await
+        .unwrap_err();
+        assert!(error.contains("500"));
+        assert!(!error.contains("secret-sentinel"));
+        task.abort();
+        let _ = task.await;
+    }
+}
+
 async fn assert_proofs_state(mint: &Mint, proofs: &[Proof], expected: State) {
     let ys = proofs
         .iter()
@@ -261,6 +287,137 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
     let completed = server_bridge
         .complete_prepared_close(&mint_response, &transition.prepared_close)
         .expect("complete close");
+    let prepared: cdk_spilman::PreparedClose =
+        serde_json::from_str(&serde_json::to_string(&transition.prepared_close).unwrap()).unwrap();
+    let funding = server_bridge
+        .host()
+        .get_funding(&prepared.channel_id)
+        .unwrap();
+    server_bridge
+        .verify_prepared_close(
+            &prepared,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key(),
+        )
+        .unwrap();
+    let mut wrong = prepared.clone();
+    wrong.swap_request["inputs"][0]["witness"] = serde_json::Value::Null;
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
+    let mut wrong = prepared.clone();
+    wrong.swap_request["inputs"][0]["amount"] = serde_json::json!(999);
+    assert!(server_bridge
+        .verify_prepared_close(
+            &wrong,
+            &funding,
+            &transition.payment,
+            &receiver_secret.public_key()
+        )
+        .is_err());
+    assert!(server_bridge
+        .verify_prepared_close(
+            &prepared,
+            &funding,
+            &transition.payment,
+            &SecretKey::generate().public_key()
+        )
+        .is_err());
+    assert_eq!(format!("{prepared:?}"), "PreparedClose { .. }");
+    assert_eq!(format!("{completed:?}"), "CompletedClose { .. }");
+    assert_eq!(format!("{transition:?}"), "PreparedCloseTransition { .. }");
+    let response: serde_json::Value = serde_json::from_str(&mint_response).unwrap();
+    let restore: serde_json::Value = serde_json::from_str(
+        &cdk_spilman::SpilmanClientNetworking::call_mint_restore(
+            &server_networking,
+            &prepared.mint_url,
+            &serde_json::json!({ "outputs": prepared.swap_request["outputs"] }).to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut reordered = restore.clone();
+    reordered["outputs"].as_array_mut().unwrap().reverse();
+    reordered["signatures"].as_array_mut().unwrap().reverse();
+    let restored = server_bridge
+        .complete_prepared_close_restore(&reordered.to_string(), &prepared)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.sender_proofs_json, completed.sender_proofs_json);
+    assert_eq!(restored.receiver_sum, completed.receiver_sum);
+    assert_eq!(restored.sender_sum, completed.sender_sum);
+    assert!(server_bridge
+        .complete_prepared_close_restore(r#"{"outputs":[],"signatures":[]}"#, &prepared)
+        .unwrap()
+        .is_none());
+    let mutations: Vec<fn(&mut serde_json::Value)> = vec![
+        |v| {
+            v["outputs"].as_array_mut().unwrap().pop();
+        },
+        |v| {
+            v["signatures"].as_array_mut().unwrap().pop();
+        },
+        |v| {
+            v["outputs"][0] = v["outputs"][1].clone();
+        },
+        |v| {
+            v["outputs"][0]["amount"] = serde_json::json!(999);
+        },
+        |v| {
+            v["signatures"][0]["amount"] = serde_json::json!(999);
+        },
+        |v| {
+            v["signatures"][0]["id"] = serde_json::json!("0000000000000000");
+        },
+        |v| {
+            v["signatures"][0].as_object_mut().unwrap().remove("dleq");
+        },
+    ];
+    assert!(restore["outputs"].as_array().unwrap().len() > 1);
+    for mutate in mutations {
+        let mut invalid = restore.clone();
+        mutate(&mut invalid);
+        assert!(server_bridge
+            .complete_prepared_close_restore(&invalid.to_string(), &prepared)
+            .is_err());
+    }
+    let mut changed_request = prepared.clone();
+    changed_request.swap_request["outputs"][0]["amount"] = serde_json::json!(999);
+    assert!(server_bridge
+        .complete_prepared_close(&mint_response, &changed_request)
+        .is_err());
+    let mut wrong_amount = response.clone();
+    wrong_amount["signatures"][0]["amount"] = serde_json::json!(999);
+    assert!(server_bridge
+        .complete_prepared_close(&wrong_amount.to_string(), &prepared)
+        .is_err());
+    let mutations: Vec<fn(&mut cdk_spilman::PreparedClose)> = vec![
+        |p| p.channel_id = "wrong-channel".to_string(),
+        |p| p.mint_url = "https://wrong-mint".to_string(),
+        |p| p.balance += 1,
+        |p| p.secrets_with_blinding[0]["index"] = serde_json::json!(999),
+        |p| p.secrets_with_blinding[0]["is_receiver"] = serde_json::json!(true),
+        |p| p.secrets_with_blinding[0]["secret"] = serde_json::json!("wrong-secret"),
+    ];
+    for mutate in mutations {
+        let mut invalid = prepared.clone();
+        mutate(&mut invalid);
+        assert!(server_bridge
+            .complete_prepared_close(&mint_response, &invalid)
+            .is_err());
+    }
+    let mut invalid_response = response.clone();
+    invalid_response["signatures"][0]["id"] = serde_json::json!("secret-sentinel");
+    let error = server_bridge
+        .complete_prepared_close(&invalid_response.to_string(), &prepared)
+        .unwrap_err();
+    assert!(!format!("{error:?} {error}").contains("secret-sentinel"));
     assert_eq!(completed.channel_id, open_result.channel_id);
     assert_eq!(
         server_bridge

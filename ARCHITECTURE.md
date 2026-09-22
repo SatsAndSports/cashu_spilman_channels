@@ -409,6 +409,12 @@ active output keyset.
 
 ### Channel Closing Flow
 
+Application close journals use storage-level compare-and-swap, not a mutex on a
+single bridge instance. Freezing compares the exact current payment and persists
+the journal with Closing in one transaction. Final journal/payout/Closed commit
+atomically; payments cannot update a frozen channel. The journal payload is
+application-owned and is never logged or reconstructed from legacy closing data.
+
 There are two server close orchestration styles.
 
 **Explicit Sans-IO flow:**
@@ -418,6 +424,17 @@ There are two server close orchestration styles.
 3. The caller submits `transition.prepared_close.swap_request`.
 4. `complete_prepared_close` verifies and unblinds without storage mutation.
 5. `mark_completed_close` persists proofs and enters `Closed`.
+
+The preparation, transition, and completion are serializable secret-bearing
+values with redacted `Debug`. Applications can persist them as immutable journal
+payloads. Completion validates the deterministic output commitment and exact
+signature amounts/keysets/DLEQ with historical keys, using the same checked
+signature primitive as opening and refund completion. NUT-09 completion through
+`complete_prepared_close_restore` matches exact output identities and canonicalizes
+reordered pairs; two empty arrays are absence, while partial results are errors.
+Neither this API nor the core host's `Closing` marker implements execution
+history, funding/payment journal binding, replay authorization, or atomic
+payment-versus-close coordination. Those remain application responsibilities.
 
 **Convenience/replay flow:** after `Closing` is durable,
 `execute_close_for_closing_channel` selects an active output keyset, reconstructs
@@ -457,3 +474,53 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 #### WASM Error Boundary
 
 Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
+
+## Persistent Test Mint
+
+`cdk-spilman-test-mint::build_persistent_test_mint(config, path)` uses a file-backed
+CDK mint/signatory database and the same public test seed/configuration on reopen.
+It is opt-in; existing in-memory builders and standalone defaults are unchanged.
+The caller owns private-directory permissions and process/database cleanup. Never
+use this public fixed-seed fixture with real funds. Process restart tests must gate
+a completed HTTP response, not merely request arrival, before killing the mint.
+
+## Sender Refund Terminal State
+
+`SenderRefundedAfterExpiry` is distinct from `Closed` and has no `ClosedDataView`.
+Storage atomically CASes the application's close journal and terminal state.
+The contextual `EstablishedChannel::sender_refund_attested` helper requires valid
+generated funding, two distinct x-only close keys, exact coverage of every
+funding Y as spent, and exactly one well-formed Schnorr signature in the complete
+mint-recorded witness of the original first input. Under the honest-mint model
+this attests the refund branch, not independently verified full-request evidence.
+Two signatures are ambiguous: the mint accepts a valid refund with an unrelated
+extra signature. Applications must finish exact restoration of every saved close
+attempt before installing terminal refund evidence. Unknown spend is recoverable,
+not a third authorized spending path or a zero-value close payout.
+
+## Output Keyset Expiry
+
+New close and automatic opening output selectors skip expired active keysets and
+refresh when no usable cached output exists. Activity and final expiry are
+independent: CDK treats `now > final_expiry` as expired. Historical restore uses
+saved keys without rejecting them based on the current wall clock. Expired mint
+signatures can disappear from NUT-09 responses, so empty restore is not evidence
+that the request never executed. This selection change does not expand the set of
+errors authorizing request replacement.
+
+## Wallet SQLite Durability
+
+Writable file-backed client and host wallet connections explicitly set and verify
+`synchronous=EXTRA` before schema or wallet writes. Client storage retains WAL;
+host storage retains the database's existing durable journal mode. EXTRA provides
+FULL synchronization in WAL mode and additionally synchronizes directory changes
+when rollback journals are deleted. OFF and MEMORY journal modes are rejected for
+file-backed wallet connections. In-memory test constructors and read-only
+inspection do not apply this policy.
+
+These guarantees depend on SQLite, the OS, filesystem, and hardware honoring
+synchronization requests; process-kill tests do not demonstrate power-loss safety.
+Separate wallet databases are not one atomic transaction. Back up each database
+using SQLite's backup API or an equivalent consistent SQLite snapshot, retaining
+all wallet databases together. Copying only a live database file can omit committed
+WAL data; do not treat a raw file copy as a wallet backup.

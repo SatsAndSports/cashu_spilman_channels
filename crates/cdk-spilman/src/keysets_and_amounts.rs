@@ -174,6 +174,12 @@ pub struct KeysetInfo {
 }
 
 impl KeysetInfo {
+    /// Whether the mint keyset has not reached its final expiry at `now`.
+    /// Activity is separate. Never use this to reject historical restore proofs.
+    pub fn is_unexpired_at(&self, now: u64) -> bool {
+        self.final_expiry.is_none_or(|expiry| now <= expiry)
+    }
+
     /// Create new keyset info from active keys
     pub fn new(
         keyset_id: Id,
@@ -263,6 +269,18 @@ mod tests {
     use super::*;
     use cashu::Amount;
     use std::str::FromStr;
+
+    #[test]
+    fn final_expiry_is_strict_and_independent_of_activity() {
+        let mut info = mock_keyset_info(vec![1, 2, 4], 0);
+        assert!(info.is_unexpired_at(u64::MAX));
+        info.final_expiry = Some(100);
+        assert!(info.is_unexpired_at(99));
+        assert!(info.is_unexpired_at(100));
+        assert!(!info.is_unexpired_at(101));
+        info.final_expiry = Some(0);
+        assert!(!info.is_unexpired_at(1));
+    }
 
     // Helper to create a simple KeysetInfo for testing
     fn mock_keyset_info(amounts: Vec<u64>, input_fee_ppk: u64) -> KeysetInfo {

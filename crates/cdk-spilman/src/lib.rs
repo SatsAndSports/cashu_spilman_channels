@@ -24,6 +24,8 @@ pub mod configurable_host;
 pub mod configurable_networking;
 #[cfg(feature = "client-sqlite")]
 pub mod sqlite_client_storage;
+#[cfg(any(feature = "client-sqlite", feature = "configurable-host"))]
+pub mod sqlite_durability;
 #[cfg(feature = "configurable-host-reqwest")]
 pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
@@ -92,7 +94,8 @@ pub use mint_errors::{
 };
 pub use params::{compute_channel_secret, ChannelId, ChannelParameters};
 pub use sender_and_receiver::{
-    verify_valid_channel, ChannelVerificationError, ChannelVerificationResult, SpilmanChannelSender,
+    verify_valid_channel, ChannelVerificationError, ChannelVerificationResult,
+    SenderCloseKeysetMissing, SpilmanChannelSender,
 };
 #[cfg(feature = "client-sqlite")]
 pub use sqlite_client_storage::SqliteClientStorage;

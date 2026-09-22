@@ -45,6 +45,145 @@ const DEFAULT_TEST_FEE_PPK: u64 = 400;
 const REFUND_TEST_EXPIRY_DELAY_SECS: u64 = 10;
 const REFUND_TEST_EXPIRY_SLEEP_SECS: u64 = 12;
 
+#[tokio::test]
+async fn mint_attested_refund_requires_complete_context_and_exactly_one_signature(
+) -> anyhow::Result<()> {
+    for extra in [false, true] {
+        let fixture = create_refund_fixture(unix_time() + 6).await?;
+        while unix_time() <= fixture.established.params.expiry_timestamp {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let prepared = fixture.established.prepare_sender_refund_after_expiry(
+            fixture.alice_secret.clone(),
+            unix_time(),
+            fixture.established.params.keyset_info.clone(),
+            [0; 32],
+        )?;
+        let mut request = prepared.swap_request;
+        if extra {
+            request.sign_sig_all(cdk::nuts::SecretKey::generate())?;
+        }
+        fixture.mint.process_swap_request(request).await?;
+        let ys = fixture
+            .established
+            .funding_proofs
+            .iter()
+            .map(Proof::y)
+            .collect::<Result<Vec<_>, _>>()?;
+        let response = fixture.mint.check_state(&CheckStateRequest { ys }).await?;
+        assert!(response.states.iter().all(|s| s.state == State::Spent));
+        let first_y = fixture.established.funding_proofs[0].y()?;
+        let first = response.states.iter().position(|s| s.y == first_y).unwrap();
+        let cdk::nuts::Witness::P2PKWitness(witness) =
+            response.states[first].witness.as_ref().unwrap()
+        else {
+            panic!("P2PK witness")
+        };
+        assert_eq!(witness.signatures.len(), if extra { 2 } else { 1 });
+        assert_eq!(
+            fixture.established.sender_refund_attested(&response)?,
+            !extra
+        );
+        assert_ne!(
+            EstablishedChannel::classify_funding_spend_witness(&response.states[first]),
+            FundingSpendKind::RelayClose
+        );
+        let mut partial = response.clone();
+        partial.states.pop();
+        assert!(fixture
+            .established
+            .sender_refund_attested(&partial)
+            .is_err());
+        let mut pending = response.clone();
+        pending.states[first].state = State::Pending;
+        assert!(!fixture.established.sender_refund_attested(&pending)?);
+        let mut malformed = response.clone();
+        malformed.states[first].witness =
+            Some(cdk::nuts::Witness::P2PKWitness(cdk::nuts::P2PKWitness {
+                signatures: vec!["bad".to_string()],
+            }));
+        assert!(fixture
+            .established
+            .sender_refund_attested(&malformed)
+            .is_err());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_keyset_expiry_rejects_inputs_outputs_and_hides_restore_signatures(
+) -> anyhow::Result<()> {
+    let mint = create_test_mint().await?;
+    let initial = mint_test_proofs(&mint, Amount::from(32)).await?;
+    let retained = mint_test_proofs(&mint, Amount::from(32)).await?;
+    let expiry = unix_time() + 10;
+    let expired = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8, 16, 32, 64],
+            0,
+            true,
+            Some(expiry),
+        )
+        .await?;
+    let input_fee = (initial.len() as u64 * DEFAULT_TEST_FEE_PPK).div_ceil(1000);
+    let (outputs, secrets) =
+        create_test_blinded_messages(&mint, Amount::from(32 - input_fee)).await?;
+    let response = mint
+        .process_swap_request(SwapRequest::new(initial, outputs.clone()))
+        .await?;
+    let keys = mint.keyset_pubkeys(&expired.id)?.keysets[0].keys.clone();
+    let proofs = construct_proofs(response.signatures, secrets.rs(), secrets.secrets(), &keys)?;
+    assert!(!mint
+        .restore(RestoreRequest {
+            outputs: outputs.clone()
+        })
+        .await?
+        .signatures
+        .is_empty());
+    while unix_time() <= expiry {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The v2 ID was created with its expiry; no metadata or ID is rewritten.
+    let restored = mint.restore(RestoreRequest { outputs }).await?;
+    assert!(restored.signatures.is_empty());
+    assert!(restored.outputs.is_empty());
+    let retained_fee = (retained.len() as u64 * DEFAULT_TEST_FEE_PPK).div_ceil(1000);
+    let (expired_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - retained_fee)).await?;
+    let error = mint
+        .process_swap_request(SwapRequest::new(retained.clone(), expired_outputs))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        serde_json::to_value(cdk_common::error::ErrorResponse::from(error))?["code"],
+        12003
+    );
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        vec![1, 2, 4, 8, 16, 32, 64],
+        0,
+        true,
+        None,
+    )
+    .await?;
+    let (valid_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - input_fee)).await?;
+    let error = mint
+        .process_swap_request(SwapRequest::new(proofs, valid_outputs))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        serde_json::to_value(cdk_common::error::ErrorResponse::from(error))?["code"],
+        12003
+    );
+    let (valid_outputs, _) =
+        create_test_blinded_messages(&mint, Amount::from(32 - retained_fee)).await?;
+    mint.process_swap_request(SwapRequest::new(retained, valid_outputs))
+        .await?;
+    Ok(())
+}
+
 struct TestMintHelper {
     mint: Mint,
     active_sat_keyset_id: Id,
@@ -917,6 +1056,7 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
             .params
             .get_receiver_blinded_secret_key_for_stage1(&fixture.charlie_secret)?,
     )?;
+    close_swap.sign_sig_all(cdk::nuts::SecretKey::generate())?;
     fixture.mint.process_swap_request(close_swap).await?;
     let funding_state = fixture
         .established
@@ -925,7 +1065,7 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
     assert_eq!(funding_state.state, State::Spent);
     assert_eq!(
         EstablishedChannel::classify_funding_spend_witness(&funding_state),
-        FundingSpendKind::RelayClose
+        FundingSpendKind::Unknown
     );
 
     tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;
@@ -3274,14 +3414,29 @@ mod retry_tests {
         pub channel_id: String,
         pub balance: u64,
         pub close_signature: String,
+        pub sender: SpilmanChannelSender,
     }
 
     pub(super) async fn setup_retry_scenario() -> RetryScenario {
+        setup_fee_scenario(DEFAULT_TEST_FEE_PPK, DEFAULT_TEST_FEE_PPK).await
+    }
+
+    pub(super) async fn setup_fee_scenario(funding_fee: u64, output_fee: u64) -> RetryScenario {
         let shared_mint = Arc::new(
             create_test_mint()
                 .await
                 .expect("test mint should be created successfully"),
         );
+        shared_mint
+            .rotate_keyset(
+                CurrencyUnit::Sat,
+                vec![1, 2, 4, 8, 16, 32, 64],
+                funding_fee,
+                false,
+                None,
+            )
+            .await
+            .expect("funding keyset");
 
         let keyset_a_id = shared_mint
             .get_active_keysets()
@@ -3320,7 +3475,7 @@ mod retry_tests {
             keyset_a_fee_ppk,
             None,
         );
-        let capacity = 10u64;
+        let capacity = if funding_fee == output_fee { 10u64 } else { 50 };
         let expiry_timestamp = unix_time() + 7200;
         let mint_amount = 100u64;
 
@@ -3379,7 +3534,7 @@ mod retry_tests {
         let channel =
             EstablishedChannel::new(params.clone(), funding_proofs.clone()).expect("channel");
         let sender = SpilmanChannelSender::new(alice_secret.clone(), channel);
-        let balance = 5u64;
+        let balance = if funding_fee == output_fee { 5u64 } else { 35 };
         let (balance_update, _) = sender
             .create_signed_balance_update(balance)
             .expect("balance update should be signed");
@@ -3389,7 +3544,7 @@ mod retry_tests {
             .rotate_keyset(
                 CurrencyUnit::Sat,
                 vec![1, 2, 4, 8, 16, 32, 64],
-                keyset_a_fee_ppk,
+                output_fee,
                 false,
                 None,
             )
@@ -3448,8 +3603,75 @@ mod retry_tests {
             channel_id,
             balance,
             close_signature: balance_update.signature.to_string(),
+            sender,
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotated_close_preserves_both_signed_entitlements_and_later_net_fees() -> anyhow::Result<()>
+{
+    for (funding_fee, output_fee) in [(25u64, 999u64), (999, 25)] {
+        let s = retry_tests::setup_fee_scenario(funding_fee, output_fee).await;
+        // Independent oracle for this fixture's binary denominations capped at 64.
+        let count = |value: u64| value / 64 + u64::from((value % 64).count_ones());
+        let funding = &s.sender.channel.funding_proofs;
+        let funding_sum: u64 = funding.iter().map(|p| u64::from(p.amount)).sum();
+        let close_total = funding_sum - (funding.len() as u64 * funding_fee).div_ceil(1000);
+        let receiver_nominal = (s.balance..=close_total)
+            .find(|value| {
+                value.saturating_sub((count(*value) * funding_fee).div_ceil(1000)) >= s.balance
+            })
+            .expect("receiver entitlement");
+        let sender_nominal = close_total - receiver_nominal;
+        let success =
+            s.bridge
+                .execute_unilateral_close(&s.channel_id, s.bridge.host(), s.bridge.host())?;
+        assert_eq!(success.receiver_sum, receiver_nominal);
+        assert_eq!(success.sender_sum, sender_nominal);
+        assert_eq!(success.total_value, close_total);
+        let (_, _, receiver_json, _) = s.bridge.host().closed_data.borrow().clone().unwrap();
+        let receiver: Vec<Proof> = serde_json::from_str(&receiver_json)?;
+        let output_info = cdk_spilman::parse_keyset_info_from_json(
+            &s.bridge.host().keyset_infos[&s.bridge.host().fresh_keyset_id],
+        )
+        .map_err(anyhow::Error::msg)?;
+        let connection = DirectMintConnection::new((*s.bridge.host().mint).clone());
+        let sender = s
+            .sender
+            .restore_sender_proofs_with_keysets(&connection, std::slice::from_ref(&output_info))
+            .await?;
+        assert_eq!(
+            sender.iter().map(|p| u64::from(p.amount)).sum::<u64>(),
+            sender_nominal
+        );
+        for (proofs, nominal) in [(receiver, receiver_nominal), (sender, sender_nominal)] {
+            assert!(!proofs.is_empty());
+            assert_eq!(proofs.len() as u64, count(nominal));
+            let old_fee = (proofs.len() as u64 * funding_fee).div_ceil(1000);
+            let new_fee = (proofs.len() as u64 * output_fee).div_ceil(1000);
+            assert_ne!(
+                old_fee, new_fee,
+                "fixture must cross fee rounding for each party"
+            );
+            for proof in &proofs {
+                assert_eq!(proof.keyset_id, output_info.keyset_id);
+                proof.verify_dleq(output_info.active_keys.amount_key(proof.amount).unwrap())?;
+            }
+            let wallet = WalletBuilder::new()
+                .mint_url("http://localhost:3338".parse()?)
+                .unit(CurrencyUnit::Sat)
+                .localstore(Arc::new(memory::empty().await?))
+                .seed(random::<[u8; 64]>())
+                .client(DirectMintConnection::new((*s.bridge.host().mint).clone()))
+                .build()?;
+            let net = wallet
+                .receive_proofs(proofs, ReceiveOptions::default(), None, None)
+                .await?;
+            assert_eq!(u64::from(net), nominal - new_fee);
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3527,6 +3749,54 @@ async fn test_cooperative_close_full_retry_with_real_mint() -> anyhow::Result<()
         nut00_code
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn funded_close_rejects_invalid_crypto_for_each_party() -> anyhow::Result<()> {
+    let s = retry_tests::setup_fee_scenario(25, 999).await;
+    s.bridge
+        .host()
+        .active_keyset_ids
+        .replace(vec![s.bridge.host().fresh_keyset_id]);
+    let transition = s
+        .bridge
+        .prepare_unilateral_close_transition(&s.channel_id)
+        .expect("prepare funded close");
+    let prepared = transition.prepared_close;
+    let response = s
+        .bridge
+        .host()
+        .mint
+        .process_swap_request(serde_json::from_value(prepared.swap_request.clone())?)
+        .await?;
+    let json = serde_json::to_value(&response)?;
+    let completed = s
+        .bridge
+        .complete_prepared_close(&json.to_string(), &prepared)?;
+    assert!(completed.receiver_sum > 0 && completed.sender_sum > 0);
+    for receiver in [true, false] {
+        let index = prepared
+            .secrets_with_blinding
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|v| v["is_receiver"] == receiver)
+            .unwrap();
+        let mut bad = json.clone();
+        bad["signatures"][index]["dleq"]["e"] = serde_json::json!("00".repeat(32));
+        assert!(s
+            .bridge
+            .complete_prepared_close(&bad.to_string(), &prepared)
+            .is_err());
+        let mut restore = bad;
+        restore["outputs"] = prepared.swap_request["outputs"].clone();
+        assert!(s
+            .bridge
+            .complete_prepared_close_restore(&restore.to_string(), &prepared)
+            .is_err());
+    }
+    assert_eq!(*s.bridge.host().channel_state.borrow(), ChannelState::Open);
     Ok(())
 }
 

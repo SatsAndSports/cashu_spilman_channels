@@ -101,6 +101,8 @@ impl SqliteClientStorage {
         if enable_wal {
             conn.pragma_update(None, "journal_mode", "WAL")
                 .map_err(|e| format!("failed to enable SQLite WAL mode: {e}"))?;
+            crate::sqlite_durability::configure_wallet_connection(conn)
+                .map_err(|e| format!("failed to configure SQLite wallet durability: {e}"))?;
         }
         Ok(())
     }
@@ -711,6 +713,19 @@ mod tests {
 
         {
             let storage = SqliteClientStorage::open(path_str).unwrap();
+            {
+                let conn = storage.conn.lock().unwrap();
+                assert_eq!(
+                    conn.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    3
+                );
+                assert_eq!(
+                    conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "wal"
+                );
+            }
             assert_eq!(storage.get_state("ch1"), Some(ClientChannelState::Closing));
             let funding = storage.get_funding("ch1").unwrap();
             assert_eq!(funding.funding_proofs_json, r#"[{"proof": true}]"#);

@@ -1020,10 +1020,28 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         unit: &CurrencyUnit,
     ) -> Result<(), OpenChannelError> {
-        if self.host.list_keysets_for_unit(mint_url, unit).is_empty() {
+        if self.usable_output_keyset_ids(mint_url, unit).is_empty() {
             self.refresh_keysets(mint_url)?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "wallet")]
+    fn usable_output_keyset_ids(&self, mint_url: &str, unit: &CurrencyUnit) -> Vec<Id> {
+        self.host
+            .get_active_keyset_ids(mint_url, unit)
+            .into_iter()
+            .filter(|id| {
+                self.host
+                    .get_keyset(mint_url, id)
+                    .and_then(|entry| crate::parse_keyset_info_from_json(&entry.info_json).ok())
+                    .is_some_and(|info| {
+                        info.keyset_id == *id
+                            && info.unit == *unit
+                            && info.is_unexpired_at(self.host.now_seconds())
+                    })
+            })
+            .collect()
     }
 
     #[cfg(feature = "wallet")]
@@ -1034,13 +1052,11 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         preferred_keyset_id: &Id,
     ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let keyset_id = self
-            .host
-            .get_active_keyset_ids(mint_url, unit)
+            .usable_output_keyset_ids(mint_url, unit)
             .into_iter()
             .find(|id| id == preferred_keyset_id)
             .or_else(|| {
-                self.host
-                    .get_active_keyset_ids(mint_url, unit)
+                self.usable_output_keyset_ids(mint_url, unit)
                     .into_iter()
                     .next()
             })
@@ -1073,8 +1089,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         unit: &CurrencyUnit,
     ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let keyset_id = self
-            .host
-            .get_active_keyset_ids(mint_url, unit)
+            .usable_output_keyset_ids(mint_url, unit)
             .into_iter()
             .next()
             .ok_or_else(|| {

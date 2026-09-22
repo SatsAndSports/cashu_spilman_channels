@@ -170,6 +170,24 @@ fn fixed_seed() -> Result<Vec<u8>> {
 /// Build and start the standalone test mint.
 pub async fn build_test_mint(config: &TestMintConfig) -> Result<Mint> {
     let db = Arc::new(memory::empty().await?);
+    build_test_mint_with_database(config, db).await
+}
+
+/// Build a test-only mint with persistent mint and signatory state. The fixed
+/// public test seed is identical on every restart; never use with real funds.
+/// The caller owns the database path, permissions, and cleanup.
+pub async fn build_persistent_test_mint(
+    config: &TestMintConfig,
+    path: &std::path::Path,
+) -> Result<Mint> {
+    let db = Arc::new(cdk_sqlite::mint::MintSqliteDatabase::new(path.to_path_buf()).await?);
+    build_test_mint_with_database(config, db).await
+}
+
+async fn build_test_mint_with_database(
+    config: &TestMintConfig,
+    db: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+) -> Result<Mint> {
     let version = MintVersion::new(
         "cdk-spilman-test-mintd".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),

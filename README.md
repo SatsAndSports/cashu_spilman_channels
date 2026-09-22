@@ -10,6 +10,10 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
+Durable receiver integrations can authenticate exact close preparations and use
+atomic `SpilmanStorage` close-journal CAS operations. Custom storage implementations
+must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exact-close-completion).
+
 ## Key Features
 
 - **Efficiency**: Unlimited micropayments via a single funding transaction.
@@ -17,6 +21,7 @@ Experimental protocol. APIs and data models are subject to breaking changes.
 - **Portability**: Core protocol in Rust with bindings for WASM (JS/TS), Python, and Go.
 - **Deterministic**: Both parties independently compute commitment outputs using a common `_channel secret_`.
 - **Sans-IO Primitives**: Client channel opening, server funding validation, and server close completion expose explicit prepare/validate/complete/record steps so applications can own networking, persistence, retry, and recovery policy.
+- **Exact Close Completion**: Serializable close preparations and completions support application-owned journals. `complete_prepared_close_restore` matches NUT-09 outputs in prepared order and checks signatures against persisted historical output keys. These primitives do not provide a durable close journal or authorize replay by themselves; see [INTEGRATION.md](INTEGRATION.md#exact-close-completion).
 
 ---
 
