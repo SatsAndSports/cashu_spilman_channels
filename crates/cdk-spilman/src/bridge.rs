@@ -286,6 +286,8 @@ pub struct PaymentSuccess {
 #[derive(Debug)]
 pub struct CloseData {
     pub swap_request: SwapRequest,
+    pub sig_all_message_hash: String,
+    pub blinded_receiver_pubkey: String,
     pub expected_total: u64,
     pub secrets_with_blinding: Vec<(DeterministicSecretWithBlinding, bool)>,
     pub output_keyset_info: KeysetInfo,
@@ -313,6 +315,8 @@ impl CloseData {
         serde_json::json!({
             "success": true,
             "swap_request": swap_request_json,
+            "sig_all_message_hash": self.sig_all_message_hash,
+            "blinded_receiver_pubkey": self.blinded_receiver_pubkey,
             "expected_total": self.expected_total,
             "secrets_with_blinding": secrets_with_blinding,
             "output_keyset_info": serde_json::to_value(&self.output_keyset_info).unwrap_or(serde_json::Value::Null)
@@ -345,6 +349,8 @@ pub struct PreparedClose {
     pub balance: u64,
     pub mint_url: String,
     pub swap_request: serde_json::Value,
+    pub sig_all_message_hash: String,
+    pub blinded_receiver_pubkey: String,
     pub secrets_with_blinding: serde_json::Value,
     pub output_keyset_info: serde_json::Value,
     pub params_json: String,
@@ -375,6 +381,48 @@ pub struct CompletedClose {
 impl core::fmt::Debug for PreparedClose {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PreparedClose").finish_non_exhaustive()
+    }
+}
+
+impl PreparedClose {
+    /// Whether a spent NUT-07 witness contains a receiver signature for this
+    /// exact close transaction. The preparation must first be authenticated
+    /// with [`SpilmanBridge::verify_prepared_close`].
+    pub fn matches_spent_witness(
+        &self,
+        proof_state: &cashu::nuts::ProofState,
+    ) -> Result<bool, String> {
+        if proof_state.state != cashu::nuts::State::Spent {
+            return Ok(false);
+        }
+        let Some(cashu::nuts::Witness::P2PKWitness(witness)) = &proof_state.witness else {
+            return Ok(false);
+        };
+        if witness.signatures.is_empty() {
+            return Ok(false);
+        }
+
+        let digest: [u8; 32] = hex::decode(&self.sig_all_message_hash)
+            .map_err(|_| "invalid cached SIG_ALL message hash".to_string())?
+            .try_into()
+            .map_err(|_| "invalid cached SIG_ALL message hash length".to_string())?;
+        let message = bitcoin::secp256k1::Message::from_digest(digest);
+        let receiver = PublicKey::from_str(&self.blinded_receiver_pubkey)
+            .map_err(|_| "invalid cached blinded receiver public key".to_string())?;
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+
+        let mut matched = false;
+        for signature in &witness.signatures {
+            let signature = bitcoin::secp256k1::schnorr::Signature::from_str(signature)
+                .map_err(|_| "invalid NUT-07 witness signature".to_string())?;
+            if secp
+                .verify_schnorr(&signature, &message, &receiver.x_only_public_key())
+                .is_ok()
+            {
+                matched = true;
+            }
+        }
+        Ok(matched)
     }
 }
 
@@ -1104,6 +1152,16 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if serde_json::to_value(&request).map_err(|_| invalid())? != prepared.swap_request {
             return Err(invalid());
         }
+        if super::balance_update::sig_all_message_hash_hex(&request)
+            != prepared.sig_all_message_hash
+            || params
+                .get_receiver_blinded_pubkey_for_stage1()
+                .map_err(|_| invalid())?
+                .to_hex()
+                != prepared.blinded_receiver_pubkey
+        {
+            return Err(invalid());
+        }
         match request
             .inputs()
             .first()
@@ -1768,11 +1826,16 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 .map_err(|e| BridgeError::Internal(e.to_string()))?
                 .to_be_bytes(),
         );
+        let sig_all_message_hash = super::balance_update::sig_all_message_hash_hex(&swap);
+        let blinded_receiver_pubkey = params
+            .get_receiver_blinded_pubkey_for_stage1()
+            .map_err(|e| BridgeError::Internal(e.to_string()))?
+            .to_hex();
         let server_sig = self
             .host
             .sign_with_tweaked_key(
                 &params.receiver_pubkey.to_hex(),
-                &super::balance_update::sig_all_message_hash_hex(&swap),
+                &sig_all_message_hash,
                 &tweak,
             )
             .map_err(BridgeError::ServerMisconfigured)?;
@@ -1799,6 +1862,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         swb.sort_by_key(|(s, _)| s.amount);
         Ok(CloseData {
             swap_request: swap,
+            sig_all_message_hash,
+            blinded_receiver_pubkey,
             expected_total,
             secrets_with_blinding: swb,
             output_keyset_info: out_keyset,
@@ -2128,7 +2193,33 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .as_str()
             .ok_or_else(|| ClosePreparationError::internal("Missing mint"))?
             .to_string();
-        Ok(PreparedClose { channel_id: channel_id.to_string(), balance, mint_url, swap_request: serde_json::to_value(&close_data.swap_request).unwrap_or(serde_json::Value::Null), secrets_with_blinding: close_data.secrets_with_blinding.iter().map(|(s, is_r)| serde_json::json!({ "secret": s.secret.to_string(), "blinding_factor": hex::encode(s.blinding_factor.secret_bytes()), "amount": s.amount, "index": s.index, "is_receiver": is_r })).collect(), output_keyset_info: serde_json::to_value(&close_data.output_keyset_info).unwrap_or(serde_json::Value::Null), params_json: funding.params_json, keyset_info_json: funding.keyset_info_json, channel_secret: funding.channel_secret_hex })
+        Ok(PreparedClose {
+            channel_id: channel_id.to_string(),
+            balance,
+            mint_url,
+            swap_request: serde_json::to_value(&close_data.swap_request)
+                .unwrap_or(serde_json::Value::Null),
+            sig_all_message_hash: close_data.sig_all_message_hash,
+            blinded_receiver_pubkey: close_data.blinded_receiver_pubkey,
+            secrets_with_blinding: close_data
+                .secrets_with_blinding
+                .iter()
+                .map(|(s, is_r)| {
+                    serde_json::json!({
+                        "secret": s.secret.to_string(),
+                        "blinding_factor": hex::encode(s.blinding_factor.secret_bytes()),
+                        "amount": s.amount,
+                        "index": s.index,
+                        "is_receiver": is_r
+                    })
+                })
+                .collect(),
+            output_keyset_info: serde_json::to_value(&close_data.output_keyset_info)
+                .unwrap_or(serde_json::Value::Null),
+            params_json: funding.params_json,
+            keyset_info_json: funding.keyset_info_json,
+            channel_secret: funding.channel_secret_hex,
+        })
     }
 
     fn sign_receiver_close_proof(
@@ -2912,6 +3003,10 @@ mod tests {
                     balance: 0,
                     mint_url: "https://mint.example".to_string(),
                     swap_request: serde_json::json!({}),
+                    sig_all_message_hash: "00".repeat(32),
+                    blinded_receiver_pubkey: cashu::nuts::SecretKey::generate()
+                        .public_key()
+                        .to_hex(),
                     secrets_with_blinding: serde_json::json!([]),
                     output_keyset_info: serde_json::json!({}),
                     params_json: "{}".to_string(),

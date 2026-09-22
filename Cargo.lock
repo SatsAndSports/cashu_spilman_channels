@@ -775,6 +775,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bip39",
+ "bitcoin",
  "cdk",
  "cdk-common",
  "cdk-fake-wallet",
