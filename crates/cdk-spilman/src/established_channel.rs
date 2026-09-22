@@ -18,6 +18,7 @@ use super::deterministic::MintConnection;
 use super::keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 use super::params::{hash_to_secp_scalar, ChannelParameters};
 use super::sender_and_receiver::SpilmanChannelSender;
+use super::PreparedClose;
 use crate::bindings::{
     complete_exact_signatures, match_restore_response, parse_keyset_info_from_json, PreparedOutput,
 };
@@ -82,15 +83,14 @@ pub struct PreparedSenderRefund {
     pub swap_request: SwapRequest,
 }
 
-/// Advisory classification of a spent funding proof's NUT-07 witness shape.
-///
-/// This is neither cryptographic settlement proof nor a prerequisite for checked
-/// output recovery. A valid close with extra signatures may classify as `Unknown`.
+/// Classification of complete spent funding evidence against authenticated,
+/// durable receiver-close attempts. Exact output restoration remains the
+/// authoritative recovery path and must be exhausted before using this result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FundingSpendKind {
-    /// One-signature shape expected from a generated post-expiry sender refund.
+    /// Complete spent evidence excludes every authenticated receiver-close attempt.
     PostExpiryRefund,
-    /// Two-signature shape expected from a generated sender + receiver stage-1 close.
+    /// A spent witness contains the receiver signature for an authenticated close.
     RelayClose,
     /// No recognized shape; this does not exclude a valid refund or receiver close.
     Unknown,
@@ -107,14 +107,15 @@ pub struct EstablishedChannel {
 }
 
 impl EstablishedChannel {
-    /// Infer the refund branch from an honest mint's complete recorded NUT-07
-    /// witness, not from an independently verified full spending request.
-    /// Only our exact generated 2-distinct-key close / 1-key SIG_ALL refund model
-    /// permits this inference. Callers must finish exact close restores first.
-    pub fn sender_refund_attested(
+    /// Classify complete spent evidence against every durable receiver-close
+    /// attempt. Each preparation must first be authenticated with
+    /// `SpilmanBridge::verify_prepared_close`, and callers must exhaust exact
+    /// close restores before treating a non-match as a sender refund.
+    pub fn classify_funding_spend_against_prepared_closes<'a>(
         &self,
         response: &cashu::nuts::CheckStateResponse,
-    ) -> anyhow::Result<bool> {
+        prepared_closes: impl IntoIterator<Item = &'a PreparedClose>,
+    ) -> anyhow::Result<FundingSpendKind> {
         anyhow::ensure!(
             crate::sender_and_receiver::verify_valid_channel(&self.funding_proofs, &self.params)
                 .valid,
@@ -146,22 +147,46 @@ impl EstablishedChannel {
             "incomplete funding state coverage"
         );
         if response.states.iter().any(|s| s.state != State::Spent) {
-            return Ok(false);
+            return Ok(FundingSpendKind::Unknown);
         }
-        let first = response
-            .states
-            .iter()
-            .find(|s| s.y == ys[0])
-            .ok_or_else(|| anyhow::anyhow!("missing first funding state"))?;
-        let Some(Witness::P2PKWitness(witness)) = &first.witness else {
-            return Ok(false);
-        };
-        if witness.signatures.len() != 1 {
-            return Ok(false);
+        let channel_id = self.params.get_channel_id();
+        let blinded_receiver = self
+            .params
+            .get_receiver_blinded_pubkey_for_stage1()?
+            .to_hex();
+        let prepared_closes = prepared_closes.into_iter().collect::<Vec<_>>();
+        anyhow::ensure!(!prepared_closes.is_empty(), "no authenticated close attempts");
+        for prepared in &prepared_closes {
+            anyhow::ensure!(
+                prepared.channel_id == channel_id
+                    && prepared.blinded_receiver_pubkey == blinded_receiver,
+                "close attempt does not belong to channel"
+            );
         }
-        let signature = hex::decode(&witness.signatures[0])?;
-        bitcoin::secp256k1::schnorr::Signature::from_slice(&signature)?;
-        Ok(true)
+
+        let mut saw_witness = false;
+        let mut matched = false;
+        for state in &response.states {
+            if matches!(
+                &state.witness,
+                Some(Witness::P2PKWitness(witness)) if !witness.signatures.is_empty()
+            ) {
+                saw_witness = true;
+            }
+            for prepared in &prepared_closes {
+                matched |= prepared
+                    .matches_spent_witness(state)
+                    .map_err(anyhow::Error::msg)?;
+            }
+        }
+        if !saw_witness {
+            return Ok(FundingSpendKind::Unknown);
+        }
+        Ok(if matched {
+            FundingSpendKind::RelayClose
+        } else {
+            FundingSpendKind::PostExpiryRefund
+        })
     }
 
     /// Create new established channel
