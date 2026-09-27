@@ -67,6 +67,21 @@ pub enum ChannelState {
     SenderRefundedAfterExpiry,
 }
 
+impl ChannelState {
+    /// Decode a receiver host callback state. Absence means an unknown channel;
+    /// empty or unrecognized strings are errors, never an implicit Open state.
+    pub fn from_host_value(value: Option<&str>) -> Result<Option<Self>, String> {
+        match value {
+            None => Ok(None),
+            Some("open") => Ok(Some(Self::Open)),
+            Some("closing") => Ok(Some(Self::Closing)),
+            Some("closed") => Ok(Some(Self::Closed)),
+            Some("sender_refunded_after_expiry") => Ok(Some(Self::SenderRefundedAfterExpiry)),
+            Some(_) => Err("invalid receiver channel state".to_string()),
+        }
+    }
+}
+
 /// Data stored when a channel enters CLOSING state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClosingData {
@@ -109,8 +124,9 @@ pub trait SpilmanHost<C = String> {
     /// Record a successful payment and update usage
     fn record_payment(&self, channel_id: &str, payment: PaymentProof, context: &C);
 
-    /// Get the current state of a channel.
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState;
+    /// Get a known channel's state, or None if it does not exist.
+    /// Lookup failures and malformed stored states must return Err, not None/Open.
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String>;
 
     /// Mark a channel as closing (pre-swap state).
     fn mark_channel_closing(
@@ -1230,8 +1246,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         funding_proofs: Option<&[Proof]>,
         context: &C,
     ) -> Result<PaymentSuccess, BridgeError> {
-        self.validate_payment_request(channel_id, signature)?;
-        if self.host.get_funding(channel_id).is_none() {
+        if self
+            .validate_payment_request(channel_id, signature)?
+            .is_none()
+        {
             let validated = self.validate_new_channel_funding(
                 channel_id,
                 params.ok_or(BridgeError::UnknownChannel)?,
@@ -1298,7 +1316,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         signature: &str,
         context: &C,
     ) -> Result<PaymentValidationResult, BridgeError> {
-        self.validate_payment_request(channel_id, signature)?;
+        if self
+            .validate_payment_request(channel_id, signature)?
+            .is_none()
+        {
+            return Err(BridgeError::UnknownChannel);
+        }
         let funding = self
             .host
             .get_funding(channel_id)
@@ -1429,19 +1452,24 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         &self,
         channel_id: &str,
         signature: &str,
-    ) -> Result<(), BridgeError> {
+    ) -> Result<Option<ChannelState>, BridgeError> {
         if channel_id.is_empty() {
             return Err(BridgeError::InvalidRequest("missing channel_id".into()));
         }
         if signature.is_empty() {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
-        match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+        match self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(BridgeError::Internal)?
+        {
+            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
                 Err(BridgeError::ChannelClosed)
             }
-            ChannelState::Closing => Err(BridgeError::ChannelClosing),
-            ChannelState::Open => Ok(()),
+            Some(ChannelState::Closing) => Err(BridgeError::ChannelClosing),
+            Some(ChannelState::Open) => Ok(Some(ChannelState::Open)),
+            None => Ok(None),
         }
     }
 
@@ -1461,12 +1489,17 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if signature.is_empty() {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
-        match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+        match self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(BridgeError::Internal)?
+        {
+            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
                 return Err(BridgeError::ChannelClosed)
             }
-            ChannelState::Closing => return Err(BridgeError::ChannelClosing),
-            ChannelState::Open => {}
+            Some(ChannelState::Closing) => return Err(BridgeError::ChannelClosing),
+            Some(ChannelState::Open) => {}
+            None => return Err(BridgeError::UnknownChannel),
         }
         let funding = self
             .host
@@ -1516,30 +1549,29 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if signature.is_empty() {
             return Err(BridgeError::InvalidRequest("missing signature".into()));
         }
-        match self.host.get_channel_state(channel_id) {
-            ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry => {
+        match self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(BridgeError::Internal)?
+        {
+            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
                 return Err(BridgeError::ChannelClosed)
             }
-            ChannelState::Closing => return Err(BridgeError::ChannelClosing),
-            ChannelState::Open => {}
+            Some(ChannelState::Closing) => return Err(BridgeError::ChannelClosing),
+            Some(ChannelState::Open) => {
+                return self.validate_existing_channel_funding(channel_id, balance, signature);
+            }
+            None => {} // First-time registration validates the supplied funding below.
         }
-        let funding = match self.host.get_funding(channel_id) {
-            Some(_) => {
-                return self.validate_existing_channel_funding(channel_id, balance, signature)
-            }
-            None => {
-                let validated = self.validate_new_channel_funding(
-                    channel_id,
-                    params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
-                    funding_proofs.ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
-                    balance,
-                    signature,
-                )?;
-                let funding = validated.funding.clone();
-                self.record_validated_new_channel(&validated);
-                funding
-            }
-        };
+        let validated = self.validate_new_channel_funding(
+            channel_id,
+            params.ok_or(BridgeError::InvalidRequest("Missing params".into()))?,
+            funding_proofs.ok_or(BridgeError::InvalidRequest("Missing proofs".into()))?,
+            balance,
+            signature,
+        )?;
+        let funding = validated.funding.clone();
+        self.record_validated_new_channel(&validated);
         let params_val: serde_json::Value = serde_json::from_str(&funding.params_json)
             .map_err(|e| BridgeError::Internal(e.to_string()))?;
         let capacity = params_val["capacity"].as_u64().unwrap_or(0);
@@ -1877,8 +1909,16 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         signature: &str,
         validate_due: bool,
     ) -> Result<CloseData, BridgeError> {
-        if self.host.get_channel_state(channel_id) == ChannelState::Closed {
-            return Err(BridgeError::ChannelClosed);
+        match self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(BridgeError::Internal)?
+        {
+            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
+                return Err(BridgeError::ChannelClosed);
+            }
+            None => return Err(BridgeError::UnknownChannel),
+            Some(ChannelState::Open | ChannelState::Closing) => {}
         }
         let funding = self
             .host
@@ -2140,7 +2180,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         channel_id: &str,
         selected: SelectedOutputKeyset,
     ) -> Result<PreparedClose, ClosePreparationError> {
-        if self.host.get_channel_state(channel_id) != ChannelState::Closing {
+        if self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(ClosePreparationError::internal)?
+            != Some(ChannelState::Closing)
+        {
             return Err(ClosePreparationError::bad_request("Not closing"));
         }
         let cd = self
@@ -2517,7 +2562,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         &self,
         completed: &CompletedClose,
     ) -> Result<CloseSuccess, CloseError> {
-        if self.host.get_channel_state(&completed.channel_id) != ChannelState::Closing {
+        if self
+            .host
+            .get_channel_state(&completed.channel_id)
+            .map_err(CloseError::storage_failed)?
+            != Some(ChannelState::Closing)
+        {
             return Err(CloseError::ValidationFailed {
                 reason: "Not closing".into(),
                 status: 400,
@@ -2601,7 +2651,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        if self.host.get_channel_state(channel_id) != ChannelState::Closing {
+        if self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(CloseError::storage_failed)?
+            != Some(ChannelState::Closing)
+        {
             return Err(CloseError::ValidationFailed {
                 reason: "Not closing".into(),
                 status: 400,
@@ -2706,7 +2761,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         mint_client: &M,
         keyset_refresher: &R,
     ) -> Result<CloseSuccess, CloseError> {
-        if self.host.get_channel_state(channel_id) != ChannelState::Closing {
+        if self
+            .host
+            .get_channel_state(channel_id)
+            .map_err(CloseError::storage_failed)?
+            != Some(ChannelState::Closing)
+        {
             return Err(CloseError::ValidationFailed {
                 reason: "Not closing".into(),
                 status: 400,
@@ -2883,7 +2943,12 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if p.channel_id.is_empty() || p.signature.is_empty() {
             return Ok(());
         }
-        if self.host.get_funding(&p.channel_id).is_some() {
+        if self
+            .host
+            .get_channel_state(&p.channel_id)
+            .map_err(CloseError::storage_failed)?
+            .is_some()
+        {
             return Ok(());
         }
         let Some(params) = p.params.as_ref() else {
@@ -2915,6 +2980,7 @@ mod tests {
     struct MockHost {
         ra: bool,
         ma: bool,
+        state: Result<Option<ChannelState>, String>,
     }
     impl SpilmanHost<String> for MockHost {
         fn receiver_key_is_acceptable(&self, _: &PublicKey) -> bool {
@@ -2931,8 +2997,8 @@ mod tests {
             0
         }
         fn record_payment(&self, _: &str, _: PaymentProof, _: &String) {}
-        fn get_channel_state(&self, _: &str) -> ChannelState {
-            ChannelState::Open
+        fn get_channel_state(&self, _: &str) -> Result<Option<ChannelState>, String> {
+            self.state.clone()
         }
         fn mark_channel_closing(&self, _: &str, _: u64, _: PaymentProof) -> Result<(), String> {
             Ok(())
@@ -3032,6 +3098,7 @@ mod tests {
         let b = SpilmanBridge::new(MockHost {
             ra: false,
             ma: true,
+            state: Ok(None),
         });
         let p = serde_json::json!({ "sender_pubkey": SecretKey::generate().public_key().to_hex(), "receiver_pubkey": SecretKey::generate().public_key().to_hex(), "mint": "https://m", "unit": "sat", "capacity": 1000, "funding_token_amount": 1000, "maximum_amount": 64, "expiry_timestamp": 1700007200, "setup_timestamp": 1700000000, "keyset_id": "00" });
         let pay = serde_json::json!({ "channel_id": "i", "balance": 100, "signature": "s", "params": p, "funding_proofs": [] });
@@ -3040,5 +3107,83 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("receiver key not acceptable"));
+    }
+
+    #[test]
+    fn receiver_lookup_errors_stop_registration_and_payment_validation() {
+        let bridge = SpilmanBridge::new(MockHost {
+            ra: true,
+            ma: true,
+            state: Err("storage unavailable".to_string()),
+        });
+        let params = serde_json::json!({});
+        for error in [
+            bridge
+                .process_payment("id", 0, "sig", Some(&params), Some(&[]), &String::new())
+                .unwrap_err(),
+            bridge
+                .fund_channel("id", 0, "sig", Some(&params), Some(&[]))
+                .unwrap_err(),
+            bridge
+                .validate_existing_channel_funding("id", 0, "sig")
+                .unwrap_err(),
+            bridge
+                .validate_payment("id", 0, "sig", &String::new())
+                .unwrap_err(),
+        ] {
+            assert!(matches!(error, BridgeError::Internal(_)));
+        }
+        assert!(matches!(
+            bridge.prepare_close_data("id", 0, "sig", false),
+            Err(BridgeError::Internal(_))
+        ));
+        let payment = serde_json::json!({"channel_id":"id", "balance":0, "signature":"sig", "params":{}, "funding_proofs":[]});
+        assert!(matches!(
+            bridge.record_cooperative_close_first_use_funding(&payment.to_string()),
+            Err(CloseError::StorageFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_channel_requires_funding_and_cannot_validate_as_existing() {
+        let bridge = SpilmanBridge::new(MockHost {
+            ra: true,
+            ma: true,
+            state: Ok(None),
+        });
+        assert!(matches!(
+            bridge.process_payment("id", 0, "sig", None, None, &String::new()),
+            Err(BridgeError::UnknownChannel)
+        ));
+        assert!(matches!(
+            bridge.validate_existing_channel_funding("id", 0, "sig"),
+            Err(BridgeError::UnknownChannel)
+        ));
+        assert!(matches!(
+            bridge.validate_payment("id", 0, "sig", &String::new()),
+            Err(BridgeError::UnknownChannel)
+        ));
+    }
+
+    #[test]
+    fn receiver_callback_states_are_strict_and_include_refund_terminal() {
+        assert_eq!(ChannelState::from_host_value(None), Ok(None));
+        for (value, expected) in [
+            ("open", ChannelState::Open),
+            ("closing", ChannelState::Closing),
+            ("closed", ChannelState::Closed),
+            (
+                "sender_refunded_after_expiry",
+                ChannelState::SenderRefundedAfterExpiry,
+            ),
+        ] {
+            assert_eq!(
+                ChannelState::from_host_value(Some(value)),
+                Ok(Some(expected))
+            );
+        }
+        for invalid in ["", "unknown", "Open", "broken"] {
+            assert!(ChannelState::from_host_value(Some(invalid)).is_err());
+        }
     }
 }

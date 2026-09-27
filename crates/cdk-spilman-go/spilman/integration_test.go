@@ -465,7 +465,14 @@ func (h *testServerHost) RecordPayment(channelId string, balance uint64, signatu
 	h.payments[channelId] = serverPayment{balance: balance, signature: signature}
 }
 
-func (h *testServerHost) GetChannelState(channelId string) string { return "open" }
+func (h *testServerHost) GetChannelState(channelId string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.fundingData[channelId]; !ok {
+		return "", nil
+	}
+	return "open", nil
+}
 
 func (h *testServerHost) MarkChannelClosing(channelId string, expiryTimestamp, balance uint64, signature string) error {
 	return nil

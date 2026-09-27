@@ -131,7 +131,7 @@ impl From<spilman_core::CloseSuccess> for CloseSuccess {
 /// - save_funding(channel_id: str, params: str, proofs: str, secret: str, keyset: str, initial_balance: int, initial_signature: str)
 /// - get_amount_due(channel_id: str, context_json: str) -> int
 /// - record_payment(channel_id: str, balance: int, signature: str, context_json: str)
-/// - get_channel_state(channel_id: str) -> str  # Returns "open", "closing", or "closed"
+/// - get_channel_state(channel_id: str) -> str | None  # Known state, None if unknown; raise on failure
 /// - mark_channel_closing(channel_id: str, expiry_timestamp: int, balance: int, signature: str) -> None  # Raises on error
 /// - get_closing_data(channel_id: str) -> Optional[dict]  # Returns {expiry_timestamp, balance, signature} or None
 /// - get_channel_policy(unit: str) -> Optional[Tuple[int, int, Optional[int]]]  # (min_expiry_in_seconds, min_capacity, max_amount_per_output) or None
@@ -334,22 +334,16 @@ impl SpilmanHost for PySpilmanHost {
         });
     }
 
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
         Python::attach(|py| {
-            match self
+            let result = self
                 .py_host
                 .call_method1(py, "get_channel_state", (channel_id,))
-            {
-                Ok(result) => match result.extract::<String>(py) {
-                    Ok(state_str) => match state_str.as_str() {
-                        "closed" => ChannelState::Closed,
-                        "closing" => ChannelState::Closing,
-                        _ => ChannelState::Open,
-                    },
-                    Err(_) => ChannelState::Open,
-                },
-                Err(_) => ChannelState::Open,
-            }
+                .map_err(|_| "get_channel_state callback failed".to_string())?;
+            let state = result
+                .extract::<Option<String>>(py)
+                .map_err(|_| "invalid get_channel_state return type".to_string())?;
+            ChannelState::from_host_value(state.as_deref())
         })
     }
 

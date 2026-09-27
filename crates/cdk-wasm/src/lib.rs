@@ -60,8 +60,8 @@ extern "C" {
         signature: &str,
         context_json: &str,
     );
-    #[wasm_bindgen(method, js_name = getChannelState)]
-    fn get_channel_state(this: &JsSpilmanHost, channel_id: &str) -> String;
+    #[wasm_bindgen(method, catch, js_name = getChannelState)]
+    fn get_channel_state(this: &JsSpilmanHost, channel_id: &str) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch, js_name = markChannelClosing)]
     fn mark_channel_closing(
         this: &JsSpilmanHost,
@@ -273,12 +273,18 @@ impl SpilmanHost<String> for WasmSpilmanHostProxy {
             context_json,
         );
     }
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState {
-        match self.js_host.get_channel_state(channel_id).as_str() {
-            "closed" => ChannelState::Closed,
-            "closing" => ChannelState::Closing,
-            _ => ChannelState::Open,
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+        let value = self
+            .js_host
+            .get_channel_state(channel_id)
+            .map_err(|_| "getChannelState callback failed".to_string())?;
+        if value.is_null() {
+            return Ok(None);
         }
+        let state = value
+            .as_string()
+            .ok_or_else(|| "invalid getChannelState return type".to_string())?;
+        ChannelState::from_host_value(Some(&state))
     }
     fn mark_channel_closing(
         &self,

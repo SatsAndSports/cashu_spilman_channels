@@ -89,7 +89,9 @@ pub struct SpilmanHostCallbacks {
         signature: *const c_char,
         context_json: *const c_char,
     ),
-    /// Get channel state: returns "open", "closing", or "closed"
+    /// Get receiver channel state (including sender_refunded_after_expiry).
+    /// JSON Result<Option<String>, String>: {"Ok":null}, {"Ok":"open"}, or {"Err":"..."}.
+    /// A null pointer or malformed response is a lookup error.
     pub get_channel_state:
         extern "C" fn(user_data: *mut libc::c_void, channel_id: *const c_char) -> *mut c_char,
     /// Mark channel as closing: returns 1=success, 0=error
@@ -270,18 +272,19 @@ impl SpilmanHost<String> for CGoSpilmanHost {
         );
     }
 
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState {
-        let id_c = CString::new(channel_id).unwrap();
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+        let id_c = CString::new(channel_id).map_err(|_| "invalid channel ID".to_string())?;
         let ptr = (self.callbacks.get_channel_state)(self.callbacks.user_data, id_c.as_ptr());
         if ptr.is_null() {
-            return ChannelState::Open;
+            return Err("get_channel_state callback returned null".to_string());
         }
-        let state_str = unsafe { CString::from_raw(ptr).into_string().unwrap_or_default() };
-        match state_str.as_str() {
-            "closed" => ChannelState::Closed,
-            "closing" => ChannelState::Closing,
-            _ => ChannelState::Open,
-        }
+        let json = unsafe { CString::from_raw(ptr) }
+            .into_string()
+            .map_err(|_| "invalid get_channel_state UTF-8".to_string())?;
+        let result: Result<Option<String>, String> = serde_json::from_str(&json)
+            .map_err(|_| "invalid get_channel_state result".to_string())?;
+        let state = result.map_err(|_| "get_channel_state callback failed".to_string())?;
+        ChannelState::from_host_value(state.as_deref())
     }
 
     fn mark_channel_closing(

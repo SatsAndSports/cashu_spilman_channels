@@ -354,7 +354,20 @@ func go_record_payment(userData unsafe.Pointer, channelId *C.char, balance C.uin
 func go_get_channel_state(userData unsafe.Pointer, channelId *C.char) *C.char {
 	h := cgo.Handle(userData)
 	host := h.Value().(SpilmanHost)
-	return C.CString(host.GetChannelState(C.GoString(channelId)))
+	state, err := host.GetChannelState(C.GoString(channelId))
+	var result map[string]interface{}
+	if err != nil {
+		result = map[string]interface{}{"Err": "get_channel_state callback failed"}
+	} else if state == "" {
+		result = map[string]interface{}{"Ok": nil}
+	} else {
+		result = map[string]interface{}{"Ok": state}
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(data))
 }
 
 //export go_mark_channel_closing

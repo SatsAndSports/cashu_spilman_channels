@@ -394,8 +394,8 @@ class MockServerHost:
     ):
         self.payments[channel_id] = (balance, signature)
 
-    def get_channel_state(self, channel_id: str) -> str:
-        return "open"
+    def get_channel_state(self, channel_id: str) -> str | None:
+        return "open" if channel_id in self.funding_data else None
 
     def mark_channel_closing(
         self, channel_id: str, expiry_timestamp: int, balance: int, signature: str

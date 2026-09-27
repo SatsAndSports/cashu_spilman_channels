@@ -128,14 +128,8 @@ impl SpilmanHost<()> for TestServerHost {
             .insert(channel_id.to_string(), payment);
     }
 
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState {
-        // Return Open for unknown channels to allow new channel creation.
-        // The SpilmanBridge will check get_funding() to determine if channel exists.
-        self.states
-            .borrow()
-            .get(channel_id)
-            .copied()
-            .unwrap_or(ChannelState::Open)
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+        Ok(self.states.borrow().get(channel_id).copied())
     }
 
     fn mark_channel_closing(

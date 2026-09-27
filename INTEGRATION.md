@@ -394,3 +394,30 @@ entire discovery with no partial proof result.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Cryptographic protocol details and Trait definitions
 - [NUT-XX: Spilman Channels](https://github.com/cashubtc/nuts/pull/296) - Protocol specification
+
+## Receiver channel-state lookup (breaking API update)
+
+Receiver `SpilmanStorage::get_state` and `SpilmanHost::get_channel_state` return
+`Result<Option<ChannelState>, String>`. `Ok(None)` means the channel is unknown;
+`Ok(Some(state))` means it exists; `Err` means lookup failed or stored state is
+invalid. Never substitute `Open` for missing or unreadable state. First-time
+registration accepts unknown channels only through validation of supplied funding;
+existing-channel payment validation rejects them as `UnknownChannel`.
+
+Receiver callback contracts:
+
+- Python: return `None` for unknown, a state string for known, or raise on failure.
+- JavaScript/WASM: return `null` for unknown, a state string for known, or throw
+  on failure. `undefined`, empty strings and invalid types are errors.
+- Go: `GetChannelState(channelID string) (string, error)`; `("", nil)` means
+  unknown. The C callback returns JSON `{"Ok":null}`, `{"Ok":"open"}`, or
+  `{"Err":"..."}`; a null pointer is an error, not an unknown channel.
+
+Known callback strings are `open`, `closing`, `closed`, and
+`sender_refunded_after_expiry`. Other strings are errors. SQLite preserves its
+existing state representation and schema, but rejects unrecognized stored states
+and propagates query errors rather than treating them as `Open`.
+
+Update custom receiver hosts and rebuild bindings together. There is no database
+migration or reset. Client payment signing/recording, including cooperative balance
+decreases, is unchanged. Client-host state callbacks are a separate API.

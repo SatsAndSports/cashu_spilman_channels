@@ -80,7 +80,7 @@ build: sync-env
 
 # Unit tests (no mint required)
 test-unit: build
-	$(PYTHON) -m pytest tests/keysets_cache_test.py -v
+	$(PYTHON) -m pytest tests/keysets_cache_test.py tests/receiver_state_test.py -v
 
 # Integration tests (requires mint running at MINT_URL)
 test-integration: build

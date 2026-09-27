@@ -147,14 +147,17 @@ func (h *BaseSpilmanHost) RecordPayment(channelId string, balance uint64, signat
 	h.stores.UpdateBalance(channelId, balance, signature)
 }
 
-func (h *BaseSpilmanHost) GetChannelState(channelId string) string {
+func (h *BaseSpilmanHost) GetChannelState(channelId string) (string, error) {
 	if h.stores.IsClosed(channelId) {
-		return "closed"
+		return "closed", nil
 	}
 	if h.stores.IsClosing(channelId) {
-		return "closing"
+		return "closing", nil
 	}
-	return "open"
+	if _, ok := h.stores.GetFunding(channelId); !ok {
+		return "", nil
+	}
+	return "open", nil
 }
 
 func (h *BaseSpilmanHost) MarkChannelClosing(channelId string, expiryTimestamp, balance uint64, signature string) error {

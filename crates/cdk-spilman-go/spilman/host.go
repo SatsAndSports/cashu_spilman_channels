@@ -37,8 +37,9 @@ type SpilmanHost interface {
 	RecordPayment(channelId string, balance uint64, signature, contextJson string)
 
 	// GetChannelState returns the current state of a channel.
-	// Must return one of: "open", "closing", or "closed".
-	GetChannelState(channelId string) string
+	// Known states: "open", "closing", "closed", "sender_refunded_after_expiry".
+	// Empty state with nil error means unknown. Lookup failures must return an error.
+	GetChannelState(channelId string) (string, error)
 
 	// MarkChannelClosing marks a channel as being in the CLOSING state (pre-swap).
 	// This is called when a cooperative close is initiated but before the swap completes.

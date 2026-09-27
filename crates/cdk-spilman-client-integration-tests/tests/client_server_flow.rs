@@ -235,7 +235,7 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         server_bridge
             .host()
             .get_channel_state(&open_result.channel_id),
-        ChannelState::Open
+        Ok(Some(ChannelState::Open))
     );
 
     let close_request = client_bridge
@@ -251,7 +251,7 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         server_bridge
             .host()
             .get_channel_state(&open_result.channel_id),
-        ChannelState::Open
+        Ok(Some(ChannelState::Open))
     );
 
     let close_before_closing = CompletedClose {
@@ -275,7 +275,7 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         server_bridge
             .host()
             .get_channel_state(&open_result.channel_id),
-        ChannelState::Closing
+        Ok(Some(ChannelState::Closing))
     );
 
     let mint_response = cdk_spilman::SpilmanMintClient::call_mint_swap(
@@ -443,7 +443,7 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         server_bridge
             .host()
             .get_channel_state(&open_result.channel_id),
-        ChannelState::Closing
+        Ok(Some(ChannelState::Closing))
     );
 
     let success = server_bridge
@@ -454,7 +454,7 @@ async fn prepare_cooperative_close_transition_does_not_mark_closing() {
         server_bridge
             .host()
             .get_channel_state(&open_result.channel_id),
-        ChannelState::Closed
+        Ok(Some(ChannelState::Closed))
     );
 }
 
