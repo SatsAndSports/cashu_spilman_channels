@@ -312,7 +312,11 @@ where
     // (We use a trick to see if H is actually ConfigurableHost)
     // Actually, we can just use the generic SpilmanHost methods.
 
-    if s.host.get_channel_state(&channel_id) == ChannelState::Closed {
+    let state = match s.host.get_channel_state(&channel_id) {
+        Ok(state) => state,
+        Err(error) => return map_bridge_error(BridgeError::Internal(error)).into_response(),
+    };
+    if state == Some(ChannelState::Closed) {
         // We can't get the full proofs generically, but let's try to return enough for success
         return (StatusCode::OK, Json(serde_json::json!({ "success": true, "already_closed": true, "channel_id": channel_id }))).into_response();
     }
@@ -363,7 +367,11 @@ where
     N: SpilmanAsyncMintClient + SpilmanAsyncKeysetRefresher + Send + Sync + 'static,
     C: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
 {
-    if s.host.get_channel_state(&channel_id) == ChannelState::Closed {
+    let state = match s.host.get_channel_state(&channel_id) {
+        Ok(state) => state,
+        Err(error) => return map_bridge_error(BridgeError::Internal(error)).into_response(),
+    };
+    if state == Some(ChannelState::Closed) {
         return Json(serde_json::json!({
             "success": true,
             "channel_id": channel_id,

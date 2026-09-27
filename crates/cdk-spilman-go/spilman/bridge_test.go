@@ -2,12 +2,47 @@ package spilman
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
 // MockHost is a minimal SpilmanHost implementation for testing
 type MockHost struct {
 	receiverPubkey string
+}
+
+type stateHost struct {
+	MockHost
+	state string
+	err   error
+}
+
+func (h *stateHost) GetChannelState(channelId string) (string, error) {
+	return h.state, h.err
+}
+
+func TestReceiverStateCallback(t *testing.T) {
+	for _, tc := range []struct {
+		state    string
+		err      error
+		expected string
+	}{
+		{"", nil, "unknown_channel"},
+		{"closing", nil, "channel_closing"},
+		{"closed", nil, "channel_closed"},
+		{"sender_refunded_after_expiry", nil, "channel_closed"},
+		{"invalid", nil, "internal"},
+		{"", fmt.Errorf("storage unavailable"), "internal"},
+	} {
+		t.Run(tc.expected+tc.state, func(t *testing.T) {
+			bridge := NewBridge(&stateHost{state: tc.state, err: tc.err})
+			defer bridge.Free()
+			_, err := bridge.ValidatePayment(`{"channel_id":"missing","balance":0,"signature":"sig"}`, "{}")
+			if err == nil || !strings.Contains(err.Error(), tc.expected) {
+				t.Fatalf("expected %s, got %v", tc.expected, err)
+			}
+		})
+	}
 }
 
 func (m *MockHost) ReceiverKeyIsAcceptable(pubkeyHex string) bool {
@@ -32,8 +67,8 @@ func (m *MockHost) GetAmountDue(channelId string, contextJson *string) uint64 {
 func (m *MockHost) RecordPayment(channelId string, balance uint64, signature, contextJson string) {
 }
 
-func (m *MockHost) GetChannelState(channelId string) string {
-	return "open"
+func (m *MockHost) GetChannelState(channelId string) (string, error) {
+	return "", nil
 }
 
 func (m *MockHost) MarkChannelClosing(channelId string, expiryTimestamp, balance uint64, signature string) error {

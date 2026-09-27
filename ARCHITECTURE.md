@@ -231,7 +231,7 @@ trait SpilmanHost<C = String> {
     fn get_balance_and_signature_for_unilateral_exit(&self, channel_id: &str) -> Option<PaymentProof>;
 
     // Channel state transitions
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState;
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String>;
     fn mark_channel_closing(&self, channel_id: &str, expiry_timestamp: u64, payment: PaymentProof) -> Result<(), String>;
     fn get_closing_data(&self, channel_id: &str) -> Option<ClosingData>;
     fn mark_channel_closed(

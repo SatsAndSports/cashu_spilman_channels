@@ -2168,8 +2168,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .unwrap()
                 .insert(channel_id.to_string(), payment);
         }
-        fn get_channel_state(&self, _channel_id: &str) -> ChannelState {
-            ChannelState::Open
+        fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+            Ok(self.get_funding(channel_id).map(|_| ChannelState::Open))
         }
         fn mark_channel_closing(
             &self,
@@ -2803,8 +2803,10 @@ mod close_balance_tests {
         fn record_payment(&self, _channel_id: &str, payment: PaymentProof, _context_json: &String) {
             *self.stored_payment.borrow_mut() = Some(payment);
         }
-        fn get_channel_state(&self, _channel_id: &str) -> ChannelState {
-            *self.channel_state.borrow()
+        fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+            Ok(self
+                .get_funding(channel_id)
+                .map(|_| *self.channel_state.borrow()))
         }
         fn mark_channel_closing(
             &self,
@@ -3315,8 +3317,10 @@ mod retry_tests {
         fn record_payment(&self, _channel_id: &str, payment: PaymentProof, _context_json: &String) {
             *self.stored_payment.borrow_mut() = Some(payment);
         }
-        fn get_channel_state(&self, _channel_id: &str) -> ChannelState {
-            *self.channel_state.borrow()
+        fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+            Ok(self
+                .get_funding(channel_id)
+                .map(|_| *self.channel_state.borrow()))
         }
         fn mark_channel_closing(
             &self,

@@ -240,7 +240,8 @@ pub trait SpilmanStorage: Send + Sync {
     // -- channel state --------------------------------------------------------
 
     /// Get the current state (Open, Closing, Closed).
-    fn get_state(&self, channel_id: &str) -> ChannelState;
+    /// None is an unknown channel; storage failures and malformed states are errors.
+    fn get_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String>;
 
     /// Mark a channel as closing.  Returns `Err` if the channel does not
     /// exist or is already closed.
@@ -318,7 +319,7 @@ impl SpilmanStorage for MemoryStorage {
         let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
         let mut journals = self.close_journals.write().map_err(|_| "journal lock")?;
         if journals.get(channel_id).map(String::as_str) != Some(expected)
-            || self.get_state(channel_id) != ChannelState::Closing
+            || self.get_state(channel_id)? != Some(ChannelState::Closing)
         {
             return Err("sender refund journal conflict".to_string());
         }
@@ -340,7 +341,9 @@ impl SpilmanStorage for MemoryStorage {
         payment: PaymentProof,
     ) -> Result<(), String> {
         let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
-        if self.get_state(channel_id) != ChannelState::Open || payment.balance <= expected.balance {
+        if self.get_state(channel_id)? != Some(ChannelState::Open)
+            || payment.balance <= expected.balance
+        {
             return Err("payment state conflict".to_string());
         }
         let mut balances = self.balance.write().map_err(|_| "balance lock")?;
@@ -373,7 +376,7 @@ impl SpilmanStorage for MemoryStorage {
         let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
         let payment = self.get_balance(channel_id).ok_or("missing payment")?;
         if self.get_funding(channel_id).is_none()
-            || self.get_state(channel_id) != ChannelState::Open
+            || self.get_state(channel_id)? != Some(ChannelState::Open)
             || payment.balance != expected.balance
             || payment.signature != expected.signature
             || self.get_close_journal(channel_id)?.is_some()
@@ -404,7 +407,7 @@ impl SpilmanStorage for MemoryStorage {
             .write()
             .map_err(|_| "close journal lock")?;
         if journals.get(channel_id).map(String::as_str) != Some(expected)
-            || self.get_state(channel_id) != ChannelState::Closing
+            || self.get_state(channel_id)? != Some(ChannelState::Closing)
         {
             return Err("close journal conflict".to_string());
         }
@@ -448,7 +451,7 @@ impl SpilmanStorage for MemoryStorage {
 
     fn update_balance(&self, channel_id: &str, payment: PaymentProof) -> Result<(), String> {
         let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
-        if self.get_state(channel_id) != ChannelState::Open {
+        if self.get_state(channel_id)? != Some(ChannelState::Open) {
             return Err("channel is not open".to_string());
         }
         let mut store = self.balance.write().expect("balance lock");
@@ -481,31 +484,38 @@ impl SpilmanStorage for MemoryStorage {
         Ok(())
     }
 
-    fn get_state(&self, channel_id: &str) -> ChannelState {
+    fn get_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
         if self
             .refunded
             .read()
-            .expect("refunded lock")
+            .map_err(|_| "refunded lock poisoned".to_string())?
             .contains(channel_id)
         {
-            return ChannelState::SenderRefundedAfterExpiry;
+            return Ok(Some(ChannelState::SenderRefundedAfterExpiry));
         }
         if self
             .closed
             .read()
-            .expect("closed lock")
+            .map_err(|_| "closed lock poisoned".to_string())?
             .contains_key(channel_id)
         {
-            ChannelState::Closed
+            Ok(Some(ChannelState::Closed))
         } else if self
             .closing
             .read()
-            .expect("closing lock")
+            .map_err(|_| "closing lock poisoned".to_string())?
             .contains_key(channel_id)
         {
-            ChannelState::Closing
+            Ok(Some(ChannelState::Closing))
+        } else if self
+            .funding
+            .read()
+            .map_err(|_| "funding lock poisoned".to_string())?
+            .contains_key(channel_id)
+        {
+            Ok(Some(ChannelState::Open))
         } else {
-            ChannelState::Open
+            Ok(None)
         }
     }
 
@@ -986,24 +996,31 @@ impl SpilmanStorage for SqliteStorage {
         Ok(())
     }
 
-    fn get_state(&self, channel_id: &str) -> ChannelState {
-        let conn = self.conn.lock().expect("sqlite lock");
-        conn.query_row(
-            "SELECT state FROM spilman_channels WHERE channel_id = ?1",
-            [channel_id],
-            |row| {
-                let state: String = row.get(0)?;
-                Ok(state)
-            },
-        )
-        .ok()
-        .map(|s| match s.as_str() {
-            "Closing" => ChannelState::Closing,
-            "Closed" => ChannelState::Closed,
-            "SenderRefundedAfterExpiry" => ChannelState::SenderRefundedAfterExpiry,
-            _ => ChannelState::Open,
-        })
-        .unwrap_or(ChannelState::Open)
+    fn get_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
+        use rusqlite::OptionalExtension;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "sqlite lock poisoned".to_string())?;
+        let state: Option<String> = conn
+            .query_row(
+                "SELECT state FROM spilman_channels WHERE channel_id = ?1",
+                [channel_id],
+                |row| {
+                    let state: String = row.get(0)?;
+                    Ok(state)
+                },
+            )
+            .optional()
+            .map_err(|e| format!("get_state: {e}"))?;
+        match state.as_deref() {
+            None => Ok(None),
+            Some("Open") => Ok(Some(ChannelState::Open)),
+            Some("Closing") => Ok(Some(ChannelState::Closing)),
+            Some("Closed") => Ok(Some(ChannelState::Closed)),
+            Some("SenderRefundedAfterExpiry") => Ok(Some(ChannelState::SenderRefundedAfterExpiry)),
+            Some(_) => Err("invalid stored receiver channel state".to_string()),
+        }
     }
 
     fn mark_closing(&self, channel_id: &str, closing: ClosingData) -> Result<(), String> {
@@ -1578,7 +1595,7 @@ impl SpilmanHost for ConfigurableHost {
         self.apply_usage_increments(channel_id, context);
     }
 
-    fn get_channel_state(&self, channel_id: &str) -> ChannelState {
+    fn get_channel_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
         self.storage.get_state(channel_id)
     }
 
@@ -1688,6 +1705,80 @@ impl SpilmanHost for ConfigurableHost {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn receiver_state_distinguishes_unknown_from_open_in_both_stores() {
+        use super::*;
+        for storage in [
+            Box::new(MemoryStorage::new()) as Box<dyn SpilmanStorage>,
+            Box::new(SqliteStorage::open_in_memory().unwrap()),
+        ] {
+            assert_eq!(storage.get_state("channel").unwrap(), None);
+            storage
+                .save_funding(
+                    "channel",
+                    ChannelFunding {
+                        params_json: "{}".to_string(),
+                        funding_proofs_json: "[]".to_string(),
+                        channel_secret_hex: "secret".to_string(),
+                        keyset_info_json: "{}".to_string(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                storage.get_state("channel").unwrap(),
+                Some(ChannelState::Open)
+            );
+            assert_eq!(storage.get_state("missing").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn sqlite_state_reports_corruption_and_query_failures() {
+        use super::*;
+        let storage = SqliteStorage::open_in_memory().unwrap();
+        storage
+            .save_funding(
+                "channel",
+                ChannelFunding {
+                    params_json: "{}".to_string(),
+                    funding_proofs_json: "[]".to_string(),
+                    channel_secret_hex: "secret".to_string(),
+                    keyset_info_json: "{}".to_string(),
+                },
+            )
+            .unwrap();
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE spilman_channels SET state='invalid' WHERE channel_id='channel'",
+                [],
+            )
+            .unwrap();
+        assert!(storage.get_state("channel").is_err());
+        assert_eq!(storage.get_state("missing").unwrap(), None);
+        storage
+            .conn
+            .lock()
+            .unwrap()
+            .execute("DROP TABLE spilman_channels", [])
+            .unwrap();
+        assert!(storage.get_state("channel").is_err());
+        assert!(storage.get_state("missing").is_err());
+    }
+
+    #[test]
+    fn poisoned_memory_state_lookup_returns_error() {
+        use super::*;
+        let storage = MemoryStorage::new();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = storage.funding.write().unwrap();
+            panic!("poison lookup lock");
+        }));
+        assert!(storage.get_state("missing").is_err());
+    }
+
+    #[test]
     fn close_journal_cas_freezes_payment_and_installs_payout_atomically() {
         use super::*;
         for storage in [
@@ -1782,7 +1873,10 @@ mod tests {
             storage
                 .advance_close("channel", "finalizing", "completed", Some(payout))
                 .unwrap();
-            assert_eq!(storage.get_state("channel"), ChannelState::Closed);
+            assert_eq!(
+                storage.get_state("channel").unwrap(),
+                Some(ChannelState::Closed)
+            );
             assert_eq!(
                 storage.get_close_journal("channel").unwrap().as_deref(),
                 Some("completed")
@@ -1831,13 +1925,16 @@ mod tests {
             assert!(storage
                 .finish_sender_refund("refund", "wrong", "attested")
                 .is_err());
-            assert_eq!(storage.get_state("refund"), ChannelState::Closing);
+            assert_eq!(
+                storage.get_state("refund").unwrap(),
+                Some(ChannelState::Closing)
+            );
             storage
                 .finish_sender_refund("refund", "prepared", "attested")
                 .unwrap();
             assert_eq!(
-                storage.get_state("refund"),
-                ChannelState::SenderRefundedAfterExpiry
+                storage.get_state("refund").unwrap(),
+                Some(ChannelState::SenderRefundedAfterExpiry)
             );
             assert!(storage.get_closed_data("refund").is_none());
             assert!(storage.get_closing_data("refund").is_none());
@@ -2332,7 +2429,10 @@ pricing:
         let host = make_host();
         seed_channel(&host, "ch1", "sat");
 
-        assert_eq!(host.get_channel_state("ch1"), ChannelState::Open);
+        assert_eq!(
+            host.get_channel_state("ch1").unwrap(),
+            Some(ChannelState::Open)
+        );
 
         host.mark_channel_closing(
             "ch1",
@@ -2343,7 +2443,10 @@ pricing:
             },
         )
         .unwrap();
-        assert_eq!(host.get_channel_state("ch1"), ChannelState::Closing);
+        assert_eq!(
+            host.get_channel_state("ch1").unwrap(),
+            Some(ChannelState::Closing)
+        );
 
         let closing = host.get_closing_data("ch1").unwrap();
         assert_eq!(closing.expiry_timestamp, 1000);
@@ -2351,7 +2454,10 @@ pricing:
 
         host.mark_channel_closed("ch1", 1000, 50, "[]", "[]", 40, 10)
             .unwrap();
-        assert_eq!(host.get_channel_state("ch1"), ChannelState::Closed);
+        assert_eq!(
+            host.get_channel_state("ch1").unwrap(),
+            Some(ChannelState::Closed)
+        );
 
         assert!(host.get_closing_data("ch1").is_none());
 
@@ -2762,7 +2868,7 @@ storage:
             )
             .unwrap();
 
-            assert_eq!(s.get_state("ch1"), ChannelState::Open);
+            assert_eq!(s.get_state("ch1").unwrap(), Some(ChannelState::Open));
 
             s.mark_closing(
                 "ch1",
@@ -2773,7 +2879,7 @@ storage:
                 },
             )
             .unwrap();
-            assert_eq!(s.get_state("ch1"), ChannelState::Closing);
+            assert_eq!(s.get_state("ch1").unwrap(), Some(ChannelState::Closing));
 
             let closing = s.get_closing_data("ch1").unwrap();
             assert_eq!(closing.expiry_timestamp, 1000);
@@ -2792,7 +2898,7 @@ storage:
                 },
             )
             .unwrap();
-            assert_eq!(s.get_state("ch1"), ChannelState::Closed);
+            assert_eq!(s.get_state("ch1").unwrap(), Some(ChannelState::Closed));
 
             // closing_json should be cleared
             assert!(s.get_closing_data("ch1").is_none());

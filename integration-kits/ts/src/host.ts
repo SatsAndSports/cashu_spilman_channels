@@ -103,10 +103,10 @@ export function createSpilmanHost(options: SpilmanHostOptions) {
       stores.channelBalance.update(channelId, Number(balance), signature);
     },
 
-    getChannelState: (channelId: string): string => {
+    getChannelState: (channelId: string): string | null => {
       if (stores.channelClosed.isClosed(channelId)) return "closed";
       if (stores.channelClosing.isClosing(channelId)) return "closing";
-      return "open";
+      return stores.channelFunding.get(channelId) ? "open" : null;
     },
 
     markChannelClosing: (
