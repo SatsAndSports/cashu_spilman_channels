@@ -1,12 +1,24 @@
 name: Security
 
 on:
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '**/pyproject.toml'
+      - '**/requirements*.txt'
+      - '.github/workflows/security.yml'
   schedule:
     - cron: '0 4 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,21 +28,43 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      go: ${{ steps.filter.outputs.go }}
+      npm: ${{ steps.filter.outputs.npm }}
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            rust:
+              - '**/Cargo.{toml,lock}'
+              - '.github/workflows/security.yml'
+            go:
+              - '**/go.{mod,sum}'
+              - '.github/workflows/security.yml'
+            npm:
+              - '**/package.json'
+              - '**/package-lock.json'
+              - '.github/workflows/security.yml'
+            python:
+              - '**/pyproject.toml'
+              - '**/requirements*.txt'
+              - '.github/workflows/security.yml'
   rust-audit:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     name: Rust advisory audit
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
@@ -41,6 +75,8 @@ jobs:
         run: cargo audit
 
   go-vulncheck:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.go == 'true'
     name: Go vulnerability check
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -59,15 +95,21 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
-      - name: Check Go integration kit
-        run: govulncheck ./...
-        working-directory: integration-kits/go
-
-      - name: Check Go demo
-        run: govulncheck ./...
-        working-directory: examples/go-ascii-art
+      # Module-level checks avoid compiling the Rust/cgo bridge. They report
+      # vulnerable dependencies without claiming symbol-level reachability.
+      # crates/cdk-spilman-go/go.mod is an empty module boundary with no Go
+      # sources or dependencies; the actual binding module is in spilman/.
+      - name: Check Go binding, kit, and demo modules
+        run: |
+          status=0
+          for module in crates/cdk-spilman-go/spilman integration-kits/go examples/go-ascii-art; do
+            (cd "$module" && govulncheck -scan=module) || status=1
+          done
+          exit "$status"
 
   npm-audit:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.npm == 'true'
     name: npm audit (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -97,6 +139,8 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
 
   python-audit:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.python == 'true'
     name: Python dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -114,5 +158,23 @@ jobs:
       - name: Install pip-audit
         run: python -m pip install pip-audit
 
-      - name: Audit Python demo requirements
-        run: pip-audit -r examples/python-ascii-art/requirements.txt
+      - name: Collect Python requirements without building local bindings
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          requirements = [pathlib.Path("examples/python-ascii-art/requirements.txt").read_text()]
+          for filename in ("crates/cdk-spilman-python/pyproject.toml", "integration-kits/python/pyproject.toml"):
+              data = tomllib.loads(pathlib.Path(filename).read_text())
+              requirements.extend(data.get("build-system", {}).get("requires", []))
+              project = data.get("project", {})
+              requirements.extend(project.get("dependencies", []))
+              for extra in project.get("optional-dependencies", {}).values():
+                  requirements.extend(extra)
+          target = pathlib.Path(os.environ["RUNNER_TEMP"]) / "audit-requirements.txt"
+          target.write_text("\n".join(requirements) + "\n")
+          PY
+      - name: Audit Python binding, kit, extras, and demo dependencies
+        run: pip-audit -r "$RUNNER_TEMP/audit-requirements.txt"
