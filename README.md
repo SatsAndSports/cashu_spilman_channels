@@ -10,6 +10,27 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
+The workspace is preparing **0.2.0**. Breaking pre-1.0 APIs receive a minor version
+bump; compatible fixes receive a patch bump. See [CHANGELOG.md](CHANGELOG.md) for
+the coordinated binding updates and new explicit keyset-selection policy.
+
+### Choosing keyset versions
+
+```rust
+use cdk_spilman::{KeysetSelectionPolicy, KeysetVersions};
+
+let policy = KeysetSelectionPolicy {
+    allowed_versions: KeysetVersions::V1_AND_V2,
+};
+// Pass policy to auto-opening or active-keyset selection APIs.
+```
+
+`V1`, `V2`, and `V1_AND_V2` are fixed sets; `library_supported()` deliberately
+follows future library capabilities. Discovery understands prefixes `00` and `01`
+and skips unknown versions, reporting diagnostics instead of failing the entire
+mint refresh. Selection restrictions do not discard old proofs or cached metadata.
+See [INTEGRATION.md](INTEGRATION.md#keyset-discovery-and-selection) for bindings.
+
 Durable receiver integrations can authenticate exact close preparations and use
 atomic `SpilmanStorage` close-journal CAS operations. Custom storage implementations
 must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exact-close-completion).

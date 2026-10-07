@@ -421,3 +421,64 @@ and propagates query errors rather than treating them as `Open`.
 Update custom receiver hosts and rebuild bindings together. There is no database
 migration or reset. Client payment signing/recording, including cooperative balance
 decreases, is unchanged. Client-host state callbacks are a separate API.
+## Keyset discovery and selection
+
+Since 0.2.0, keep library capabilities separate from per-operation output policy.
+The library understands V1 (`00`) and V2 (`01`). Unknown first bytes are skipped
+only while enumerating metadata; explicitly supplied unsupported funding/proofs
+remain errors. Discovery validates all supported metadata, retains inactive entries,
+and never clears unrelated cache records. It does not apply output-version policy.
+
+Rust automatic opening and active-keyset fetch APIs require `KeysetSelectionPolicy`:
+
+```rust
+use cdk_spilman::{KeysetSelectionPolicy, KeysetVersion, KeysetVersions};
+let policy = KeysetSelectionPolicy {
+    allowed_versions: KeysetVersions::from([KeysetVersion::V2]),
+};
+// Equivalently: KeysetVersions::V2. Also available: V1 and V1_AND_V2.
+```
+
+Policy applies to every selection, including refresh/retry. Explicit-ID and
+explicit-keyset-info opening APIs use the caller's already-selected keyset: those
+callers own application policy. Close/refund/recovery are independent and can use
+all implemented versions. `cached_active_keyset_ids` enumerates the cache without
+an application filter; apply `allowed_versions.allows(id)` before selecting.
+
+`KeysetDiscovery` carries supported `keysets`, `skipped` entries (version byte,
+optional unit, active flag), and `unsupported_active_units`. A null unit indicates
+unknown metadata whose unit could not be read. Built-in Rust networking emits a
+warning per affected unit. Successful discovery may yield no supported keysets;
+selection then returns a no-compatible-active-keyset error. HTTP or malformed
+supported metadata/key failures remain errors.
+
+Python and WASM expose `discover_keysets_json`, `select_active_keyset_json`, and
+`build_keyset_info_from_responses`. The selection policy JSON is
+`{"allowed_versions":["v1","v2"]}`; no field default and no numeric min/max range.
+The response builder matches the requested ID and verifies supported key material.
+For example, Python:
+
+```python
+import json
+from cdk_spilman import KEYSET_VERSIONS_V1_AND_V2, select_active_keyset_json
+id = select_active_keyset_json(listing_json, "sat", json.dumps({
+    "allowed_versions": KEYSET_VERSIONS_V1_AND_V2,
+}))
+```
+
+The TS kit exports immutable `KEYSET_VERSIONS_V1`, `KEYSET_VERSIONS_V2`, and
+`KEYSET_VERSIONS_V1_AND_V2` arrays. Pass one as the third argument to
+`demoFetchActiveKeysetInfo`; Python's demo fetcher takes `allowed_versions=`.
+These demo helpers default to exactly V1 and V2, not an expanding capability set.
+
+Go exposes `DiscoverKeysets`, `KeysetDiscovery.SelectActive`, and
+`KeysetSelectionPolicy{AllowedVersions: spilman.KeysetVersionsV1AndV2()}`.
+`KeysetVersionsV1()` and `KeysetVersionsV2()` are also available. Preset functions
+return fresh slices. Pass a policy as the third argument to
+`spilmankit.DemoFetchActiveKeysetInfo`. Go metadata helpers classify/choose entries;
+actual channel construction and verification still use the Rust core.
+
+Neither successful discovery nor policy selection grants support for unknown
+cryptography. Fixed presets never gain V3 when the library is upgraded. Rust's
+`KeysetVersions::library_supported()` and Go's `LibrarySupportedKeysetVersions()`
+are explicit opt-ins to following future implemented versions.

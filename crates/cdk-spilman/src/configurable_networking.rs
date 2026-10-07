@@ -35,13 +35,20 @@ pub struct MintKeysetWithKeys {
     pub keys: serde_json::Value,
 }
 
+/// Validated supported keysets and diagnostics for skipped future versions.
+#[derive(Debug, Clone)]
+pub struct MintKeysetDiscovery {
+    /// All supported keysets with their verified keys, including inactive entries.
+    pub keysets: Vec<MintKeysetWithKeys>,
+    /// Supported metadata and unsupported-version diagnostics.
+    pub report: crate::KeysetDiscovery,
+}
+
 /// Fetch all keysets (with full keys) from a mint.
 ///
 /// Calls `GET /v1/keysets` to list keysets, then `GET /v1/keys/{id}` for each
 /// one to retrieve the full key material.
-pub async fn fetch_all_keysets_from_mint(
-    mint_url: &str,
-) -> Result<Vec<MintKeysetWithKeys>, String> {
+pub async fn fetch_all_keysets_from_mint(mint_url: &str) -> Result<MintKeysetDiscovery, String> {
     let client = reqwest::Client::new();
 
     let keysets_url = format!("{mint_url}/v1/keysets");
@@ -62,10 +69,9 @@ pub async fn fetch_all_keysets_from_mint(
         .await
         .map_err(|e| format!("Failed to parse keysets response: {e}"))?;
 
-    let keysets = keysets_resp
-        .get("keysets")
-        .and_then(|k| k.as_array())
-        .ok_or("Invalid keysets response")?;
+    let report = crate::KeysetDiscovery::from_json(&keysets_resp.to_string())?;
+    report.warn_if_no_supported_active(mint_url);
+    let keysets = &report.keysets;
 
     let mut result = Vec::new();
     for keyset in keysets {
@@ -112,13 +118,13 @@ pub async fn fetch_all_keysets_from_mint(
             .await
             .map_err(|e| format!("Failed to parse keys response for {id}: {e}"))?;
 
-        let keys = keys_resp
-            .get("keysets")
-            .and_then(|k| k.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|k| k.get("keys"))
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
+        let info = crate::client_bridge::build_keyset_info_from_responses(
+            &keysets_resp.to_string(),
+            &keys_resp.to_string(),
+            &id.to_string(),
+        )?;
+        let info: serde_json::Value = serde_json::from_str(&info).map_err(|e| e.to_string())?;
+        let keys = info["keys"].clone();
 
         result.push(MintKeysetWithKeys {
             id,
@@ -130,7 +136,10 @@ pub async fn fetch_all_keysets_from_mint(
         });
     }
 
-    Ok(result)
+    Ok(MintKeysetDiscovery {
+        keysets: result,
+        report,
+    })
 }
 
 /// Build the keyset info JSON blob expected by the bridge.
@@ -159,7 +168,7 @@ pub async fn fetch_and_cache_keysets(
     mint_url: &str,
 ) -> Result<(), String> {
     let keysets = fetch_all_keysets_from_mint(mint_url).await?;
-    for ks in keysets {
+    for ks in keysets.keysets {
         let info_json = build_keyset_info_json(
             &ks.id,
             &ks.unit,
@@ -189,10 +198,11 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         for expiry in [None, Some(0), Some(123_456)] {
+            let info = crate::params::mock_keyset_info(vec![1, 2, 4], 42);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let mut metadata = serde_json::json!({
-                "id": "0000000000000001", "unit": "sat", "active": false,
+                "id": info.keyset_id.to_string(), "unit": "sat", "active": false,
                 "input_fee_ppk": 42,
             });
             if let Some(expiry) = expiry {
@@ -201,7 +211,7 @@ mod tests {
             let server = tokio::spawn(async move {
                 for body in [
                     serde_json::json!({"keysets": [metadata]}),
-                    serde_json::json!({"keysets": [{"keys": {}}]}),
+                    serde_json::json!({"keysets": [{"id": info.keyset_id.to_string(), "unit": "sat", "keys": info.active_keys}]}),
                 ] {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut request = Vec::new();
@@ -213,7 +223,7 @@ mod tests {
                     stream.write_all(response.as_bytes()).await.unwrap();
                 }
             });
-            let keysets = fetch_all_keysets_from_mint(&url).await.unwrap();
+            let keysets = fetch_all_keysets_from_mint(&url).await.unwrap().keysets;
             assert_eq!(keysets.len(), 1);
             assert_eq!(keysets[0].final_expiry, expiry);
             assert_eq!(keysets[0].input_fee_ppk, 42);
@@ -231,6 +241,57 @@ mod tests {
             let value: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(value["final_expiry"].as_u64(), expiry);
             assert_eq!(value["inputFeePpk"], 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_discovery_fetches_only_supported_ids_in_any_order() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (v1, v2, future, keys) = crate::keyset_versions::tests::fixtures();
+        for index in 0..=2 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let mut entries = vec![v1.clone(), v2.clone()];
+            entries.insert(index, future.clone());
+            let responses = vec![
+                (
+                    "/v1/keysets".to_string(),
+                    serde_json::json!({"keysets":entries}),
+                ),
+                (
+                    format!("/v1/keys/{}", v1["id"].as_str().unwrap()),
+                    serde_json::json!({"keysets":[future.clone(), {"id":v1["id"],"unit":"sat","keys":keys}]}),
+                ),
+                (
+                    format!("/v1/keys/{}", v2["id"].as_str().unwrap()),
+                    serde_json::json!({"keysets":[future.clone(), {"id":v2["id"],"unit":"sat","keys":keys}]}),
+                ),
+            ];
+            let server = tokio::spawn(async move {
+                for (path, body) in responses {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        request.push(stream.read_u8().await.unwrap());
+                    }
+                    assert!(String::from_utf8(request)
+                        .unwrap()
+                        .starts_with(&format!("GET {path} HTTP/1.1")));
+                    let body = body.to_string();
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let result =
+                tokio::time::timeout(Duration::from_secs(5), fetch_all_keysets_from_mint(&url))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(result.keysets.len(), 2);
+            assert_eq!(result.report.skipped.len(), 1);
+            assert!(!result.keysets[0].active);
+            assert_eq!(result.keysets[1].final_expiry, Some(9_999_999_999));
+            assert_eq!(result.keysets[1].input_fee_ppk, 42);
+            server.await.unwrap();
         }
     }
 }

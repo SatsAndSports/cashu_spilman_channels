@@ -302,10 +302,30 @@ func (h *BaseSpilmanHost) fetchAllKeysets(mintUrl string) ([]mintKeysetInfo, err
 		Keysets []struct {
 			Id, Unit    string
 			Active      bool
-			InputFeePpk uint64 `json:"input_fee_ppk"`
+			InputFeePpk uint64  `json:"input_fee_ppk"`
+			FinalExpiry *uint64 `json:"final_expiry"`
 		}
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	listing, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	report, err := spilman.DiscoverKeysets(string(listing))
+	if err != nil {
+		return nil, err
+	}
+	for _, unit := range report.UnsupportedActiveUnits {
+		unitName := "unknown"
+		if unit != nil {
+			unitName = *unit
+		}
+		fmt.Printf("Mint %s has only unsupported active keysets for unit %s; supported: V1 (00), V2 (01)\n", mintUrl, unitName)
+	}
+	filtered, err := json.Marshal(map[string]interface{}{"keysets": report.Keysets})
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(filtered, &data); err != nil {
 		return nil, fmt.Errorf("decode %s/v1/keysets: %w", mintUrl, err)
 	}
 
@@ -326,20 +346,18 @@ func (h *BaseSpilmanHost) fetchAllKeysets(mintUrl string) ([]mintKeysetInfo, err
 			kresp.Body.Close()
 			return nil, fmt.Errorf("GET %s failed: status %d: %s", keysUrl, kresp.StatusCode, string(body))
 		}
-		var kdata struct {
-			Keysets []struct{ Keys map[string]string }
-		}
-		if err := json.NewDecoder(kresp.Body).Decode(&kdata); err != nil {
-			kresp.Body.Close()
-			return nil, fmt.Errorf("decode %s: %w", keysUrl, err)
-		}
+		body, err := io.ReadAll(kresp.Body)
 		kresp.Body.Close()
-		if len(kdata.Keysets) == 0 {
-			return nil, fmt.Errorf("%s response contained no keysets", keysUrl)
+		if err != nil {
+			return nil, err
+		}
+		keys, err := spilman.MatchKeysetKeys(string(body), k.Id, k.Unit, k.InputFeePpk, k.FinalExpiry)
+		if err != nil {
+			return nil, err
 		}
 
 		info := map[string]interface{}{
-			"keysetId": k.Id, "unit": k.Unit, "keys": kdata.Keysets[0].Keys, "inputFeePpk": k.InputFeePpk,
+			"keysetId": k.Id, "unit": k.Unit, "keys": keys, "inputFeePpk": k.InputFeePpk, "finalExpiry": k.FinalExpiry,
 		}
 		infoJson, _ := json.Marshal(info)
 		res = append(res, mintKeysetInfo{Id: k.Id, Unit: k.Unit, Active: k.Active, InfoJson: string(infoJson)})

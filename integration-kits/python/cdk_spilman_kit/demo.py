@@ -1,6 +1,7 @@
 import json
 import time
 import requests
+import warnings
 from typing import List, Dict, Any, Optional
 
 try:
@@ -38,36 +39,26 @@ def mint_plain_proofs(mint_url: str, amount: int, keyset_info_json: str, unit: s
     return mint_proofs_from_mint(mint_url, amount, keyset_info_json, _http_callback)
 
 
-def fetch_active_keyset_info(mint_url: str, unit: str = "sat") -> Dict[str, Any]:
+KEYSET_VERSIONS_V1 = ("v1",)
+KEYSET_VERSIONS_V2 = ("v2",)
+KEYSET_VERSIONS_V1_AND_V2 = ("v1", "v2")
+
+
+def fetch_active_keyset_info(mint_url: str, unit: str = "sat", *, allowed_versions=KEYSET_VERSIONS_V1_AND_V2) -> Dict[str, Any]:
     """Fetch active keyset info from mint for a given unit."""
     # Get keysets
     keysets_resp = requests.get(f"{mint_url}/v1/keysets")
     keysets_resp.raise_for_status()
-    keysets = keysets_resp.json()["keysets"]
-    
-    # Find active keyset for unit
-    active = None
-    for k in keysets:
-        if k["unit"] == unit and k["active"]:
-            active = k
-            break
-    
-    if not active:
-        raise Exception(f"No active {unit} keyset found at {mint_url}")
-    
-    keyset_id = active["id"]
+    from cdk_spilman import discover_keysets_json, select_active_keyset_json, build_keyset_info_from_responses
+    report = json.loads(discover_keysets_json(keysets_resp.text))
+    for unsupported_unit in report["unsupported_active_units"]:
+        warnings.warn(f"Mint {mint_url} has only unsupported active keysets for unit {unsupported_unit}; supported: V1 (00), V2 (01)", stacklevel=2)
+    keyset_id = select_active_keyset_json(keysets_resp.text, unit, json.dumps({"allowed_versions": list(allowed_versions)}))
     
     # Get keys for this keyset
     keys_resp = requests.get(f"{mint_url}/v1/keys/{keyset_id}")
     keys_resp.raise_for_status()
-    keys_data = keys_resp.json()["keysets"][0]
-    
-    return {
-        "keysetId": keyset_id,
-        "unit": unit,
-        "inputFeePpk": active.get("input_fee_ppk", 0),
-        "keys": keys_data["keys"]
-    }
+    return json.loads(build_keyset_info_from_responses(keysets_resp.text, keys_resp.text, keyset_id))
 
 def mint_funding_token(mint_url: str, amount: int, blinded_messages: List[Dict[str, Any]], unit: str = "sat") -> List[Dict[str, Any]]:
     """Mint tokens for funding a channel. Handles bolt11 quote and wait."""

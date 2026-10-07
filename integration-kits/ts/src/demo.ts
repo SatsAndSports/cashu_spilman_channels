@@ -1,5 +1,10 @@
 import { readFileSync } from "fs";
-import { create_plain_blinded_messages, construct_proofs } from "../wasm/cdk_wasm.js";
+import { create_plain_blinded_messages, construct_proofs, discover_keysets_json, select_active_keyset_json, build_keyset_info_from_responses } from "../wasm/cdk_wasm.js";
+
+export const KEYSET_VERSIONS_V1 = Object.freeze(["v1"] as const);
+export const KEYSET_VERSIONS_V2 = Object.freeze(["v2"] as const);
+export const KEYSET_VERSIONS_V1_AND_V2 = Object.freeze(["v1", "v2"] as const);
+export type KeysetVersion = "v1" | "v2";
 
 /**
  * Mints plain proofs (not channel-locked) from a mint.
@@ -70,20 +75,18 @@ export async function demoMintPlainProofs(
 /**
  * Fetches active keyset info from a mint.
  */
-export async function demoFetchActiveKeysetInfo(mintUrl: string, unit: string = "sat"): Promise<any> {
+export async function demoFetchActiveKeysetInfo(mintUrl: string, unit: string = "sat", allowedVersions: readonly KeysetVersion[] = KEYSET_VERSIONS_V1_AND_V2): Promise<any> {
   const resp = await fetch(`${mintUrl}/v1/keysets`);
-  const { keysets } = await resp.json() as any;
-  const active = keysets.find((k: any) => k.unit === unit && k.active);
-  if (!active) throw new Error(`No active ${unit} keyset found`);
-
-  const keysResp = await fetch(`${mintUrl}/v1/keys/${active.id}`);
-  const { keysets: keysData } = await keysResp.json() as any;
-  return {
-    keysetId: active.id,
-    unit,
-    inputFeePpk: active.input_fee_ppk || 0,
-    keys: keysData[0].keys,
-  };
+  if (!resp.ok) throw new Error(`Keyset metadata HTTP failure: ${resp.status}`);
+  const listing = await resp.text();
+  const report = JSON.parse(discover_keysets_json(listing));
+  for (const unsupportedUnit of report.unsupported_active_units) {
+    console.warn(`Mint ${mintUrl} has only unsupported active keysets for unit ${unsupportedUnit}; supported: V1 (00), V2 (01)`);
+  }
+  const id = select_active_keyset_json(listing, unit, JSON.stringify({ allowed_versions: allowedVersions }));
+  const keysResp = await fetch(`${mintUrl}/v1/keys/${id}`);
+  if (!keysResp.ok) throw new Error(`Keyset keys HTTP failure: ${keysResp.status}`);
+  return JSON.parse(build_keyset_info_from_responses(listing, await keysResp.text(), id));
 }
 
 /**

@@ -124,7 +124,7 @@ func runClient(args []string) {
 	defer bridge.Free()
 
 	// 3. Fetch keyset info
-	ki, _ := spilmankit.DemoFetchActiveKeysetInfo(mintUrl, "sat")
+	ki, _ := spilmankit.DemoFetchActiveKeysetInfo(mintUrl, "sat", spilman.KeysetSelectionPolicy{AllowedVersions: spilman.KeysetVersionsV1AndV2()})
 	kiJ, _ := json.Marshal(ki)
 
 	// 4. Mint proofs and build token

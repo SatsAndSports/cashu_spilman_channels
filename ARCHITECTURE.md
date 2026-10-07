@@ -524,3 +524,17 @@ Separate wallet databases are not one atomic transaction. Back up each database
 using SQLite's backup API or an equivalent consistent SQLite snapshot, retaining
 all wallet databases together. Copying only a live database file can omit committed
 WAL data; do not treat a raw file copy as a wallet backup.
+## Keyset version boundaries
+
+Mint discovery recognizes the first decoded ID byte before typed ID or key parsing.
+The current capability set is 00 (V1) and 01 (V2); other prefixes are opaque and
+skipped. Supported entries retain full validation. Requested key responses are
+matched by identity rather than array position. This permits mixed future-version
+listings without treating unknown cryptographic formats as usable channels.
+
+Application `KeysetSelectionPolicy` restricts new output selection, including
+refresh/retry, independently of discovery and historical cache retention. It is an
+explicit version set, not a range. No global version filter is applied to proof
+inputs, existing funding, close/refund/restore, or cache persistence. Low-level
+channel operations still require typed supported IDs and current cryptographic
+formats. Channel-ID hashing and derivation are unchanged.

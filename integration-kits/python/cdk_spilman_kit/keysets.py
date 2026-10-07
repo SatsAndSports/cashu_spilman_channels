@@ -1,5 +1,7 @@
 import requests
 import json
+import warnings
+from cdk_spilman import discover_keysets_json, build_keyset_info_from_responses
 from .stores import SpilmanStores, KeysetCacheEntry
 
 DEFAULT_TIMEOUT = 10
@@ -17,7 +19,10 @@ def build_keyset_info_json(keyset_id: str, unit: str, keys_data: dict, input_fee
 def fetch_all_keysets_from_mint(mint_url: str, supported_units: list):
     resp = requests.get(f"{mint_url}/v1/keysets", timeout=DEFAULT_TIMEOUT)
     resp.raise_for_status()
-    keysets = resp.json()["keysets"]
+    report = json.loads(discover_keysets_json(resp.text))
+    keysets = report["keysets"]
+    for unit in report["unsupported_active_units"]:
+        warnings.warn(f"Mint {mint_url} has only unsupported active keysets for unit {unit}; supported: V1 (00), V2 (01)", stacklevel=2)
 
     result = []
     for k in keysets:
@@ -25,8 +30,7 @@ def fetch_all_keysets_from_mint(mint_url: str, supported_units: list):
             continue
         keys_resp = requests.get(f"{mint_url}/v1/keys/{k['id']}", timeout=DEFAULT_TIMEOUT)
         keys_resp.raise_for_status()
-        keys_data = keys_resp.json()["keysets"][0]["keys"]
-        info_json = build_keyset_info_json(k["id"], k["unit"], keys_data, k.get("input_fee_ppk", 0))
+        info_json = build_keyset_info_from_responses(resp.text, keys_resp.text, k["id"])
         result.append({
             "id": k["id"],
             "unit": k["unit"],
