@@ -15,14 +15,14 @@
     "express": "^5.2.1",
     "figlet": "^1.8.0",
     "qrcode-terminal": "^0.12.0",
-    "yaml": "^2.7.0"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/figlet": "^1.7.0",
     "@types/node": "^22.10.0",
     "@types/qrcode-terminal": "^0.12.2",
-    "tsx": "^4.20.6",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.2",
     "vitest": "^5.0.3"
   }
