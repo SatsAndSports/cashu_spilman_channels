@@ -5,6 +5,9 @@ client bridge wrapper for Node.js.
 
 ## Quick start
 
+Use Node.js 22.12+ on the Node 22 LTS line (matching CI) for development
+and tests; the Vitest 5 test runner no longer supports Node 20.
+
 For a runnable demo, use the reference server/client:
 
 ```bash

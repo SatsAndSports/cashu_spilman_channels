@@ -9,6 +9,9 @@ This example demonstrates Spilman unidirectional payment channels using TypeScri
 
 ## Prerequisites
 
+Use Node.js 22.12+ on the Node 22 LTS line (matching CI) for development
+and tests; the Vitest 5 test runner no longer supports Node 20.
+
 1. Build WASM bindings (from repo root):
    ```bash
    make build-wasm
