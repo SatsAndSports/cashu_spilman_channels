@@ -15,7 +15,7 @@ cdk-fake-wallet.workspace = true
 cdk-sqlite.workspace = true
 hex = "0.4"
 hmac = "0.12"
-k256 = { version = "0.13", features = ["arithmetic"] }
+k256 = { version = "0.14", features = ["arithmetic"] }
 sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
