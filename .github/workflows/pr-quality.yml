@@ -27,7 +27,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - uses: actions/setup-go@v7
         with:
-          tool: actionlint
-      - run: actionlint
+          go-version: '1.26.x'
+          cache: false
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
