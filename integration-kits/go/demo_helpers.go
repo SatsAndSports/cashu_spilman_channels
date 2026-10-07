@@ -3,6 +3,8 @@ package spilmankit
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,40 +14,75 @@ import (
 )
 
 // DemoFetchActiveKeysetInfo fetches active keyset info from a mint.
-func DemoFetchActiveKeysetInfo(mintUrl string, unit string) (map[string]interface{}, error) {
+func DemoFetchActiveKeysetInfo(mintUrl string, unit string, policy spilman.KeysetSelectionPolicy) (map[string]interface{}, error) {
 	resp, err := http.Get(mintUrl + "/v1/keysets")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("keyset metadata HTTP failure: %d", resp.StatusCode)
+	}
+	listing, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	report, err := spilman.DiscoverKeysets(string(listing))
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range report.UnsupportedActiveUnits {
+		unitName := "unknown"
+		if u != nil {
+			unitName = *u
+		}
+		log.Printf("Mint %s has only unsupported active keysets for unit %s; supported: V1 (00), V2 (01)", mintUrl, unitName)
+	}
+	id, err := report.SelectActive(unit, policy)
+	if err != nil {
+		return nil, err
+	}
 
 	var d struct {
 		Keysets []struct {
 			Id, Unit    string
 			Active      bool
-			InputFeePpk uint64 `json:"input_fee_ppk"`
+			InputFeePpk uint64  `json:"input_fee_ppk"`
+			FinalExpiry *uint64 `json:"final_expiry"`
 		}
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+	filtered, err := json.Marshal(map[string]interface{}{"keysets": report.Keysets})
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(filtered, &d); err != nil {
 		return nil, err
 	}
 
 	for _, k := range d.Keysets {
-		if k.Unit == unit && k.Active {
+		if k.Id == id {
 			rk, err := http.Get(fmt.Sprintf("%s/v1/keys/%s", mintUrl, k.Id))
 			if err != nil {
 				return nil, err
 			}
-			var kd struct {
-				Keysets []struct{ Keys map[string]string }
+			defer rk.Body.Close()
+			if rk.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("keyset keys HTTP failure: %d", rk.StatusCode)
 			}
-			json.NewDecoder(rk.Body).Decode(&kd)
-			rk.Body.Close()
+			body, err := io.ReadAll(rk.Body)
+			if err != nil {
+				return nil, err
+			}
+			matched, err := spilman.MatchKeysetKeys(string(body), id, unit, k.InputFeePpk, k.FinalExpiry)
+			if err != nil {
+				return nil, err
+			}
 			return map[string]interface{}{
 				"keysetId":    k.Id,
 				"unit":        unit,
 				"inputFeePpk": k.InputFeePpk,
-				"keys":        kd.Keysets[0].Keys,
+				"keys":        matched,
+				"finalExpiry": k.FinalExpiry,
 			}, nil
 		}
 	}

@@ -630,25 +630,27 @@ fn is_keyset_mint_rejection(raw: &str) -> bool {
 /// Extracts the matching keyset metadata (unit, input_fee_ppk) from the keysets
 /// response and the public keys from the keys response, then assembles them into
 /// the format expected by [`parse_keyset_info_from_json`](crate::parse_keyset_info_from_json).
-fn build_keyset_info_from_responses(
+pub fn build_keyset_info_from_responses(
     keysets_json: &str,
     keys_json: &str,
     keyset_id: &str,
 ) -> Result<String, String> {
-    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
-        .map_err(|e| format!("Failed to parse /v1/keysets response: {}", e))?;
+    let discovery = crate::KeysetDiscovery::from_json(keysets_json)?;
     let keys_resp: serde_json::Value = serde_json::from_str(keys_json)
         .map_err(|e| format!("Failed to parse /v1/keys response: {}", e))?;
 
     // Find the matching keyset in /v1/keysets response
-    let keysets = keysets_resp
-        .get("keysets")
-        .and_then(|k| k.as_array())
-        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
-
-    let keyset_entry = keysets
+    let requested =
+        crate::supported_keyset_id(keyset_id)?.ok_or("Unsupported keyset version requested")?;
+    let keyset_entry = discovery
+        .keysets
         .iter()
-        .find(|k| k.get("id").and_then(|v| v.as_str()) == Some(keyset_id))
+        .find(|k| {
+            k.get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|id| id.parse::<Id>().ok())
+                == Some(requested)
+        })
         .ok_or_else(|| format!("Keyset '{}' not found in /v1/keysets response", keyset_id))?;
 
     let unit = keyset_entry
@@ -661,13 +663,46 @@ fn build_keyset_info_from_responses(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let final_expiry = keyset_entry.get("final_expiry").cloned();
+    if let Some(value) = &final_expiry {
+        if !value.is_null() && value.as_u64().is_none() {
+            return Err("Invalid keyset final_expiry".to_string());
+        }
+    }
 
     // Extract the keys from /v1/keys/{id} response
-    let keys = keys_resp
+    let entries = keys_resp
         .get("keysets")
         .and_then(|k| k.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|k| k.get("keys"))
+        .ok_or("Invalid /v1/keys response: missing keysets")?;
+    let mut matching = None;
+    for entry in entries {
+        let raw = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing keyset id in keys response")?;
+        if crate::supported_keyset_id(raw)? == Some(requested) && matching.replace(entry).is_some()
+        {
+            return Err("Duplicate requested keyset in keys response".to_string());
+        }
+    }
+    let matching = matching.ok_or("Requested keyset missing from keys response")?;
+    if matching.get("unit").and_then(|v| v.as_str()) != Some(unit) {
+        return Err("Keyset keys response unit mismatch".to_string());
+    }
+    for field in ["input_fee_ppk", "final_expiry"] {
+        if let Some(value) = matching.get(field) {
+            let expected = if field == "input_fee_ppk" {
+                serde_json::json!(input_fee_ppk)
+            } else {
+                final_expiry.clone().unwrap_or(serde_json::Value::Null)
+            };
+            if value != &expected {
+                return Err(format!("Keyset keys response {field} mismatch"));
+            }
+        }
+    }
+    let keys = matching
+        .get("keys")
         .cloned()
         .ok_or("Invalid /v1/keys response: missing keys")?;
 
@@ -709,12 +744,8 @@ fn build_keyset_info_from_responses(
 
 #[cfg(feature = "wallet")]
 fn token_input_keysets_from_response(keysets_json: &str, unit: &str) -> Result<String, String> {
-    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
-        .map_err(|e| format!("Failed to parse /v1/keysets response: {e}"))?;
-    let keysets = keysets_resp
-        .get("keysets")
-        .and_then(|k| k.as_array())
-        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
+    let discovery = crate::KeysetDiscovery::from_json(keysets_json)?;
+    let keysets = &discovery.keysets;
 
     let mut out = Vec::new();
     for keyset in keysets {
@@ -817,33 +848,6 @@ fn proof_keyset_ids(input_proofs_json: &str) -> Result<Vec<Id>, String> {
     Ok(ids)
 }
 
-#[cfg(feature = "wallet")]
-fn first_active_keyset_id_from_response(
-    keysets_json: &str,
-    unit: &CurrencyUnit,
-) -> Result<Id, String> {
-    let keysets_resp: serde_json::Value = serde_json::from_str(keysets_json)
-        .map_err(|e| format!("Failed to parse /v1/keysets response: {e}"))?;
-    let keysets = keysets_resp
-        .get("keysets")
-        .and_then(|k| k.as_array())
-        .ok_or("Invalid /v1/keysets response: missing 'keysets' array")?;
-
-    keysets
-        .iter()
-        .find(|keyset| {
-            keyset.get("unit").and_then(|v| v.as_str()) == Some(&unit.to_string())
-                && keyset
-                    .get("active")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-        })
-        .and_then(|keyset| keyset.get("id").and_then(|v| v.as_str()))
-        .ok_or_else(|| format!("no active keyset found for unit '{unit}'"))?
-        .parse::<Id>()
-        .map_err(|e| format!("Invalid active keyset id: {e}"))
-}
-
 impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N> {
     /// Create a new client bridge.
     ///
@@ -860,6 +864,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// networking layer, then assembles the result into the keyset info JSON
     /// format expected by [`open_channel_from_token`](Self::open_channel_from_token).
     pub fn fetch_keyset_info(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        crate::supported_keyset_id(keyset_id)?.ok_or("Unsupported keyset version requested")?;
         let keysets_json = self.networking.call_mint_keysets(mint_url)?;
         let keys_json = self.networking.call_mint_keys(mint_url, keyset_id)?;
         build_keyset_info_from_responses(&keysets_json, &keys_json, keyset_id)
@@ -871,10 +876,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         self.refresh_keysets_inner(mint_url).map(|_| ())
     }
 
-    /// Refresh and persist all keysets for a mint, returning the raw
-    /// `/v1/keysets` response used for the refresh.
+    /// Refresh and persist all supported keysets, returning metadata and skipped-version
+    /// diagnostics. Inactive supported entries and older cached records are retained.
     #[cfg(feature = "wallet")]
-    pub fn refresh_keysets_response(&self, mint_url: &str) -> Result<String, OpenChannelError> {
+    pub fn refresh_keysets_response(
+        &self,
+        mint_url: &str,
+    ) -> Result<crate::KeysetDiscovery, OpenChannelError> {
         self.refresh_keysets_inner(mint_url)
     }
 
@@ -903,27 +911,22 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     }
 
     #[cfg(feature = "wallet")]
-    fn refresh_keysets_inner(&self, mint_url: &str) -> Result<String, OpenChannelError> {
+    fn refresh_keysets_inner(
+        &self,
+        mint_url: &str,
+    ) -> Result<crate::KeysetDiscovery, OpenChannelError> {
         let keysets_json = self.networking.call_mint_keysets(mint_url).map_err(|e| {
             OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
         })?;
-        let keysets_resp: serde_json::Value = serde_json::from_str(&keysets_json).map_err(|e| {
+        let discovery = crate::KeysetDiscovery::from_json(&keysets_json).map_err(|e| {
             OpenChannelError::new(
                 OpenChannelFailureStage::BeforeOpeningSaved,
                 None,
                 format!("Failed to parse /v1/keysets response: {e}"),
             )
         })?;
-        let keysets = keysets_resp
-            .get("keysets")
-            .and_then(|k| k.as_array())
-            .ok_or_else(|| {
-                OpenChannelError::new(
-                    OpenChannelFailureStage::BeforeOpeningSaved,
-                    None,
-                    "Invalid /v1/keysets response: missing 'keysets' array",
-                )
-            })?;
+        discovery.warn_if_no_supported_active(mint_url);
+        let keysets = &discovery.keysets;
 
         for keyset in keysets {
             let id_str = keyset.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -987,7 +990,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 })?;
         }
 
-        Ok(keysets_json)
+        Ok(discovery)
     }
 
     /// Fetch full keyset info for the first active keyset the mint reports for a unit.
@@ -996,8 +999,9 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         mint_url: &str,
         unit: &CurrencyUnit,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<String, OpenChannelError> {
-        self.fetch_active_output_keyset(mint_url, unit)
+        self.fetch_active_output_keyset(mint_url, unit, policy)
             .map(|keyset| keyset.info_json)
     }
 
@@ -1006,12 +1010,15 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         mint_url: &str,
         unit: &CurrencyUnit,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<SelectedOutputKeyset, OpenChannelError> {
-        let keysets_json = self.refresh_keysets_inner(mint_url)?;
-        let keyset_id = first_active_keyset_id_from_response(&keysets_json, unit).map_err(|e| {
-            OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
-        })?;
-        self.cached_active_output_keyset(mint_url, unit, &keyset_id)
+        let discovery = self.refresh_keysets_inner(mint_url)?;
+        let keyset_id = discovery
+            .select_active(&unit.to_string(), policy)
+            .map_err(|e| {
+                OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
+            })?;
+        self.cached_active_output_keyset(mint_url, unit, &keyset_id, policy)
     }
 
     #[cfg(feature = "wallet")]
@@ -1019,18 +1026,28 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         mint_url: &str,
         unit: &CurrencyUnit,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<(), OpenChannelError> {
-        if self.usable_output_keyset_ids(mint_url, unit).is_empty() {
+        if self
+            .usable_output_keyset_ids(mint_url, unit, policy)
+            .is_empty()
+        {
             self.refresh_keysets(mint_url)?;
         }
         Ok(())
     }
 
     #[cfg(feature = "wallet")]
-    fn usable_output_keyset_ids(&self, mint_url: &str, unit: &CurrencyUnit) -> Vec<Id> {
+    fn usable_output_keyset_ids(
+        &self,
+        mint_url: &str,
+        unit: &CurrencyUnit,
+        policy: crate::KeysetSelectionPolicy,
+    ) -> Vec<Id> {
         self.host
             .get_active_keyset_ids(mint_url, unit)
             .into_iter()
+            .filter(|id| policy.allowed_versions.allows(*id))
             .filter(|id| {
                 self.host
                     .get_keyset(mint_url, id)
@@ -1050,13 +1067,14 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         mint_url: &str,
         unit: &CurrencyUnit,
         preferred_keyset_id: &Id,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let keyset_id = self
-            .usable_output_keyset_ids(mint_url, unit)
+            .usable_output_keyset_ids(mint_url, unit, policy)
             .into_iter()
             .find(|id| id == preferred_keyset_id)
             .or_else(|| {
-                self.usable_output_keyset_ids(mint_url, unit)
+                self.usable_output_keyset_ids(mint_url, unit, policy)
                     .into_iter()
                     .next()
             })
@@ -1064,7 +1082,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 OpenChannelError::new(
                     OpenChannelFailureStage::BeforeOpeningSaved,
                     None,
-                    format!("mint {mint_url} has no cached active keyset for unit {unit}"),
+                    format!("mint {mint_url} has no compatible cached active keyset for unit {unit} with allowed versions {:?}", Vec::<crate::KeysetVersion>::from(policy.allowed_versions)),
                 )
             })?;
         self.host
@@ -1087,16 +1105,17 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         mint_url: &str,
         unit: &CurrencyUnit,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<SelectedOutputKeyset, OpenChannelError> {
         let keyset_id = self
-            .usable_output_keyset_ids(mint_url, unit)
+            .usable_output_keyset_ids(mint_url, unit, policy)
             .into_iter()
             .next()
             .ok_or_else(|| {
                 OpenChannelError::new(
                     OpenChannelFailureStage::BeforeOpeningSaved,
                     None,
-                    format!("mint {mint_url} has no cached active keyset for unit {unit}"),
+                    format!("mint {mint_url} has no compatible cached active keyset for unit {unit} with allowed versions {:?}", Vec::<crate::KeysetVersion>::from(policy.allowed_versions)),
                 )
             })?;
         self.host
@@ -1202,9 +1221,10 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         expiry_timestamp: u64,
         mint_url: &str,
         max_amount: u64,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let token_unit = token_unit(token_string)?;
-        self.ensure_keysets_cached_for_unit(mint_url, &token_unit)?;
+        self.ensure_keysets_cached_for_unit(mint_url, &token_unit, policy)?;
 
         // Opening a channel creates a mint swap whose outputs are locked to a
         // mint keyset.  Mints rotate active keysets, while clients cache keyset
@@ -1220,7 +1240,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let result = with_active_keyset_retry(
             // Cache-only selection of the active output keyset info needed to
             // construct the funding swap.
-            || self.first_cached_active_output_keyset(mint_url, &token_unit),
+            || self.first_cached_active_output_keyset(mint_url, &token_unit, policy),
             // Preparation is cheap and has no external reservation here: parse
             // the token and fetch/cache metadata for the token's input keysets.
             |output_keyset| self.prepare_token_auto_attempt(mint_url, token_string, output_keyset),
@@ -1408,11 +1428,12 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         sender_pubkey_hex: &str,
         expiry_timestamp: u64,
         max_amount: u64,
+        policy: crate::KeysetSelectionPolicy,
     ) -> Result<OpenChannelResult, OpenChannelError> {
         let parsed_unit = unit
             .parse::<CurrencyUnit>()
             .unwrap_or_else(|_| CurrencyUnit::custom(unit));
-        self.ensure_keysets_cached_for_unit(mint_url, &parsed_unit)?;
+        self.ensure_keysets_cached_for_unit(mint_url, &parsed_unit, policy)?;
 
         // Opening from raw proofs has the same stale-output-keyset problem as
         // token opens: output proofs must be created for an active mint keyset,
@@ -1428,7 +1449,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         let result = with_active_keyset_retry(
             // Cache-only selection of the first active keyset for the requested
             // unit.
-            || self.first_cached_active_output_keyset(mint_url, &parsed_unit),
+            || self.first_cached_active_output_keyset(mint_url, &parsed_unit, policy),
             // The selected output keyset is already the complete attempt input
             // for this auto path.
             Ok,
@@ -3002,6 +3023,7 @@ mod tests {
         serde_json::json!({
             "keysets": [{
                 "id": keyset_info.keyset_id.to_string(),
+                "unit": keyset_info.unit.to_string(),
                 "keys": keyset_info.active_keys,
             }]
         })
@@ -3093,7 +3115,11 @@ mod tests {
         let response = bridge
             .refresh_keysets_response("https://mint.example")
             .unwrap();
-        assert_eq!(response, keysets_json);
+        assert_eq!(
+            serde_json::json!({"keysets": response.keysets}).to_string(),
+            keysets_json
+        );
+        assert!(response.skipped.is_empty());
         assert_eq!(keysets_calls.get(), 1);
         assert_eq!(keys_calls.get(), 3);
 
@@ -3120,6 +3146,72 @@ mod tests {
         let cached_info = crate::parse_keyset_info_from_json(&cached_info).unwrap();
         assert_eq!(cached_info.keyset_id, old_sat.keyset_id);
         assert_eq!(cached_info.input_fee_ppk, 100);
+    }
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn discovery_skips_future_versions_without_fetching_and_preserves_cache() {
+        use crate::{KeysetSelectionPolicy, KeysetVersions};
+        let (v1, v2, future, keys) = crate::keyset_versions::tests::fixtures();
+        let policy = KeysetSelectionPolicy {
+            allowed_versions: KeysetVersions::V2,
+        };
+        for index in 0..=2 {
+            let mut entries = vec![v1.clone(), v2.clone()];
+            entries.insert(index, future.clone());
+            let keys_calls = Rc::new(Cell::new(0));
+            let keys_by_id = [&v1, &v2].into_iter().map(|entry| {
+                (entry["id"].as_str().unwrap().to_string(), serde_json::json!({"keysets":[future.clone(), {"id":entry["id"], "unit":"sat", "keys":keys}]}).to_string())
+            }).collect();
+            let mut bridge = SpilmanClientBridge::new(
+                ConfigurableClientHost::new_in_memory(),
+                RefreshKeysetsNetworking {
+                    keysets_json: serde_json::json!({"keysets":entries}).to_string(),
+                    keys_by_id,
+                    keysets_calls: Rc::new(Cell::new(0)),
+                    keys_calls: keys_calls.clone(),
+                },
+            );
+            let report = bridge.refresh_keysets_response("mint").unwrap();
+            assert_eq!(report.skipped.len(), 1);
+            assert_eq!(keys_calls.get(), 2);
+            assert_eq!(
+                bridge
+                    .first_cached_active_output_keyset("mint", &CurrencyUnit::Sat, policy)
+                    .unwrap()
+                    .id,
+                v2["id"]
+            );
+            assert!(bridge
+                .first_cached_active_output_keyset(
+                    "mint",
+                    &CurrencyUnit::Sat,
+                    KeysetSelectionPolicy {
+                        allowed_versions: KeysetVersions::V1
+                    }
+                )
+                .is_err());
+            let before = bridge.cached_keysets_for_unit("mint", &CurrencyUnit::Sat);
+            assert_eq!(before.len(), 2);
+            assert!(before.iter().any(|(_, entry)| !entry.active));
+            bridge.networking.keysets_json =
+                serde_json::json!({"keysets":[future.clone()]}).to_string();
+            let report = bridge.refresh_keysets_response("mint").unwrap();
+            assert_eq!(
+                report.unsupported_active_units,
+                vec![Some("sat".to_string())]
+            );
+            assert_eq!(keys_calls.get(), 2);
+            assert_eq!(
+                bridge
+                    .cached_keysets_for_unit("mint", &CurrencyUnit::Sat)
+                    .len(),
+                2
+            );
+            assert!(bridge
+                .fetch_active_keyset_info("mint", &CurrencyUnit::Sat, policy)
+                .is_err());
+        }
     }
 
     #[cfg(feature = "wallet")]

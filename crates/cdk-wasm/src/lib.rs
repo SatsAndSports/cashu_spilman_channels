@@ -1045,6 +1045,34 @@ pub fn compute_funding_token_amount(
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Classify a mint listing and return supported entries plus diagnostics as JSON.
+#[wasm_bindgen]
+pub fn discover_keysets_json(response_json: &str) -> Result<String, JsValue> {
+    cdk_spilman::discover_keysets_json(response_json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Match and verify requested key material against a supported mint listing.
+#[wasm_bindgen]
+pub fn build_keyset_info_from_responses(
+    keysets_json: &str,
+    keys_json: &str,
+    keyset_id: &str,
+) -> Result<String, JsValue> {
+    cdk_spilman::build_keyset_info_from_responses(keysets_json, keys_json, keyset_id)
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Select using an explicit JSON allowed-version policy.
+#[wasm_bindgen]
+pub fn select_active_keyset_json(
+    response_json: &str,
+    unit: &str,
+    policy_json: &str,
+) -> Result<String, JsValue> {
+    cdk_spilman::select_active_keyset_json(response_json, unit, policy_json)
+        .map_err(|e| JsValue::from_str(&e))
+}
+
 #[wasm_bindgen]
 pub fn compute_funding_token_nominal(
     capacity: u64,

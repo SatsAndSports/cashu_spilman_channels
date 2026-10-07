@@ -1,4 +1,5 @@
 import { KeysetCache, PricingTable } from "./stores.js";
+import { discover_keysets_json, build_keyset_info_from_responses } from "../wasm/cdk_wasm.js";
 
 export interface FetchedKeysetEntry {
   id: string;
@@ -13,7 +14,11 @@ export async function fetchAllKeysetsFromMint(
 ): Promise<FetchedKeysetEntry[]> {
   const keysetsResp = await fetch(`${mintUrl}/v1/keysets`);
   if (!keysetsResp.ok) throw new Error(`Failed to fetch keysets: ${keysetsResp.status}`);
-  const keysetsData = await keysetsResp.json();
+  const listing = await keysetsResp.text();
+  const keysetsData = JSON.parse(discover_keysets_json(listing));
+  for (const unit of keysetsData.unsupported_active_units) {
+    console.warn(`Mint ${mintUrl} has only unsupported active keysets for unit ${unit}; supported: V1 (00), V2 (01)`);
+  }
 
   const results: FetchedKeysetEntry[] = [];
 
@@ -21,21 +26,12 @@ export async function fetchAllKeysetsFromMint(
     if (!(ks.unit in pricing)) continue;
 
     const keysResp = await fetch(`${mintUrl}/v1/keys/${ks.id}`);
-    if (!keysResp.ok) continue;
-    const keysData = await keysResp.json();
-    const keys = keysData.keysets[0].keys;
-
-    const keysetInfo = {
-      keysetId: ks.id,
-      unit: ks.unit,
-      keys,
-      inputFeePpk: ks.input_fee_ppk || 0,
-      amounts: Object.keys(keys).map(Number).sort((a: number, b: number) => b - a),
-    };
+    if (!keysResp.ok) throw new Error(`Failed to fetch supported keyset keys: ${keysResp.status}`);
+    const infoJson = build_keyset_info_from_responses(listing, await keysResp.text(), ks.id);
 
     results.push({
       id: ks.id,
-      infoJson: JSON.stringify(keysetInfo),
+      infoJson,
       active: ks.active,
       unit: ks.unit,
     });

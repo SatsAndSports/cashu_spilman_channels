@@ -31,6 +31,7 @@ pub use configurable_networking::ReqwestClientNetworking;
 mod deterministic;
 mod established_channel;
 mod keyset_retry;
+mod keyset_versions;
 mod keysets_and_amounts;
 mod mint_errors;
 mod params;
@@ -64,8 +65,9 @@ pub use bridge::{
     UnblindResult, ValidatedNewChannel,
 };
 pub use client_bridge::{
-    base64_decode, ClientChannelInfo, OpenChannelError, OpenChannelFailureStage, OpenChannelResult,
-    SpilmanClientAsyncNetworking, SpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
+    base64_decode, build_keyset_info_from_responses, ClientChannelInfo, OpenChannelError,
+    OpenChannelFailureStage, OpenChannelResult, SpilmanClientAsyncNetworking, SpilmanClientBridge,
+    SpilmanClientHost, SpilmanClientNetworking,
 };
 #[cfg(feature = "wallet")]
 pub use client_bridge::{
@@ -87,6 +89,10 @@ pub use established_channel::{
 pub use keyset_retry::{
     with_active_keyset_retry, with_active_keyset_retry_async, ActiveKeysetSelection,
     KeysetRetryError, KeysetRetrySuccess, SelectedOutputKeyset,
+};
+pub use keyset_versions::{
+    discover_keysets_json, select_active_keyset_json, supported_keyset_id, KeysetDiscovery,
+    KeysetSelectionPolicy, KeysetVersion, KeysetVersions, SkippedKeysetVersion,
 };
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 pub use mint_errors::{

@@ -839,6 +839,31 @@ fn compute_channel_secret(my_secret_hex: &str, their_pubkey_hex: &str) -> PyResu
         .map_err(PyValueError::new_err)
 }
 
+#[pyfunction]
+fn discover_keysets_json(response_json: &str) -> PyResult<String> {
+    spilman_core::discover_keysets_json(response_json).map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn build_keyset_info_from_responses(
+    keysets_json: &str,
+    keys_json: &str,
+    keyset_id: &str,
+) -> PyResult<String> {
+    spilman_core::build_keyset_info_from_responses(keysets_json, keys_json, keyset_id)
+        .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn select_active_keyset_json(
+    response_json: &str,
+    unit: &str,
+    policy_json: &str,
+) -> PyResult<String> {
+    spilman_core::select_active_keyset_json(response_json, unit, policy_json)
+        .map_err(PyValueError::new_err)
+}
+
 /// Compute the minimum funding_token_amount needed for a given capacity.
 ///
 /// Uses the double-inverse computation to determine the minimum funding token
@@ -1722,6 +1747,12 @@ fn cdk_spilman(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(generate_keypair, m)?)?;
     m.add_function(wrap_pyfunction!(secret_key_to_pubkey, m)?)?;
     m.add_function(wrap_pyfunction!(compute_channel_secret, m)?)?;
+    m.add_function(wrap_pyfunction!(discover_keysets_json, m)?)?;
+    m.add_function(wrap_pyfunction!(build_keyset_info_from_responses, m)?)?;
+    m.add_function(wrap_pyfunction!(select_active_keyset_json, m)?)?;
+    m.add("KEYSET_VERSIONS_V1", ("v1",))?;
+    m.add("KEYSET_VERSIONS_V2", ("v2",))?;
+    m.add("KEYSET_VERSIONS_V1_AND_V2", ("v1", "v2"))?;
     m.add_function(wrap_pyfunction!(compute_funding_token_amount, m)?)?;
     m.add_function(wrap_pyfunction!(channel_parameters_get_channel_id, m)?)?;
     m.add_function(wrap_pyfunction!(create_funding_outputs, m)?)?;

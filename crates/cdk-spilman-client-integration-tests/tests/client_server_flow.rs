@@ -879,6 +879,9 @@ async fn test_open_channel_from_token_auto() {
             now_seconds() + 3600,
             "https://test-mint",
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect("open_channel_from_token_auto should succeed");
 
@@ -933,6 +936,9 @@ async fn test_open_channel_from_proofs_auto() {
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect("open_channel_from_proofs_auto should succeed");
     assert_proofs_state(&mint, &proofs, State::Spent).await;
@@ -1064,6 +1070,9 @@ async fn test_open_channel_from_proofs_auto_allows_multiple_input_keysets() {
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect("open_channel_from_proofs_auto should accept mixed input keysets");
     assert_eq!(open_result.keyset_id, output_keyset.to_string());
@@ -1144,6 +1153,9 @@ async fn test_open_channel_from_proofs_auto_retries_after_inactive_output_keyset
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect("auto open should retry with refreshed active keyset");
     assert_proofs_state(&mint, &input_proofs, State::Spent).await;
@@ -1165,6 +1177,48 @@ async fn test_open_channel_from_proofs_auto_retries_after_inactive_output_keyset
 
     assert_eq!(result.balance, 10);
     assert_eq!(result.capacity, open_result.capacity);
+}
+
+/// A retry must not switch to a version excluded by the original opening policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_retry_does_not_expand_allowed_versions() {
+    let mut helper = TestMintHelper::new().await.unwrap();
+    let mint = helper.mint();
+    let stale_listing = InMemoryMintNetworking::new(mint.clone())
+        .call_mint_keysets("https://test-mint")
+        .unwrap();
+    let proofs = helper.mint_proofs(500).await.unwrap();
+    helper.rotate_sat_keyset_to_v1().await.unwrap();
+    let sender = SecretKey::generate();
+    let receiver = SecretKey::generate();
+    let mut host = ConfigurableClientHost::new_in_memory();
+    host.add_key(sender.clone());
+    let swaps = Arc::new(AtomicUsize::new(0));
+    let bridge = SpilmanClientBridge::new(
+        host,
+        StaleFirstKeysetNetworking::new(
+            InMemoryMintNetworking::new(mint.clone()),
+            stale_listing,
+            swaps.clone(),
+        ),
+    );
+    let error = bridge
+        .open_channel_from_proofs_auto(
+            "https://test-mint",
+            "sat",
+            &serde_json::to_string(&proofs).unwrap(),
+            &receiver.public_key().to_hex(),
+            &sender.public_key().to_hex(),
+            now_seconds() + 3600,
+            64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V2,
+            },
+        )
+        .unwrap_err();
+    assert!(error.message.contains("compatible"), "{error:?}");
+    assert_eq!(swaps.load(Ordering::SeqCst), 1);
+    assert_proofs_state(&mint, &proofs, State::Unspent).await;
 }
 
 /// Test that a real mint rejection for an inactive output keyset does not spend inputs.
@@ -1259,6 +1313,9 @@ async fn test_open_channel_from_proofs_auto_keeps_ambiguous_swap_failure_opening
             &sender_secret.public_key().to_hex(),
             now_seconds() + 3600,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect_err("ambiguous swap failure should fail opening");
 
@@ -1424,6 +1481,9 @@ async fn assert_reqwest_client_networking_http_round_trip(
             now_seconds() + 3600,
             &mint_url,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+            },
         )
         .expect("open_channel_from_token_auto over HTTP should succeed");
 
@@ -1566,6 +1626,9 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
             now_seconds() + 3600,
             &mint_url,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V2,
+            },
         )
         .expect("V2 keyset should open a channel before rotation");
     register_channel(&client_bridge, &server_bridge, &v2_channel.channel_id);
@@ -1641,6 +1704,9 @@ async fn test_reqwest_client_networking_mixed_v1_v2_keysets() {
             now_seconds() + 3600,
             &mint_url,
             64,
+            cdk_spilman::KeysetSelectionPolicy {
+                allowed_versions: cdk_spilman::KeysetVersions::V1,
+            },
         )
         .expect("V1 keyset should open a channel after rotation");
 

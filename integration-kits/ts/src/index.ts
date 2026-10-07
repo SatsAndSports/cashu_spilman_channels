@@ -42,7 +42,8 @@ export {
   getBridgeErrorReason,
 } from "./express.js";
 export { ConfigurableSpilman, type SpilmanConfig } from "./config.js";
-export { demoFetchActiveKeysetInfo, demoMintFundingToken, demoMintPlainProofs } from "./demo.js";
+export { demoFetchActiveKeysetInfo, demoMintFundingToken, demoMintPlainProofs, KEYSET_VERSIONS_V1, KEYSET_VERSIONS_V2, KEYSET_VERSIONS_V1_AND_V2 } from "./demo.js";
+export type { KeysetVersion } from "./demo.js";
 export { SpilmanClientBridge, type SpilmanClientHost } from "./client_bridge.js";
 export { InMemorySpilmanClientHost } from "./in_memory_client_host.js";
 

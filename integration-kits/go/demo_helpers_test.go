@@ -4,6 +4,7 @@ package spilmankit
 
 import (
 	"encoding/json"
+	"github.com/cashubtc/spilman-go/spilman"
 	"os"
 	"testing"
 )
@@ -15,7 +16,7 @@ func TestDemoMintPlainProofs(t *testing.T) {
 	}
 
 	// 1. Fetch keyset info
-	ki, err := DemoFetchActiveKeysetInfo(mintURL, "sat")
+	ki, err := DemoFetchActiveKeysetInfo(mintURL, "sat", spilman.KeysetSelectionPolicy{AllowedVersions: spilman.KeysetVersionsV1AndV2()})
 	if err != nil {
 		t.Fatalf("DemoFetchActiveKeysetInfo failed: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestDemoFetchActiveKeysetInfo(t *testing.T) {
 		t.Skip("MINT_URL not set, skipping integration test")
 	}
 
-	ki, err := DemoFetchActiveKeysetInfo(mintURL, "sat")
+	ki, err := DemoFetchActiveKeysetInfo(mintURL, "sat", spilman.KeysetSelectionPolicy{AllowedVersions: spilman.KeysetVersionsV1AndV2()})
 	if err != nil {
 		t.Fatalf("DemoFetchActiveKeysetInfo failed: %v", err)
 	}
