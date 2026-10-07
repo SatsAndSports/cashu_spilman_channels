@@ -10,7 +10,7 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
-The workspace is preparing **0.2.0**. Breaking pre-1.0 APIs receive a minor version
+The current version is **0.2.0** (early alpha). Breaking pre-1.0 APIs receive a minor version
 bump; compatible fixes receive a patch bump. See [CHANGELOG.md](CHANGELOG.md) for
 the coordinated binding updates and new explicit keyset-selection policy.
 
