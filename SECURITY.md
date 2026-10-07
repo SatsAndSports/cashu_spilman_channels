@@ -10,9 +10,10 @@ To report security issues send an email to **tsk@thesimplekid.com**
 - Dependency audits run weekly, manually, and on dependency-changing PRs. PRs
   run only the affected ecosystems; changes to the audit workflow run all audits.
   Rust uses `cargo audit` against the workspace lockfile. npm audits both lockfiles
-  including development dependencies. Go checks all four modules with
+  including development dependencies. Go checks the binding, kit, and demo modules with
   `govulncheck -scan=module`, avoiding Rust/cgo builds; this reports vulnerable
-  module versions, not whether vulnerable symbols are reachable. Python audits
+  module versions, not whether vulnerable symbols are reachable. The empty parent
+  Go module has no packages or dependencies to scan. Python audits
   resolved demo requirements plus binding/kit build, runtime, and optional-extra
   requirements without building the local Rust extension. Unlocked Python
   requirements describe the current resolution, not every previously installed

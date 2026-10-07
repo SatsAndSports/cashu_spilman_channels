@@ -97,10 +97,12 @@ jobs:
 
       # Module-level checks avoid compiling the Rust/cgo bridge. They report
       # vulnerable dependencies without claiming symbol-level reachability.
-      - name: Check all Go modules
+      # crates/cdk-spilman-go/go.mod is an empty module boundary with no Go
+      # sources or dependencies; the actual binding module is in spilman/.
+      - name: Check Go binding, kit, and demo modules
         run: |
           status=0
-          for module in crates/cdk-spilman-go crates/cdk-spilman-go/spilman integration-kits/go examples/go-ascii-art; do
+          for module in crates/cdk-spilman-go/spilman integration-kits/go examples/go-ascii-art; do
             (cd "$module" && govulncheck -scan=module) || status=1
           done
           exit "$status"
