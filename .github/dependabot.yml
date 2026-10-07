@@ -12,6 +12,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 90
     open-pull-requests-limit: 3
     groups:
       compatible-rust:
@@ -23,6 +25,8 @@ updates:
       - /examples/ts-ascii-art
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 90
     open-pull-requests-limit: 2
     groups:
       compatible-npm:
@@ -35,6 +39,8 @@ updates:
       - /examples/python-ascii-art
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 90
     open-pull-requests-limit: 2
     groups:
       compatible-python:
@@ -48,6 +54,8 @@ updates:
       - /examples/go-ascii-art
     schedule:
       interval: weekly
+    cooldown:
+      semver-major-days: 90
     open-pull-requests-limit: 2
     groups:
       compatible-go:
