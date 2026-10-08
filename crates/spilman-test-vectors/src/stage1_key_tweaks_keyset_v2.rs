@@ -1,9 +1,7 @@
 //! V2-keyset test vector for stage-1 P2PK key tweaks.
 
-use hmac::{Hmac, Mac};
-use k256::{
-    elliptic_curve::sec1::ToEncodedPoint, AffinePoint, ProjectivePoint, PublicKey, SecretKey,
-};
+use hmac::{Hmac, KeyInit, Mac};
+use k256::{elliptic_curve::sec1::ToSec1Point, AffinePoint, ProjectivePoint, PublicKey, SecretKey};
 use sha2::Sha256;
 
 use crate::channel_id::spilman_test_vector_channel_id_keysetv2;
@@ -91,7 +89,7 @@ pub fn derive_stage1_key_tweaks_reference() -> Vec<Stage1KeyTweakReference> {
             )
             .expect("valid secp256k1 public key");
             let affine = *public_key.as_affine();
-            let encoded = affine.to_encoded_point(true);
+            let encoded = affine.to_sec1_point(true);
             let effective = if encoded.as_bytes()[0] == 3 {
                 -ProjectivePoint::from(affine)
             } else {
@@ -101,7 +99,7 @@ pub fn derive_stage1_key_tweaks_reference() -> Vec<Stage1KeyTweakReference> {
             let blinded = AffinePoint::from(
                 effective + ProjectivePoint::GENERATOR * tweak.to_nonzero_scalar().as_ref(),
             )
-            .to_encoded_point(true);
+            .to_sec1_point(true);
             Stage1KeyTweakReference {
                 context: entry.context,
                 message: String::from_utf8(message).expect("ASCII message"),

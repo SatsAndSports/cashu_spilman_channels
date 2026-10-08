@@ -1,6 +1,6 @@
 //! V2-keyset test vector for deterministic output nonces and Cashu blinding factors.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use k256::SecretKey;
 use sha2::Sha256;
 
