@@ -1,9 +1,7 @@
 //! Test vectors for the channel-secret derivation.
 
-use hmac::{Hmac, Mac};
-use k256::{
-    elliptic_curve::sec1::ToEncodedPoint, AffinePoint, ProjectivePoint, PublicKey, SecretKey,
-};
+use hmac::{Hmac, KeyInit, Mac};
+use k256::{elliptic_curve::sec1::ToSec1Point, AffinePoint, ProjectivePoint, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 
 /// Canonical name of the channel-secret compatibility fixture.
@@ -81,7 +79,7 @@ pub fn spilman_test_vector_channel_secret_hkdf() -> ChannelSecretTestVector {
 fn compressed_public_key(secret_key: &SecretKey) -> [u8; 33] {
     let point = ProjectivePoint::GENERATOR * secret_key.to_nonzero_scalar().as_ref();
     AffinePoint::from(point)
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .try_into()
         .expect("compressed secp256k1 public keys are 33 bytes")
@@ -122,7 +120,7 @@ pub fn derive_spilman_test_vector_channel_secret_hkdf_reference() -> ChannelSecr
         ProjectivePoint::from(*charlie_public.as_affine())
             * alice_secret.to_nonzero_scalar().as_ref(),
     )
-    .to_encoded_point(true)
+    .to_sec1_point(true)
     .as_bytes()
     .try_into()
     .expect("compressed shared points are 33 bytes");

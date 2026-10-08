@@ -1,9 +1,7 @@
 //! V2-keyset reference derivations for stage-2 P2BK key material.
 
-use hmac::{Hmac, Mac};
-use k256::{
-    elliptic_curve::sec1::ToEncodedPoint, AffinePoint, ProjectivePoint, PublicKey, SecretKey,
-};
+use hmac::{Hmac, KeyInit, Mac};
+use k256::{elliptic_curve::sec1::ToSec1Point, AffinePoint, ProjectivePoint, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 
 use crate::channel_id::spilman_test_vector_channel_id_keysetv2;
@@ -106,7 +104,7 @@ pub struct Stage2P2bkReference {
 }
 
 fn encoded(point: ProjectivePoint) -> String {
-    hex::encode(AffinePoint::from(point).to_encoded_point(true).as_bytes())
+    hex::encode(AffinePoint::from(point).to_sec1_point(true).as_bytes())
 }
 
 fn derive_one(
@@ -136,8 +134,7 @@ fn derive_one(
     .expect("valid recipient public key");
     let shared =
         ProjectivePoint::from(*recipient.as_affine()) * ephemeral.to_nonzero_scalar().as_ref();
-    let shared_secret_x: [u8; 32] = AffinePoint::from(shared).to_encoded_point(true).as_bytes()
-        [1..]
+    let shared_secret_x: [u8; 32] = AffinePoint::from(shared).to_sec1_point(true).as_bytes()[1..]
         .try_into()
         .expect("compressed point x-coordinate");
     let (p2bk_retry_counter, p2bk_scalar) = [None, Some(0xff)]
@@ -157,7 +154,7 @@ fn derive_one(
         })
         .expect("valid fixed P2BK scalar");
     let recipient_affine = *recipient.as_affine();
-    let effective_recipient = if recipient_affine.to_encoded_point(true).as_bytes()[0] == 3 {
+    let effective_recipient = if recipient_affine.to_sec1_point(true).as_bytes()[0] == 3 {
         -ProjectivePoint::from(recipient_affine)
     } else {
         ProjectivePoint::from(recipient_affine)
@@ -174,7 +171,7 @@ fn derive_one(
         },
         ephemeral_message,
         ephemeral_secret,
-        ephemeral_pubkey: hex::encode(ephemeral.public_key().to_encoded_point(true).as_bytes()),
+        ephemeral_pubkey: hex::encode(ephemeral.public_key().to_sec1_point(true).as_bytes()),
         shared_secret_x,
         p2bk_retry_counter,
         p2bk_scalar,

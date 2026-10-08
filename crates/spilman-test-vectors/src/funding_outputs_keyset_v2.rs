@@ -1,6 +1,6 @@
 //! V2-keyset test vector for complete funding-token outputs.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::channel_id::spilman_test_vector_channel_id_keysetv2;
