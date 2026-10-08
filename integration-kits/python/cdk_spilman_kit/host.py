@@ -111,7 +111,7 @@ class BaseSpilmanHost:
                 "signature": signature
             }
 
-    def get_channel_state(self, channel_id: str) -> str | None:
+    def get_channel_state(self, channel_id: str) -> Optional[str]:
         if channel_id in self.stores.channel_closed:
             return "closed"
         if channel_id in self.stores.channel_closing:

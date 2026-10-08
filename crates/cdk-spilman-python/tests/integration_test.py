@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import time
+from typing import Optional
 
 import pytest
 import requests
@@ -21,7 +22,7 @@ def get_mint_url():
     return os.environ.get("MINT_URL", "http://localhost:3338")
 
 
-def fetch_active_keyset(mint_url: str, unit: str) -> dict | None:
+def fetch_active_keyset(mint_url: str, unit: str) -> Optional[dict]:
     """Fetch the active keyset for a unit from the mint."""
     try:
         # Get keysets
@@ -281,10 +282,10 @@ class MockClientHost:
         self.failures[channel_id] = failure_json
         self.channel_state[channel_id] = "opening_failed"
 
-    def get_channel_funding(self, channel_id: str) -> str | None:
+    def get_channel_funding(self, channel_id: str) -> Optional[str]:
         return self.funding.get(channel_id)
 
-    def get_channel_opening_from_swap(self, channel_id: str) -> str | None:
+    def get_channel_opening_from_swap(self, channel_id: str) -> Optional[str]:
         if self.channel_state.get(channel_id) != "opening_from_swap":
             return None
         return self.opening.get(channel_id)
@@ -293,7 +294,7 @@ class MockClientHost:
     # Payment State (mutable)
     # ========================================================================
 
-    def get_payment_state(self, channel_id: str) -> str | None:
+    def get_payment_state(self, channel_id: str) -> Optional[str]:
         return self.payment_state.get(channel_id)
 
     def record_payment(self, channel_id: str, state_json: str):
@@ -363,7 +364,7 @@ class MockServerHost:
     def mint_and_keyset_is_acceptable(self, mint: str, keyset_id: str) -> bool:
         return True
 
-    def get_funding_and_params(self, channel_id: str) -> tuple | None:
+    def get_funding_and_params(self, channel_id: str) -> Optional[tuple]:
         data = self.funding_data.get(channel_id)
         if data is None:
             return None
@@ -386,7 +387,7 @@ class MockServerHost:
             keyset_info_json,
         )
 
-    def get_amount_due(self, channel_id: str, context_json: str | None) -> int:
+    def get_amount_due(self, channel_id: str, context_json: Optional[str]) -> int:
         return 0
 
     def record_payment(
@@ -394,7 +395,7 @@ class MockServerHost:
     ):
         self.payments[channel_id] = (balance, signature)
 
-    def get_channel_state(self, channel_id: str) -> str | None:
+    def get_channel_state(self, channel_id: str) -> Optional[str]:
         return "open" if channel_id in self.funding_data else None
 
     def mark_channel_closing(
@@ -415,7 +416,7 @@ class MockServerHost:
 
     def get_balance_and_signature_for_unilateral_exit(
         self, channel_id: str
-    ) -> tuple | None:
+    ) -> Optional[tuple]:
         data = self.payments.get(channel_id)
         if data is None:
             return None
@@ -424,7 +425,7 @@ class MockServerHost:
     def get_active_keyset_ids(self, mint: str, unit: str) -> list[str]:
         return [self.keyset_id]
 
-    def get_keyset_info(self, mint: str, keyset_id: str) -> str | None:
+    def get_keyset_info(self, mint: str, keyset_id: str) -> Optional[str]:
         if keyset_id == self.keyset_id:
             return self.keyset_info_json
         return None

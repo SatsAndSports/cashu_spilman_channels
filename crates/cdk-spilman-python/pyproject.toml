@@ -6,12 +6,11 @@ build-backend = "maturin"
 name = "cdk-spilman"
 version = "0.2.0"
 description = "Python bindings for CDK Spilman payment channels"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
