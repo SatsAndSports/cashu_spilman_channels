@@ -9,6 +9,8 @@ This example shows a minimal server and client using the Python integration kit.
 
 ## Prerequisites
 
+Python 3.9 or newer is required.
+
 1. Build Python bindings (from repo root):
    ```bash
    make -C crates/cdk-spilman-python build

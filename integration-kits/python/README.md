@@ -11,6 +11,8 @@ Standard components for integrating Spilman payment channels into Python web app
 
 ## Installation
 
+Python 3.9 or newer is required.
+
 ```bash
 pip install cdk-spilman-kit[flask]  # or [fastapi]
 ```
