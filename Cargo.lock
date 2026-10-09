@@ -724,7 +724,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bitcoin",
  "bls12_381",
  "cashu",
@@ -813,7 +813,7 @@ name = "cdk-spilman-server-integration-tests"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cashu",
  "cdk-spilman",
  "command-group",
@@ -3319,7 +3319,7 @@ name = "rust-ascii-art"
 version = "0.2.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cashu",
  "cdk-spilman",
  "figlet-rs",
