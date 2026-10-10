@@ -222,4 +222,4 @@ make kill-orphans
 ### HTTP 431 / Request Header Fields Too Large
 
 Usually caused by high-capacity `msat` channels with many small proofs.
-**Workaround**: Use a larger `maximum_amount` (e.g., 8192) when funding to reduce the proof count.
+**Workaround**: Use a larger `maximum_amount_for_one_output` (e.g., 8192) when funding to reduce the proof count.
