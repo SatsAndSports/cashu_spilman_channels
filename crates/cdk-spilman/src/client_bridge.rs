@@ -3494,6 +3494,9 @@ mod tests {
         let registration = bridge.sign_channel_registration(&channel_id).unwrap();
         assert_eq!(registration.balance, 0);
         assert!(registration.has_funding());
+        let registration_params = registration.params.as_ref().unwrap();
+        assert_eq!(registration_params["maximum_amount_for_one_output"], 0);
+        assert!(registration_params.get("maximum_amount").is_none());
         assert_eq!(
             bridge
                 .get_channel_info(&channel_id)

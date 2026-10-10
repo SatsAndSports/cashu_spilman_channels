@@ -61,7 +61,7 @@ The channel ID is a SHA256 hash of all canonical channel parameters, using pipe-
 ```
 channel_id = SHA256(
   mint_url | unit | capacity | funding_token_amount |
-  keyset_id | input_fee_ppk | maximum_amount |
+  keyset_id | input_fee_ppk | maximum_amount_for_one_output |
   setup_timestamp | sender_pubkey | receiver_pubkey |
   expiry_timestamp | channel_secret_hex
 )

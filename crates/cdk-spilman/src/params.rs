@@ -396,7 +396,8 @@ impl ChannelParameters {
     /// Create channel parameters from a JSON string and a secret key
     ///
     /// The JSON should contain: mint, unit, capacity, keyset_id, input_fee_ppk,
-    /// maximum_amount, setup_timestamp, sender_pubkey, receiver_pubkey, expiry_timestamp
+    /// maximum_amount_for_one_output, setup_timestamp, sender_pubkey, receiver_pubkey,
+    /// expiry_timestamp
     /// (as produced by `get_channel_id_params_json`)
     ///
     /// Additional parameters needed:
@@ -503,10 +504,11 @@ impl ChannelParameters {
             .as_u64()
             .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'funding_token_amount' field"))?;
 
-        let maximum_amount_for_one_output = json["maximum_amount"]
+        let maximum_amount_for_one_output = json["maximum_amount_for_one_output"]
             .as_u64()
-            .or_else(|| json["maximum_amount_for_one_output"].as_u64())
-            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'maximum_amount' field"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing or invalid 'maximum_amount_for_one_output' field")
+            })?;
 
         let setup_timestamp = json["setup_timestamp"]
             .as_u64()
@@ -552,7 +554,7 @@ impl ChannelParameters {
     }
 
     /// Get channel ID as raw bytes (32-byte SHA256 hash)
-    /// The hash is computed over: mint|unit|capacity|funding_token_amount|keyset_id|input_fee_ppk|maximum_amount|setup_timestamp|sender_pubkey|receiver_pubkey|expiry_timestamp|channel_secret
+    /// The hash is computed over: mint|unit|capacity|funding_token_amount|keyset_id|input_fee_ppk|maximum_amount_for_one_output|setup_timestamp|sender_pubkey|receiver_pubkey|expiry_timestamp|channel_secret
     ///
     /// The channel_secret (channel_secret) is included implicitly — it does not
     /// appear in `get_channel_id_params_json()`. This means the channel ID can
@@ -591,7 +593,7 @@ impl ChannelParameters {
             "funding_token_amount": self.funding_token_amount,
             "keyset_id": self.keyset_info.keyset_id.to_string(),
             "input_fee_ppk": self.keyset_info.input_fee_ppk,
-            "maximum_amount": self.maximum_amount_for_one_output,
+            "maximum_amount_for_one_output": self.maximum_amount_for_one_output,
             "setup_timestamp": self.setup_timestamp,
             "sender_pubkey": self.sender_pubkey.to_hex(),
             "receiver_pubkey": self.receiver_pubkey.to_hex(),
@@ -1207,6 +1209,9 @@ mod tests {
         // Get the channel ID and JSON
         let original_channel_id = original_params.get_channel_id();
         let json = original_params.get_channel_id_params_json();
+        let json_value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json_value["maximum_amount_for_one_output"], 64);
+        assert!(json_value.get("maximum_amount").is_none());
 
         println!("Channel ID: {}", original_channel_id);
         println!("JSON: {}", json);
@@ -1231,6 +1236,20 @@ mod tests {
             original_channel_id, reconstructed_channel_id,
             "Channel IDs should match after JSON roundtrip"
         );
+
+        let mut legacy_json = json_value;
+        legacy_json["maximum_amount"] = legacy_json["maximum_amount_for_one_output"].take();
+        legacy_json
+            .as_object_mut()
+            .unwrap()
+            .remove("maximum_amount_for_one_output");
+        let error = ChannelParameters::from_json_with_secret_key(
+            &legacy_json.to_string(),
+            reconstructed_params.keyset_info,
+            &charlie_secret,
+        )
+        .expect_err("legacy maximum_amount must not be accepted");
+        assert!(error.to_string().contains("maximum_amount_for_one_output"));
     }
 
     #[test]
