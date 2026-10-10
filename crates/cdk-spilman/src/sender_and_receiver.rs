@@ -34,8 +34,14 @@ impl std::error::Error for SenderCloseKeysetMissing {}
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ChannelVerificationError {
+    /// A funding proof contains a spend witness
+    UnexpectedWitness { proof_index: usize, amount: u64 },
+    /// A funding proof contains a NUT-28 ephemeral public key
+    UnexpectedP2pkE { proof_index: usize, amount: u64 },
     /// DLEQ proof is missing for a proof
     MissingDleq { proof_index: usize, amount: u64 },
+    /// DLEQ proof uses a different blinding factor than the deterministic output
+    DleqBlindingFactorMismatch { proof_index: usize, amount: u64 },
     /// DLEQ proof is invalid (cryptographic verification failed)
     InvalidDleq {
         proof_index: usize,
@@ -48,6 +54,12 @@ pub enum ChannelVerificationError {
     InvalidKeysetId { expected: String, computed: String },
     /// Total value of funding proofs doesn't match funding_token_amount
     ValueMismatch { expected: u64, actual: u64 },
+    /// Total value of funding proofs exceeds the supported range
+    ValueOverflow {
+        proof_index: usize,
+        accumulated: u64,
+        amount: u64,
+    },
     /// Number of funding proofs doesn't match expected count
     CountMismatch { expected: usize, actual: usize },
     /// A proof's secret doesn't match the deterministic derivation
@@ -104,9 +116,10 @@ impl ChannelVerificationResult {
 /// needs to check before accepting it:
 ///
 /// 1. Keyset ID matches the keys (prevents key substitution attacks)
-/// 2. DLEQ proofs - the mint actually signed each funding proof (offline verification)
-/// 3. Total value matches expected funding amount
-/// 4. Secret structure matches expected deterministic derivation
+/// 2. Funding proofs do not contain spend-only witness or P2PK metadata
+/// 3. DLEQ proofs are valid and use the expected deterministic blinding factors
+/// 4. Total value matches expected funding amount
+/// 5. Secret structure matches expected deterministic derivation
 ///
 /// Returns a result containing all verification errors found (if any)
 pub fn verify_valid_channel(
@@ -140,17 +153,60 @@ pub fn verify_valid_channel(
         // Continue to collect other errors
     }
 
-    // 2. Verify DLEQ for each funding proof
+    let expected_outputs = match DeterministicOutputsForOneContext::new(
+        "funding".to_string(),
+        params.funding_token_amount,
+        params.clone(),
+    ) {
+        Ok(outputs) => match outputs.get_secrets_with_blinding() {
+            Ok(secrets) => secrets,
+            Err(e) => {
+                errors.push(ChannelVerificationError::InternalError(e.to_string()));
+                return ChannelVerificationResult::failed(errors);
+            }
+        },
+        Err(e) => {
+            errors.push(ChannelVerificationError::InternalError(e.to_string()));
+            return ChannelVerificationResult::failed(errors);
+        }
+    };
+
+    // 2. Reject spend-only metadata and verify DLEQ for each funding proof.
     for (i, proof) in funding_proofs.iter().enumerate() {
         let amount = u64::from(proof.amount);
 
-        // Check that DLEQ is present
-        if proof.dleq.is_none() {
-            errors.push(ChannelVerificationError::MissingDleq {
+        if proof.witness.is_some() {
+            errors.push(ChannelVerificationError::UnexpectedWitness {
                 proof_index: i,
                 amount,
             });
-            continue;
+        }
+        if proof.p2pk_e.is_some() {
+            errors.push(ChannelVerificationError::UnexpectedP2pkE {
+                proof_index: i,
+                amount,
+            });
+        }
+
+        // Check that DLEQ is present
+        let dleq = match &proof.dleq {
+            Some(dleq) => dleq,
+            None => {
+                errors.push(ChannelVerificationError::MissingDleq {
+                    proof_index: i,
+                    amount,
+                });
+                continue;
+            }
+        };
+
+        if let Some(expected) = expected_outputs.get(i) {
+            if dleq.r != expected.blinding_factor {
+                errors.push(ChannelVerificationError::DleqBlindingFactorMismatch {
+                    proof_index: i,
+                    amount,
+                });
+            }
         }
 
         // Get the mint's public key for this amount
@@ -178,9 +234,25 @@ pub fn verify_valid_channel(
         }
     }
 
-    // 3. Verify total value
-    let total_value: u64 = funding_proofs.iter().map(|p| u64::from(p.amount)).sum();
-    if total_value != params.funding_token_amount {
+    // 3. Verify total value without allowing release-mode wrapping.
+    let mut total_value = 0u64;
+    let mut value_overflowed = false;
+    for (proof_index, proof) in funding_proofs.iter().enumerate() {
+        let amount = u64::from(proof.amount);
+        match total_value.checked_add(amount) {
+            Some(total) => total_value = total,
+            None => {
+                errors.push(ChannelVerificationError::ValueOverflow {
+                    proof_index,
+                    accumulated: total_value,
+                    amount,
+                });
+                value_overflowed = true;
+                break;
+            }
+        }
+    }
+    if !value_overflowed && total_value != params.funding_token_amount {
         errors.push(ChannelVerificationError::ValueMismatch {
             expected: params.funding_token_amount,
             actual: total_value,
@@ -188,24 +260,6 @@ pub fn verify_valid_channel(
     }
 
     // 4. Verify structural consistency
-    let expected_outputs = match DeterministicOutputsForOneContext::new(
-        "funding".to_string(),
-        params.funding_token_amount,
-        params.clone(),
-    ) {
-        Ok(outputs) => match outputs.get_secrets_with_blinding() {
-            Ok(secrets) => secrets,
-            Err(e) => {
-                errors.push(ChannelVerificationError::InternalError(e.to_string()));
-                return ChannelVerificationResult::failed(errors);
-            }
-        },
-        Err(e) => {
-            errors.push(ChannelVerificationError::InternalError(e.to_string()));
-            return ChannelVerificationResult::failed(errors);
-        }
-    };
-
     if funding_proofs.len() != expected_outputs.len() {
         errors.push(ChannelVerificationError::CountMismatch {
             expected: expected_outputs.len(),
@@ -483,13 +537,173 @@ impl SpilmanChannelSender {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
 
     use super::*;
+    use crate::deterministic::DeterministicSecretWithBlinding;
     use crate::params::mock_keyset_info;
-    use cashu::nuts::{CheckStateResponse, CurrencyUnit, RestoreResponse, SwapResponse};
+    use cashu::nuts::{
+        BlindSignature, CheckStateResponse, CurrencyUnit, Id, Keys, RestoreResponse, SwapResponse,
+    };
+
+    fn mint_funding_proof(
+        output: &DeterministicSecretWithBlinding,
+        blinding_factor: SecretKey,
+        params: &ChannelParameters,
+        mint_secret: &SecretKey,
+    ) -> Proof {
+        let amount = Amount::from(output.amount);
+        let (blinded_message, _) =
+            cashu::dhke::blind_message(&output.secret.to_bytes(), Some(blinding_factor.clone()))
+                .unwrap();
+        let blinded_signature = cashu::dhke::sign_message(mint_secret, &blinded_message).unwrap();
+        let signature = BlindSignature::new(
+            amount,
+            blinded_signature,
+            params.keyset_info.keyset_id,
+            &blinded_message,
+            mint_secret,
+        )
+        .unwrap();
+
+        cashu::dhke::construct_proofs(
+            vec![signature],
+            vec![blinding_factor],
+            vec![output.secret.clone()],
+            &params.keyset_info.active_keys,
+        )
+        .unwrap()
+        .remove(0)
+    }
+
+    fn valid_channel_fixture() -> (Vec<Proof>, ChannelParameters, SecretKey) {
+        let mint_secret = SecretKey::generate();
+        let active_keys = Keys::new(
+            [1u64, 2, 4, 8, u64::MAX]
+                .into_iter()
+                .map(|amount| (Amount::from(amount), mint_secret.public_key()))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let keyset_info = crate::KeysetInfo::new(
+            Id::v1_from_keys(&active_keys),
+            CurrencyUnit::Sat,
+            active_keys,
+            0,
+            None,
+        );
+        let sender_secret = SecretKey::generate();
+        let params = ChannelParameters::new_with_secret_key(
+            sender_secret.public_key(),
+            SecretKey::generate().public_key(),
+            "local".to_string(),
+            CurrencyUnit::Sat,
+            8,
+            8,
+            0,
+            0,
+            keyset_info,
+            0,
+            &sender_secret,
+        )
+        .unwrap();
+        let outputs = DeterministicOutputsForOneContext::new(
+            "funding".to_string(),
+            params.funding_token_amount,
+            params.clone(),
+        )
+        .unwrap()
+        .get_secrets_with_blinding()
+        .unwrap();
+        let proofs = outputs
+            .iter()
+            .map(|output| {
+                mint_funding_proof(
+                    output,
+                    output.blinding_factor.clone(),
+                    &params,
+                    &mint_secret,
+                )
+            })
+            .collect();
+
+        (proofs, params, mint_secret)
+    }
+
+    #[test]
+    fn verify_valid_channel_accepts_deterministic_dleq_blinding_factor() {
+        let (proofs, params, _) = valid_channel_fixture();
+
+        let result = verify_valid_channel(&proofs, &params);
+
+        assert!(result.is_ok(), "unexpected errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn verify_valid_channel_rejects_alternate_valid_dleq_blinding_factor() {
+        let (mut proofs, params, mint_secret) = valid_channel_fixture();
+        let output = params
+            .create_deterministic_output_with_blinding("funding", u64::from(proofs[0].amount), 0)
+            .unwrap();
+        let alternate_r = SecretKey::generate();
+        assert_ne!(alternate_r, output.blinding_factor);
+        proofs[0] = mint_funding_proof(&output, alternate_r, &params, &mint_secret);
+        assert!(proofs[0].verify_dleq(mint_secret.public_key()).is_ok());
+
+        let result = verify_valid_channel(&proofs, &params);
+
+        assert!(result.errors.iter().any(|error| matches!(
+            error,
+            ChannelVerificationError::DleqBlindingFactorMismatch { proof_index: 0, .. }
+        )));
+    }
+
+    #[test]
+    fn verify_valid_channel_rejects_funding_witness() {
+        let (mut proofs, params, _) = valid_channel_fixture();
+        proofs[0].witness = Some(Witness::P2PKWitness(P2PKWitness::default()));
+
+        let result = verify_valid_channel(&proofs, &params);
+
+        assert!(result.errors.iter().any(|error| matches!(
+            error,
+            ChannelVerificationError::UnexpectedWitness { proof_index: 0, .. }
+        )));
+    }
+
+    #[test]
+    fn verify_valid_channel_rejects_funding_p2pk_e() {
+        let (mut proofs, params, _) = valid_channel_fixture();
+        proofs[0].p2pk_e = Some(SecretKey::generate().public_key());
+
+        let result = verify_valid_channel(&proofs, &params);
+
+        assert!(result.errors.iter().any(|error| matches!(
+            error,
+            ChannelVerificationError::UnexpectedP2pkE { proof_index: 0, .. }
+        )));
+    }
+
+    #[test]
+    fn verify_valid_channel_reports_funding_total_overflow() {
+        let (proofs, params, _) = valid_channel_fixture();
+        let mut oversized = vec![proofs[0].clone(), proofs[0].clone()];
+        oversized[0].amount = Amount::from(u64::MAX);
+        oversized[1].amount = Amount::from(u64::MAX);
+
+        let result = verify_valid_channel(&oversized, &params);
+
+        assert!(result.errors.iter().any(|error| matches!(
+            error,
+            ChannelVerificationError::ValueOverflow {
+                proof_index: 1,
+                accumulated: u64::MAX,
+                amount: u64::MAX,
+            }
+        )));
+    }
 
     struct RecordingMintConnection {
         attempted_amounts: Mutex<Vec<u64>>,

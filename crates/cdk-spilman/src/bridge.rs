@@ -1634,9 +1634,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 .ok_or(BridgeError::InvalidRequest(
                     "Missing expiry_timestamp".into(),
                 ))?;
-        let maximum_amount = params_val["maximum_amount"]
-            .as_u64()
-            .ok_or(BridgeError::InvalidRequest("Missing maximum_amount".into()))?;
+        let maximum_amount = params_val["maximum_amount_for_one_output"].as_u64().ok_or(
+            BridgeError::InvalidRequest("Missing maximum_amount_for_one_output".into()),
+        )?;
         let receiver_pubkey_hex =
             params_val["receiver_pubkey"]
                 .as_str()
@@ -3100,7 +3100,7 @@ mod tests {
             ma: true,
             state: Ok(None),
         });
-        let p = serde_json::json!({ "sender_pubkey": SecretKey::generate().public_key().to_hex(), "receiver_pubkey": SecretKey::generate().public_key().to_hex(), "mint": "https://m", "unit": "sat", "capacity": 1000, "funding_token_amount": 1000, "maximum_amount": 64, "expiry_timestamp": 1700007200, "setup_timestamp": 1700000000, "keyset_id": "00" });
+        let p = serde_json::json!({ "sender_pubkey": SecretKey::generate().public_key().to_hex(), "receiver_pubkey": SecretKey::generate().public_key().to_hex(), "mint": "https://m", "unit": "sat", "capacity": 1000, "funding_token_amount": 1000, "maximum_amount_for_one_output": 64, "expiry_timestamp": 1700007200, "setup_timestamp": 1700000000, "keyset_id": "00" });
         let pay = serde_json::json!({ "channel_id": "i", "balance": 100, "signature": "s", "params": p, "funding_proofs": [] });
         assert!(b
             .process_payment_via_json(&pay.to_string(), &"{}".to_string())

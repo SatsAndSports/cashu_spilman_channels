@@ -598,7 +598,7 @@ pub async fn mint_funded_channel(
         "funding_token_amount": funding_token_amount,
         "keyset_id": keyset_id,
         "input_fee_ppk": keyset_info.input_fee_ppk,
-        "maximum_amount": maximum_amount,
+        "maximum_amount_for_one_output": maximum_amount,
         "setup_timestamp": setup_timestamp,
         "sender_pubkey": alice.pubkey_hex,
         "receiver_pubkey": server_params.receiver_pubkey,
