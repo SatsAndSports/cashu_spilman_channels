@@ -163,7 +163,7 @@ describe('WASM close retry with real mint', () => {
       funding_token_amount: fundingTokenAmount,
       keyset_id: keysetId,
       input_fee_ppk: keysetInfo.inputFeePpk,
-      maximum_amount: maximumAmount,
+      maximum_amount_for_one_output: maximumAmount,
       setup_timestamp: setupTimestamp,
       sender_pubkey: alice.pubkeyHex,
       receiver_pubkey: charlie.pubkeyHex,

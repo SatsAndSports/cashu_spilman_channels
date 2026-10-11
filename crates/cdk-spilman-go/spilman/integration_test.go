@@ -85,17 +85,17 @@ func TestFundingOutputsAndChannelId(t *testing.T) {
 		t.Fatalf("ComputeFundingTokenAmount failed: %v", err)
 	}
 	params := map[string]interface{}{
-		"sender_pubkey":        senderPubkey,
-		"receiver_pubkey":      receiverPubkey,
-		"mint":                 mintURL,
-		"unit":                 "sat",
-		"capacity":             uint64(100),
-		"funding_token_amount": fundingTokenAmount,
-		"maximum_amount":       uint64(64),
-		"expiry_timestamp":     time.Now().Unix() + 7200,
-		"setup_timestamp":      time.Now().Unix(),
-		"keyset_id":            keysetInfo["keysetId"],
-		"input_fee_ppk":        keysetInfo["inputFeePpk"],
+		"sender_pubkey":                 senderPubkey,
+		"receiver_pubkey":               receiverPubkey,
+		"mint":                          mintURL,
+		"unit":                          "sat",
+		"capacity":                      uint64(100),
+		"funding_token_amount":          fundingTokenAmount,
+		"maximum_amount_for_one_output": uint64(64),
+		"expiry_timestamp":              time.Now().Unix() + 7200,
+		"setup_timestamp":               time.Now().Unix(),
+		"keyset_id":                     keysetInfo["keysetId"],
+		"input_fee_ppk":                 keysetInfo["inputFeePpk"],
 	}
 	paramsJson, _ := json.Marshal(params)
 

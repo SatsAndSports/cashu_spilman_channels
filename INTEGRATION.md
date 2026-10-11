@@ -159,7 +159,7 @@ The Spilman protocol typically transmits the `X-Cashu-Channel` header. Standard 
 
 A single funding proof occupies ~400 bytes when encoded. A funding token containing more than **~40 proofs** (common for high-capacity msat channels) will likely exceed the header limit. 
 
-**Workaround**: Use a larger `maximum_amount` (e.g., 8192) during funding to reduce the proof count, or transmit the funding token in a `POST` request body.
+**Workaround**: Use a larger `maximum_amount_for_one_output` (e.g., 8192) during funding to reduce the proof count, or transmit the funding token in a `POST` request body.
 
 ---
 

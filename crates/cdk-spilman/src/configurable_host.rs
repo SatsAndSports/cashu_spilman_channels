@@ -76,7 +76,8 @@ pub struct UnitPricingConfig {
     /// Minimum channel capacity required for this unit.
     pub min_capacity: u64,
 
-    /// Optional maximum amount per blinded output (for testing maximum_amount policy).
+    /// Optional maximum amount per blinded output (for testing
+    /// `maximum_amount_for_one_output` policy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_amount_per_output: Option<u64>,
 
