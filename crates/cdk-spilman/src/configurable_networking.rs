@@ -8,6 +8,10 @@
 //!   communication and keyset cache refresh.
 //! - Keyset fetching helpers for populating a [`ConfigurableHost`] cache.
 //!
+//! Mint response bodies are limited to 4 MiB, including decoded compressed responses.
+//! Async settlement requests have a 30-second deadline; synchronous client requests
+//! use the caller-provided deadline. These limits also apply to error responses.
+//!
 //! Gated behind the `configurable-host-reqwest` feature.
 
 use async_trait::async_trait;
@@ -17,6 +21,30 @@ use std::time::Duration;
 use crate::configurable_host::{ConfigurableHost, KeysetCacheEntry};
 use crate::{SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanClientNetworking};
 use cashu::nuts::{CurrencyUnit, Id};
+
+#[cfg(test)]
+mod http_bounds_tests;
+
+// Bound buffered, decoded bodies for both successful and failed mint requests.
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn read_body(mut response: reqwest::Response) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err("mint response byte limit exceeded".to_owned());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+            return Err("mint response byte limit exceeded".to_owned());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
 
 /// Keyset with full key data, as fetched from a mint.
 #[derive(Debug, Clone)]
@@ -52,7 +80,7 @@ pub async fn fetch_all_keysets_from_mint(mint_url: &str) -> Result<MintKeysetDis
     let client = reqwest::Client::new();
 
     let keysets_url = format!("{mint_url}/v1/keysets");
-    let keysets_resp: serde_json::Value = client
+    let keysets_response = client
         .get(&keysets_url)
         .timeout(Duration::from_secs(15))
         .send()
@@ -64,9 +92,8 @@ pub async fn fetch_all_keysets_from_mint(mint_url: &str) -> Result<MintKeysetDis
                 "keyset metadata HTTP failure: {:?}",
                 error.status().map(|status| status.as_u16())
             )
-        })?
-        .json()
-        .await
+        })?;
+    let keysets_resp: serde_json::Value = serde_json::from_str(&read_body(keysets_response).await?)
         .map_err(|e| format!("Failed to parse keysets response: {e}"))?;
 
     let report = crate::KeysetDiscovery::from_json(&keysets_resp.to_string())?;
@@ -101,7 +128,7 @@ pub async fn fetch_all_keysets_from_mint(mint_url: &str) -> Result<MintKeysetDis
         };
 
         let keys_url = format!("{mint_url}/v1/keys/{id}");
-        let keys_resp: serde_json::Value = client
+        let keys_response = client
             .get(&keys_url)
             .timeout(Duration::from_secs(15))
             .send()
@@ -113,10 +140,10 @@ pub async fn fetch_all_keysets_from_mint(mint_url: &str) -> Result<MintKeysetDis
                     "keyset keys HTTP failure: {:?}",
                     error.status().map(|status| status.as_u16())
                 )
-            })?
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse keys response for {id}: {e}"))?;
+            })?;
+        let keys_resp: serde_json::Value =
+            serde_json::from_str(&read_body(keys_response).await?)
+                .map_err(|e| format!("Failed to parse keys response for {id}: {e}"))?;
 
         let info = crate::client_bridge::build_keyset_info_from_responses(
             &keysets_resp.to_string(),
@@ -348,14 +375,12 @@ impl ReqwestClientNetworking {
                     .send()
                     .await
                     .map_err(|e| format!("GET {url} failed: {e}"))?;
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
+                let status = resp.status();
+                let body = read_body(resp).await?;
+                if !status.is_success() {
                     return Err(format!("GET {url}: {status} - {body}"));
                 }
-                resp.text()
-                    .await
-                    .map_err(|e| format!("GET {url} read body: {e}"))
+                Ok(body)
             })
         })
     }
@@ -373,13 +398,12 @@ impl ReqwestClientNetworking {
                     .send()
                     .await
                     .map_err(|e| format!("POST {url} failed: {e}"))?;
-                if !resp.status().is_success() {
-                    let body = resp.text().await.unwrap_or_default();
+                let status = resp.status();
+                let body = read_body(resp).await?;
+                if !status.is_success() {
                     return Err(body);
                 }
-                resp.text()
-                    .await
-                    .map_err(|e| format!("POST {url} read body: {e}"))
+                Ok(body)
             })
         })
     }
@@ -444,16 +468,16 @@ impl SpilmanAsyncMintClient for ReqwestNetworking {
 
         let resp = client
             .post(&url)
+            .timeout(SETTLEMENT_TIMEOUT)
             .header("Content-Type", "application/json")
             .body(swap_request_json.to_string())
             .send()
             .await
             .map_err(|e| format!("Swap request failed: {e}"))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-
+        let status = resp.status();
+        let body = read_body(resp).await?;
+        if !status.is_success() {
             // Try to parse the body as a NUT-00 error: {"detail": "...", "code": ...}
             // Mints may also include an "error" field (e.g. nutmix).
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -475,9 +499,7 @@ impl SpilmanAsyncMintClient for ReqwestNetworking {
             return Err(format!("Swap failed: {status} - {body}"));
         }
 
-        resp.text()
-            .await
-            .map_err(|e| format!("Failed to read swap response: {e}"))
+        Ok(body)
     }
 }
 
