@@ -23,7 +23,7 @@ tokio = { workspace = true, features = ["full", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
-rand = "0.9.1"
+rand = "0.10.3"
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
