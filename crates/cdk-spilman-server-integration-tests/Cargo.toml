@@ -22,7 +22,7 @@ reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 rand = "0.9.1"
 anyhow.workspace = true
 tracing.workspace = true
