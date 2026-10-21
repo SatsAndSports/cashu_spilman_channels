@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@noble/secp256k1": "^2.1.0",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.11.1",
     "express": "^5.2.1",
     "figlet": "^1.8.0",
     "yaml": "^2.9.1"
