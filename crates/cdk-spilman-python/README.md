@@ -4,6 +4,8 @@ Python bindings for Spilman payment channels, compiled from the core Rust implem
 
 ## Installation
 
+Python 3.11 or newer is required.
+
 ```bash
 pip install cdk-spilman
 ```
