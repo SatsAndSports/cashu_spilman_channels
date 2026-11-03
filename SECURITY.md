@@ -22,9 +22,11 @@ To report security issues send an email to **tsk@thesimplekid.com**
   PR build; generated code may not be covered. Review initial results and runtime
   before expanding its triggers or languages. After merging the workflow, run
   `gh workflow run codeql.yml` to perform the first analysis.
-- Dependabot covers Cargo, GitHub Actions, npm, pip, and Go modules with weekly
-  grouped compatible updates and small open-PR limits. Major package upgrades
-  remain separate for review.
+- Dependabot opens security-update PRs for Cargo, GitHub Actions, npm, pip, and
+  Go modules. Routine version-update PRs are disabled with
+  `open-pull-requests-limit: 0` in every ecosystem entry; security updates have a
+  separate limit and remain enabled in the repository settings. Routine upgrades
+  are handled manually when needed. Weekly dependency audits remain enabled.
 
 GitHub repository settings also enable Dependabot vulnerability alerts/security
 updates, secret scanning, and secret push protection. These settings are managed

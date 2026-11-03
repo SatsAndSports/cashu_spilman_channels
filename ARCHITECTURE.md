@@ -309,6 +309,12 @@ The Bridge and Host traits are deliberately flexible, but most services follow t
 
 Integration kits are available for Rust (`ConfigurableHost`, `ConfigurableClientHost`), TypeScript (`cdk-spilman-kit`), Python, and Go. See [INTEGRATION.md](INTEGRATION.md) for setup guides.
 
+The TypeScript kit's `ConfigurableSpilman.fromYaml` awaits initial discovery for
+all configured mints before returning. Applications await configuration before
+listening, so active-unit pricing is populated before the first management
+request. Discovery is best-effort: individual mint failures are logged without
+discarding successful mint results or preventing startup after discovery settles.
+
 ## Data Model: YAML Configuration
 
 The integration kits use a standardized YAML schema for pricing and policy:
