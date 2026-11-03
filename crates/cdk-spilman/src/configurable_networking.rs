@@ -43,7 +43,9 @@ async fn read_body(mut response: reqwest::Response) -> Result<String, String> {
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    // Mint APIs return UTF-8 JSON. Lossy repair can expand the bounded body and
+    // turn malformed error bytes into a valid, retryable NUT-00 rejection.
+    String::from_utf8(body).map_err(|_| "mint response is not valid UTF-8".to_owned())
 }
 
 /// Keyset with full key data, as fetched from a mint.

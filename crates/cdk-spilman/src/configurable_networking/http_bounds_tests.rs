@@ -1,5 +1,6 @@
 use super::*;
 use crate::configurable_host::{ConfigurableHostConfig, StorageConfig};
+use std::io::Write;
 use std::{collections::HashMap, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -7,16 +8,18 @@ const LIMIT: usize = 4 * 1024 * 1024;
 
 pub(crate) struct Reply {
     pub status: &'static str,
-    pub body: String,
+    pub body: Vec<u8>,
+    pub headers: &'static str,
     pub declared: Option<usize>,
     pub stall: bool,
 }
 
 impl Reply {
-    pub(crate) fn ok(body: String) -> Self {
+    pub(crate) fn ok(body: impl Into<Vec<u8>>) -> Self {
         Self {
             status: "200 OK",
-            body,
+            body: body.into(),
+            headers: "",
             declared: None,
             stall: false,
         }
@@ -58,9 +61,9 @@ impl Server {
                     .declared
                     .map(|n| format!("Content-Length: {n}\r\n"))
                     .unwrap_or_default();
-                let headers = format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\n{length}Connection: close\r\n\r\n", reply.status);
+                let headers = format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\n{}{length}Connection: close\r\n\r\n", reply.status, reply.headers);
                 if socket.write_all(headers.as_bytes()).await.is_ok() {
-                    let _ = socket.write_all(reply.body.as_bytes()).await;
+                    let _ = socket.write_all(&reply.body).await;
                     if reply.stall {
                         // Keep the body incomplete until the actual client deadline closes it.
                         let _ = socket.read_u8().await;
@@ -112,11 +115,12 @@ async fn swap_bounds_success_and_error_bodies_before_parsing() {
                 Reply {
                     status,
                     body: if declared {
-                        String::new()
+                        Vec::new()
                     } else {
-                        " ".repeat(LIMIT + 1)
+                        vec![b' '; LIMIT + 1]
                     },
                     declared: declared.then_some(LIMIT + 1),
+                    headers: "",
                     stall: false,
                 }
             })
@@ -143,7 +147,8 @@ async fn swap_preserves_small_success_and_nut00_errors() {
     ] {
         let server = Server::start(move |_, _| Reply {
             status,
-            body: body.to_owned(),
+            body: body.as_bytes().to_vec(),
+            headers: "",
             declared: Some(body.len()),
             stall: false,
         })
@@ -164,7 +169,8 @@ async fn swap_preserves_small_success_and_nut00_errors() {
 async fn swap_stalled_body_obeys_production_deadline() {
     let server = Server::start(|_, _| Reply {
         status: "200 OK",
-        body: "{".to_owned(),
+        body: b"{".to_vec(),
+        headers: "",
         declared: None,
         stall: true,
     })
@@ -187,11 +193,12 @@ async fn client_bounds_swap_restore_and_keyset_responses() {
             let server = Server::start(move |_, _| Reply {
                 status,
                 body: if declared {
-                    String::new()
+                    Vec::new()
                 } else {
-                    " ".repeat(LIMIT + 1)
+                    vec![b' '; LIMIT + 1]
                 },
                 declared: declared.then_some(LIMIT + 1),
+                headers: "",
                 stall: false,
             })
             .await;
@@ -231,7 +238,8 @@ async fn accepts_exact_limit_and_preserves_client_errors() {
 
     let server = Server::start(|_, _| Reply {
         status: "400 Bad Request",
-        body: r#"{"code":12001,"detail":"inactive keyset"}"#.to_owned(),
+        body: br#"{"code":12001,"detail":"inactive keyset"}"#.to_vec(),
+        headers: "",
         declared: None,
         stall: false,
     })
@@ -249,4 +257,229 @@ async fn metadata_refuses_oversized_body_before_parsing() {
         .await
         .unwrap_err()
         .contains("byte limit"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_utf8_is_not_repaired_into_a_retryable_mint_error() {
+    let server = Server::start(|_, _| Reply {
+        status: "400 Bad Request",
+        ..Reply::ok(b"{\"code\":12002,\"detail\":\"\xff\"}".to_vec())
+    })
+    .await;
+    let client = ReqwestClientNetworking::new(Duration::from_secs(5)).unwrap();
+    for error in [
+        server
+            .networking()
+            .call_mint_swap(&server.url, "{}")
+            .await
+            .unwrap_err(),
+        client.call_mint_swap(&server.url, "{}").unwrap_err(),
+    ] {
+        assert!(error.contains("UTF-8"), "{error}");
+        assert!(!crate::is_retryable_keyset_mint_error(&error));
+    }
+}
+
+#[tokio::test]
+async fn metadata_rejects_invalid_utf8_instead_of_repairing_it() {
+    // The old Response::json path rejected this; lossy decoding would silently
+    // turn the invalid byte into a valid JSON string and accept the empty list.
+    let server =
+        Server::start(|_, _| Reply::ok(b"{\"keysets\":[],\"extra\":\"\xff\"}".to_vec())).await;
+    assert!(fetch_all_keysets_from_mint(&server.url)
+        .await
+        .unwrap_err()
+        .contains("UTF-8"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gzip_limit_applies_to_decoded_bytes_on_success_and_error() {
+    for size in [LIMIT, LIMIT + 1] {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&vec![b' '; size]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(compressed.len() < LIMIT);
+        for status in ["200 OK", "500 Internal Server Error"] {
+            let compressed = compressed.clone();
+            let server = Server::start(move |_, _| Reply {
+                status,
+                declared: Some(compressed.len()),
+                headers: "Content-Encoding: gzip\r\n",
+                ..Reply::ok(compressed.clone())
+            })
+            .await;
+            let client = ReqwestClientNetworking::new(Duration::from_secs(5)).unwrap();
+            for result in [
+                server.networking().call_mint_swap(&server.url, "{}").await,
+                client.call_mint_swap(&server.url, "{}"),
+                client.call_mint_restore(&server.url, "{}"),
+                client.call_mint_keysets(&server.url),
+                client.call_mint_keys(&server.url, "test-keyset"),
+            ] {
+                if size > LIMIT {
+                    assert!(result.unwrap_err().contains("byte limit"));
+                } else if status == "200 OK" {
+                    assert_eq!(result.unwrap().len(), LIMIT);
+                } else {
+                    assert!(!result.unwrap_err().contains("byte limit"));
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chunked_and_truncated_bodies_never_expose_a_retryable_prefix() {
+    for oversized in [false, true] {
+        let server = Server::start(move |_, _| {
+            let mut body = br#"{"code":12002,"detail":"inactive keyset"}"#.to_vec();
+            if oversized {
+                body.resize(LIMIT + 1, b' ');
+            }
+            let mut chunks = Vec::new();
+            for chunk in body.chunks(4096) {
+                write!(chunks, "{:x}\r\n", chunk.len()).unwrap();
+                chunks.extend_from_slice(chunk);
+                chunks.extend_from_slice(b"\r\n");
+            }
+            // No terminating chunk: even a complete-looking JSON prefix is
+            // ambiguous until the entire HTTP response has been received.
+            Reply {
+                status: "400 Bad Request",
+                headers: "Transfer-Encoding: chunked\r\n",
+                ..Reply::ok(chunks)
+            }
+        })
+        .await;
+        let client = ReqwestClientNetworking::new(Duration::from_secs(5)).unwrap();
+        for error in [
+            server
+                .networking()
+                .call_mint_swap(&server.url, "{}")
+                .await
+                .unwrap_err(),
+            client.call_mint_swap(&server.url, "{}").unwrap_err(),
+        ] {
+            if oversized {
+                assert!(error.contains("byte limit"), "{error}");
+            }
+            assert!(!crate::is_retryable_keyset_mint_error(&error));
+        }
+    }
+}
+
+#[tokio::test]
+async fn discovery_bounds_per_keyset_keys_and_rejects_http_errors_without_reading_them() {
+    for metadata_error in [false, true] {
+        let server = Server::start(move |path, _| {
+            if metadata_error || path.starts_with("/v1/keys/") {
+                return Reply {
+                    status: if metadata_error {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    },
+                    // Do not send a body: rejecting headers must not wait for it.
+                    declared: Some(LIMIT + 1),
+                    stall: true,
+                    ..Reply::ok(Vec::new())
+                };
+            }
+            assert_eq!(path, "/v1/keysets");
+            Reply::ok(r#"{"keysets":[{"id":"0000000000000001","unit":"sat","active":true}]}"#)
+        })
+        .await;
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            fetch_all_keysets_from_mint(&server.url),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        if metadata_error {
+            assert!(error.contains("503"), "{error}");
+        } else {
+            assert!(error.contains("byte limit"), "{error}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_timeout_covers_stalled_success_and_error_bodies() {
+    for status in ["200 OK", "400 Bad Request"] {
+        let server = Server::start(move |_, _| Reply {
+            status,
+            stall: true,
+            ..Reply::ok(br#"{"code":12002}"#.to_vec())
+        })
+        .await;
+        let client = ReqwestClientNetworking::new(Duration::from_millis(100)).unwrap();
+        for result in [
+            client.call_mint_swap(&server.url, "{}"),
+            client.call_mint_restore(&server.url, "{}"),
+            client.call_mint_keysets(&server.url),
+        ] {
+            let error = result.unwrap_err();
+            assert!(!crate::is_retryable_keyset_mint_error(&error));
+        }
+    }
+}
+
+#[tokio::test]
+async fn swap_stalled_headers_obey_production_deadline() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // Read the request but withhold all response headers until the client's
+        // deadline closes the connection. No sleeps or server-side deadline.
+        tokio::io::copy(&mut socket, &mut tokio::io::sink())
+            .await
+            .unwrap();
+    });
+    let server = Server { url, task };
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(35),
+        server.networking().call_mint_swap(&server.url, "{}"),
+    )
+    .await;
+    let error = result
+        .expect("swap headers exceeded the production deadline")
+        .unwrap_err();
+    assert!(start.elapsed() >= Duration::from_secs(29));
+    assert!(!crate::is_retryable_keyset_mint_error(&error));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn complete_chunked_body_accepts_exact_limit_excluding_framing() {
+    let server = Server::start(|_, _| {
+        let mut chunks = Vec::new();
+        for chunk in vec![b' '; LIMIT].chunks(4096) {
+            write!(chunks, "{:x}\r\n", chunk.len()).unwrap();
+            chunks.extend_from_slice(chunk);
+            chunks.extend_from_slice(b"\r\n");
+        }
+        chunks.extend_from_slice(b"0\r\n\r\n");
+        assert!(chunks.len() > LIMIT);
+        Reply {
+            headers: "Transfer-Encoding: chunked\r\n",
+            ..Reply::ok(chunks)
+        }
+    })
+    .await;
+    let client = ReqwestClientNetworking::new(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        server
+            .networking()
+            .call_mint_swap(&server.url, "{}")
+            .await
+            .unwrap()
+            .len(),
+        LIMIT
+    );
+    assert_eq!(
+        client.call_mint_restore(&server.url, "{}").unwrap().len(),
+        LIMIT
+    );
 }

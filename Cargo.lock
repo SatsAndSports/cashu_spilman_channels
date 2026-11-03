@@ -726,6 +726,7 @@ dependencies = [
  "bitcoin",
  "bls12_381",
  "cashu",
+ "flate2",
  "hkdf",
  "reqwest",
  "rusqlite",
