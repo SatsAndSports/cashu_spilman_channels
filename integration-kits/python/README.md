@@ -11,7 +11,7 @@ Standard components for integrating Spilman payment channels into Python web app
 
 ## Installation
 
-Python 3.9 or newer is required.
+Python 3.11 or newer is required. Python 3.9 and 3.10 are end-of-life and are no longer supported.
 
 ```bash
 pip install cdk-spilman-kit[flask]  # or [fastapi]

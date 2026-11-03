@@ -9,7 +9,7 @@ This example shows a minimal server and client using the Python integration kit.
 
 ## Prerequisites
 
-Python 3.9 or newer is required.
+Python 3.11 or newer is required. Python 3.9 and 3.10 are end-of-life and are no longer supported.
 
 1. Build Python bindings (from repo root):
    ```bash
