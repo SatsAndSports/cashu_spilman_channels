@@ -164,6 +164,9 @@ jobs:
       - name: TypeScript server integration tests
         run: make test-server-ts
 
+      - name: TypeScript kit unit tests
+        run: npm --prefix integration-kits/ts test
+
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7

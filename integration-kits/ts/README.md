@@ -18,6 +18,12 @@ npm run server
 
 ## Server usage (Express)
 
+`await ConfigurableSpilman.fromYaml(...)` waits for initial keyset discovery from
+all configured mints before returning. Start listening only after it resolves so
+the first `/channel/params` response includes pricing for initialized active units.
+Discovery remains best-effort: failed mints are logged and successful mints remain
+available. A stalled mint can delay startup until its fetch settles.
+
 ```ts
 import express from "express";
 import { ConfigurableSpilman, init, mapErrorStatus, getBridgeErrorReason } from "cdk-spilman-kit";
