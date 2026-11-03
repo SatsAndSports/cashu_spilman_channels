@@ -10,9 +10,9 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
-The current version is **0.2.0** (early alpha). Breaking pre-1.0 APIs receive a minor version
-bump; compatible fixes receive a patch bump. See [CHANGELOG.md](CHANGELOG.md) for
-the coordinated binding updates and new explicit keyset-selection policy.
+The current version is **0.2.1** (early alpha). During active protocol
+development, coordinated breaking changes may ship as patch releases. See
+[CHANGELOG.md](CHANGELOG.md) for upgrade details.
 
 ### Choosing keyset versions
 

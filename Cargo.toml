@@ -18,7 +18,7 @@ edition = "2021"
 rust-version = "1.85.0"
 license = "MIT"
 repository = "https://github.com/SatsAndSports/demo_of_spillman_cashu_channel"
-version = "0.2.0"
+version = "0.2.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -49,6 +49,7 @@ cdk-fake-wallet = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.18.1"
 cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.18.1", package = "cdk-sqlite", default-features = false, features = ["mint"] }
 cashu = { git = "https://github.com/cashubtc/cdk.git", tag = "v0.18.1", package = "cashu", default-features = false }
 hkdf = "0.13"
+lightning = { version = "0.2.2", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",

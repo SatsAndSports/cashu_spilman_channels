@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.1 — 2026-11-03
+
+### Breaking protocol change
+
+- Replace the ad hoc pipe-delimited channel-ID preimage with a versioned,
+  canonical Lightning-style TLV stream. Types and lengths use `BigSize`,
+  unsigned integers use minimal big-endian `tu64`, byte values are no longer
+  hex-encoded inside the preimage, and all current parameter types are required
+  even records.
+- Derive the channel ID with tagged SHA-256 under
+  `Cashu_Spilman_channel_id`. The external channel ID remains 32 lowercase
+  hexadecimal bytes.
+- Regenerate the independent NUT-XX compatibility vectors and every downstream
+  deterministic funding, commitment, key-tweak, mint-signature, and `SIG_ALL`
+  fixture.
+- Existing channels are cryptographically incompatible because the channel ID
+  participates in their deterministic key and output derivations. This early
+  alpha release provides no migration; recreate disposable channel state after
+  upgrading all participants together.
+
 ## 0.2.0 — 2026-10-07
 
 ### Breaking API changes
@@ -33,7 +53,8 @@
 
 ## Versioning policy
 
-Before 1.0, breaking public API changes increment the minor version; compatible
-fixes increment the patch version. Coordinate binding/kit releases with the Rust
-library. Version numbers describe library releases, not Cashu keyset versions or
-the Spilman wire protocol. A version bump in a PR is not a published release/tag.
+Before 1.0, versioning is intentionally lightweight while protocol and API
+breaks remain frequent; coordinated breaking changes may use patch releases.
+Coordinate binding/kit releases with the Rust library. Version numbers describe
+library releases, not Cashu keyset versions or the Spilman wire protocol. A
+version bump in a PR is not a published release/tag.

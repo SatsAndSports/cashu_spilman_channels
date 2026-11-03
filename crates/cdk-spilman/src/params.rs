@@ -19,6 +19,7 @@ use cashu::util::hex;
 use cashu::Amount;
 use cashu::SECP256K1;
 use hkdf::Hkdf;
+use lightning::util::ser::{BigSize, Writeable};
 use sha2::Sha256;
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -26,6 +27,29 @@ use std::str::FromStr;
 
 use super::deterministic::DeterministicSecretWithBlinding;
 use super::keysets_and_amounts::KeysetInfo;
+
+const CHANNEL_ID_TAG: &[u8] = b"Cashu_Spilman_channel_id";
+const CHANNEL_ID_ENCODING_VERSION: u64 = 1;
+
+fn tu64_bytes(value: u64) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    bytes[(value.leading_zeros() / 8) as usize..].to_vec()
+}
+
+fn append_tlv_record(stream: &mut Vec<u8>, typ: u64, value: &[u8]) {
+    stream.extend(BigSize(typ).encode());
+    stream.extend(BigSize(value.len() as u64).encode());
+    stream.extend_from_slice(value);
+}
+
+fn tagged_sha256(tag: &[u8], message: &[u8]) -> [u8; 32] {
+    let tag_hash = sha256::Hash::hash(tag).to_byte_array();
+    let mut engine = sha256::Hash::engine();
+    engine.input(&tag_hash);
+    engine.input(&tag_hash);
+    engine.input(message);
+    sha256::Hash::from_engine(engine).to_byte_array()
+}
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     let mut engine = HmacEngine::<sha256::Hash>::new(key);
@@ -284,12 +308,6 @@ impl ChannelParameters {
         maximum_amount_for_one_output: u64,
         channel_secret: [u8; 32],
     ) -> anyhow::Result<Self> {
-        if mint.contains('|') {
-            anyhow::bail!("mint URL must not contain '|'");
-        }
-        if unit.to_string().contains('|') {
-            anyhow::bail!("currency unit must not contain '|'");
-        }
         let mint = mint.trim_end_matches('/').to_string();
 
         // Validate input_fee_ppk is in valid range
@@ -553,29 +571,38 @@ impl ChannelParameters {
         self.capacity
     }
 
-    /// Get channel ID as raw bytes (32-byte SHA256 hash)
-    /// The hash is computed over: mint|unit|capacity|funding_token_amount|keyset_id|input_fee_ppk|maximum_amount_for_one_output|setup_timestamp|sender_pubkey|receiver_pubkey|expiry_timestamp|channel_secret
+    fn channel_id_tlv_stream(&self) -> Vec<u8> {
+        let mut stream = Vec::new();
+        append_tlv_record(&mut stream, 0, &tu64_bytes(CHANNEL_ID_ENCODING_VERSION));
+        append_tlv_record(&mut stream, 2, self.mint.as_bytes());
+        append_tlv_record(&mut stream, 4, self.unit_name().as_bytes());
+        append_tlv_record(&mut stream, 6, &tu64_bytes(self.capacity));
+        append_tlv_record(&mut stream, 8, &tu64_bytes(self.funding_token_amount));
+        append_tlv_record(&mut stream, 10, &self.keyset_info.keyset_id.to_bytes());
+        append_tlv_record(&mut stream, 12, &tu64_bytes(self.keyset_info.input_fee_ppk));
+        append_tlv_record(
+            &mut stream,
+            14,
+            &tu64_bytes(self.maximum_amount_for_one_output),
+        );
+        append_tlv_record(&mut stream, 16, &self.sender_pubkey.to_bytes());
+        append_tlv_record(&mut stream, 18, &self.receiver_pubkey.to_bytes());
+        append_tlv_record(&mut stream, 20, &tu64_bytes(self.setup_timestamp));
+        append_tlv_record(&mut stream, 22, &tu64_bytes(self.expiry_timestamp));
+        append_tlv_record(&mut stream, 24, &self.channel_secret);
+        stream
+    }
+
+    /// Get the tagged SHA-256 channel ID as raw bytes.
+    ///
+    /// The hash commits to the canonical Lightning-style TLV encoding of all
+    /// channel parameters, including the locally derived channel secret.
     ///
     /// The channel_secret (channel_secret) is included implicitly — it does not
     /// appear in `get_channel_id_params_json()`. This means the channel ID can
     /// only be computed by the two parties who know the channel secret.
     pub fn get_channel_id_bytes(&self) -> [u8; 32] {
-        let params_string = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            self.mint,
-            self.unit_name(),
-            self.capacity,
-            self.funding_token_amount,
-            self.keyset_info.keyset_id,
-            self.keyset_info.input_fee_ppk,
-            self.maximum_amount_for_one_output,
-            self.setup_timestamp,
-            self.sender_pubkey.to_hex(),
-            self.receiver_pubkey.to_hex(),
-            self.expiry_timestamp,
-            hex::encode(self.channel_secret)
-        );
-        sha256::Hash::hash(params_string.as_bytes()).to_byte_array()
+        tagged_sha256(CHANNEL_ID_TAG, &self.channel_id_tlv_stream())
     }
 
     /// Get channel ID as a hex string
@@ -1253,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_id_normalizes_mint_url_and_rejects_pipe_delimiters() {
+    fn test_channel_id_normalizes_mint_url_and_frames_pipe_bytes() {
         let sender_pubkey = SecretKey::generate().public_key();
         let receiver_pubkey = SecretKey::generate().public_key();
         let keyset_info = mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
@@ -1293,7 +1320,7 @@ mod tests {
         assert_eq!(with_slash.mint, "https://testmint.cash");
         assert_eq!(without_slash.get_channel_id(), with_slash.get_channel_id());
 
-        let mint_error = ChannelParameters::new(
+        let mint_with_pipe = ChannelParameters::new(
             sender_pubkey,
             receiver_pubkey,
             "https://test|mint.cash".to_string(),
@@ -1306,10 +1333,9 @@ mod tests {
             64,
             [42; 32],
         )
-        .expect_err("mint URL containing a pipe should be rejected");
-        assert!(mint_error.to_string().contains("must not contain '|"));
+        .expect("TLV framing permits a pipe in the mint value");
 
-        let unit_error = ChannelParameters::new(
+        let unit_with_pipe = ChannelParameters::new(
             sender_pubkey,
             receiver_pubkey,
             "https://testmint.cash".to_string(),
@@ -1322,8 +1348,122 @@ mod tests {
             64,
             [42; 32],
         )
-        .expect_err("currency unit containing a pipe should be rejected");
-        assert!(unit_error.to_string().contains("must not contain '|"));
+        .expect("TLV framing permits a pipe in the unit value");
+
+        assert_ne!(
+            mint_with_pipe.get_channel_id(),
+            without_slash.get_channel_id()
+        );
+        assert_ne!(
+            unit_with_pipe.get_channel_id(),
+            without_slash.get_channel_id()
+        );
+    }
+
+    #[test]
+    fn tu64_is_minimal_big_endian() {
+        assert_eq!(tu64_bytes(0), Vec::<u8>::new());
+        assert_eq!(tu64_bytes(1), [0x01]);
+        assert_eq!(tu64_bytes(0xff), [0xff]);
+        assert_eq!(tu64_bytes(0x100), [0x01, 0x00]);
+        assert_eq!(tu64_bytes(0x1_0000), [0x01, 0x00, 0x00]);
+        assert_eq!(tu64_bytes(u64::MAX), [0xff; 8]);
+    }
+
+    #[test]
+    fn tlv_records_use_lightning_bigsize_boundaries() {
+        let mut stream = Vec::new();
+        append_tlv_record(&mut stream, 0xfc, &[0; 0xfc]);
+        assert_eq!(&stream[..2], &[0xfc, 0xfc]);
+
+        stream.clear();
+        append_tlv_record(&mut stream, 0xfd, &[0; 0xfd]);
+        assert_eq!(&stream[..6], &[0xfd, 0x00, 0xfd, 0xfd, 0x00, 0xfd]);
+    }
+
+    #[test]
+    fn every_channel_id_parameter_is_committed() {
+        let sender_pubkey = SecretKey::generate().public_key();
+        let receiver_pubkey = SecretKey::generate().public_key();
+        let keyset_info = mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
+        let original = ChannelParameters::new(
+            sender_pubkey,
+            receiver_pubkey,
+            "https://testmint.cash".to_string(),
+            CurrencyUnit::Sat,
+            100,
+            100,
+            1_800_000_000,
+            1_700_000_000,
+            keyset_info,
+            64,
+            [42; 32],
+        )
+        .expect("valid channel parameters");
+        let original_id = original.get_channel_id();
+
+        let mut variants = Vec::new();
+        macro_rules! changed {
+            ($field:expr, $value:expr) => {{
+                let mut params = original.clone();
+                $field(&mut params, $value);
+                variants.push(params.get_channel_id());
+            }};
+        }
+        changed!(
+            |p: &mut ChannelParameters, value| p.mint = value,
+            "https://other.example".to_string()
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.unit = value,
+            CurrencyUnit::Msat
+        );
+        changed!(|p: &mut ChannelParameters, value| p.capacity = value, 99);
+        changed!(
+            |p: &mut ChannelParameters, value| p.funding_token_amount = value,
+            101
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.keyset_info.keyset_id = value,
+            Id::from_bytes(&[0, 0, 0, 0, 0, 0, 0, 1]).expect("valid V1 keyset ID")
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.keyset_info.input_fee_ppk = value,
+            1
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.maximum_amount_for_one_output = value,
+            32
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.sender_pubkey = value,
+            SecretKey::generate().public_key()
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.receiver_pubkey = value,
+            SecretKey::generate().public_key()
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.setup_timestamp = value,
+            1_700_000_001
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.expiry_timestamp = value,
+            1_800_000_001
+        );
+        changed!(
+            |p: &mut ChannelParameters, value| p.channel_secret = value,
+            [43; 32]
+        );
+
+        assert!(variants.iter().all(|id| id != &original_id));
+        assert_eq!(
+            variants
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            variants.len()
+        );
     }
 
     #[test]

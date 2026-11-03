@@ -16,6 +16,7 @@ cdk-sqlite.workspace = true
 hex = "0.4"
 hmac = "0.13"
 k256 = { version = "0.14", features = ["arithmetic"] }
+lightning.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

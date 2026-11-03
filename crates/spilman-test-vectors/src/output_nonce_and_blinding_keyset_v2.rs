@@ -13,10 +13,10 @@ pub const SPILMAN_TEST_VECTOR_OUTPUT_NONCE_AND_BLINDING_KEYSETV2_NAME: &str =
 const CONTEXT: &str = "funding";
 const AMOUNT: u64 = 64;
 const INDEX: usize = 0;
-const CHANNEL_ID: &str = "7af675f4f1b9843200d23060ebeb5bf5abea67fa511af79aefa4ba6a19b88c2e";
-const NONCE_HEX: &str = "f934dd4311715f9e9af3d338c2b7235581a779f748839ffbfe584b0c1e21e37a";
+const CHANNEL_ID: &str = "22d8063ac8592223c0cb20d9da883787382db861569c0aa84f664ae75c641781";
+const NONCE_HEX: &str = "872b3ae7294249e7bb7a5351623b3a8a400820f5af294cf7f74888eb55a22273";
 const BLINDING_FACTOR_HEX: &str =
-    "95066df465e8e73f5d56df3bcf010ed7c8cc473b0e68ada8bb51589f31009618";
+    "9f395ca331cf075dd3a651037a088b99a76c60a3e49ecda22905e5eff7f92f18";
 
 /// Fixed inputs and expected outputs for deterministic output derivation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +68,11 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 pub fn spilman_test_vector_output_nonce_and_blinding_keysetv2() -> OutputNonceAndBlindingTestVector
 {
     let nonce_message = concat!(
-        "7af675f4f1b9843200d23060ebeb5bf5abea67fa511af79aefa4ba6a19b88c2e",
+        "22d8063ac8592223c0cb20d9da883787382db861569c0aa84f664ae75c641781",
         "|funding|64|nonce|0"
     );
     let blinding_message = concat!(
-        "7af675f4f1b9843200d23060ebeb5bf5abea67fa511af79aefa4ba6a19b88c2e",
+        "22d8063ac8592223c0cb20d9da883787382db861569c0aa84f664ae75c641781",
         "|funding|64|blinding|0"
     );
     OutputNonceAndBlindingTestVector {
