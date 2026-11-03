@@ -188,6 +188,16 @@ A channel stuck in `OpeningFromSwap` can query NUT-09 with the Rust `wallet`-fea
 
 Client opening is also available as a Sans-IO-style prepare/complete flow. `prepare_open_channel_from_token` and `prepare_open_channel_from_proofs_with_input_keysets` construct the deterministic channel parameters, opening record, and mint swap request without performing network I/O or storage mutation. The caller then persists the opening record, submits the swap to the mint, completes the mint response, optionally verifies NUT-09 restore, and explicitly marks the channel open. The high-level bridge methods are convenience wrappers around this sequence.
 
+The Rust reqwest adapters bound each consumed mint response to 4 MiB after HTTP
+decompression and require valid UTF-8. Async settlement swaps have a 30-second
+total per-request deadline; sync client operations use the caller's request
+deadline, and server-side keyset discovery uses 15 seconds per request. These
+deadlines include response-body reads, but are not a deadline for an entire
+multi-request settlement or refresh. Keyset discovery rejects HTTP errors from
+headers without consuming their bodies. Body-limit, decoding, and timeout errors
+do not expose a partial response as a structured mint rejection: callers retain
+submission ambiguity, and no keyset retry is authorized by those errors alone.
+
 Transitions:
 - `→ Open`: Client funds a channel and registers it via the funding endpoint.
 - `Open → Open`: Normal payment — balance increases, usage is recorded.
@@ -309,6 +319,12 @@ creating it, enabling WAL, initializing schema, or running migrations.
 The Bridge and Host traits are deliberately flexible, but most services follow the same pattern: load pricing from config, track usage in a database, and expose management endpoints. To avoid reimplementing this boilerplate, the library provides **integration kits** — ready-made `SpilmanHost` and `SpilmanClientHost` implementations.
 
 Integration kits are available for Rust (`ConfigurableHost`, `ConfigurableClientHost`), TypeScript (`cdk-spilman-kit`), Python, and Go. See [INTEGRATION.md](INTEGRATION.md) for setup guides.
+
+The TypeScript kit's `ConfigurableSpilman.fromYaml` awaits initial discovery for
+all configured mints before returning. Applications await configuration before
+listening, so active-unit pricing is populated before the first management
+request. Discovery is best-effort: individual mint failures are logged without
+discarding successful mint results or preventing startup after discovery settles.
 
 ## Data Model: YAML Configuration
 

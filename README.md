@@ -75,6 +75,19 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
    npm install && npm start
    ```
 
+## Rust HTTP adapter limits
+
+With `configurable-host-reqwest`, mint response bodies are limited to **4 MiB of
+decoded bytes**, including compressed responses. Mint JSON must be valid UTF-8.
+`ReqwestNetworking` applies a **30-second total deadline per settlement swap
+request**, including reading the body. `ReqwestClientNetworking::new(timeout)`
+uses the caller's nonzero total request timeout for swaps, restores, and keyset
+queries; server-side keyset discovery uses 15 seconds per request.
+
+Oversized, malformed, truncated, or timed-out responses are transport/read failures,
+not evidence that a submitted swap was rejected or unspent. Preserve the prepared
+operation and use the existing recovery flow to resolve an ambiguous outcome.
+
 ## Sender Refunds (Rust)
 
 After `now_seconds > expiry_timestamp`, use
