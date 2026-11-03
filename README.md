@@ -10,9 +10,20 @@ Active demos, test harnesses, and the local test mint now live directly at repo 
 **Status: Early Alpha**
 Experimental protocol. APIs and data models are subject to breaking changes.
 
-The current version is **0.2.1** (early alpha). During active protocol
-development, coordinated breaking changes may ship as patch releases. See
-[CHANGELOG.md](CHANGELOG.md) for upgrade details.
+The development version is **0.3.0** (early alpha). Breaking pre-1.0 API or protocol
+changes increment the minor version; compatible fixes increment the patch version.
+A version bump does not imply a published package or release tag.
+
+### Upgrading from 0.2.x
+
+**0.3.0 changes channel-ID derivation and is cryptographically incompatible with
+existing 0.2.x channels.** Coordinate the upgrade across both channel participants
+and rebuild the matching Rust, Python, Go, and WASM/TypeScript bindings and kits.
+Settle or recover outstanding 0.2.x channels with compatible 0.2.x software before
+switching. Preserve that software, keys, and wallet/channel data until recovery is
+complete; do not delete or reset funded state. There is no automatic migration or
+legacy derivation mode. Create new channels with 0.3.0 after upgrading.
+See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ### Choosing keyset versions
 
@@ -60,7 +71,7 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
 
 1. **Add Dependency**:
    ```toml
-   cdk-spilman = { version = "0.16.0-rc.1", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
+   cdk-spilman = { version = "0.3", default-features = false, features = ["spilman-axum", "configurable-host-reqwest"] }
    ```
 
 2. **Run ASCII Art Server**:

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — 2026-11-03
+## 0.3.0 — Unreleased
 
 ### Breaking protocol change
 
@@ -11,14 +11,25 @@
   even records.
 - Derive the channel ID with tagged SHA-256 under
   `Cashu_Spilman_channel_id`. The external channel ID remains 32 lowercase
-  hexadecimal bytes.
+  bytes, represented as 64 lowercase hexadecimal characters.
 - Regenerate the independent NUT-XX compatibility vectors and every downstream
   deterministic funding, commitment, key-tweak, mint-signature, and `SIG_ALL`
   fixture.
 - Existing channels are cryptographically incompatible because the channel ID
-  participates in their deterministic key and output derivations. This early
-  alpha release provides no migration; recreate disposable channel state after
-  upgrading all participants together.
+  participates in their deterministic key and output derivations. There is no
+  automatic migration or legacy derivation mode. Settle or recover outstanding
+  0.2.x channels with compatible 0.2.x software before switching. Preserve the old
+  software, keys, and wallet/channel data until completion; resetting funded state
+  is not an upgrade procedure. Coordinate both participants and rebuild all
+  bindings/kits together, then create new 0.3.0 channels.
+
+### Runtime and maintenance
+
+- Require Python 3.11 or newer; Python 3.9 and 3.10 are no longer supported.
+- Await initial TypeScript keyset discovery before returning configured servers.
+- Bound Rust reqwest mint responses to 4 MiB of decoded UTF-8 bytes and async
+  settlement swaps to 30 seconds per request; retain ambiguous-outcome recovery.
+- Include the dependency refreshes and security fixes merged since 0.2.0.
 
 ## 0.2.0 — 2026-10-07
 
@@ -53,8 +64,8 @@
 
 ## Versioning policy
 
-Before 1.0, versioning is intentionally lightweight while protocol and API
-breaks remain frequent; coordinated breaking changes may use patch releases.
-Coordinate binding/kit releases with the Rust library. Version numbers describe
-library releases, not Cashu keyset versions or the Spilman wire protocol. A
-version bump in a PR is not a published release/tag.
+Before 1.0, breaking public API or protocol changes increment the minor version;
+compatible fixes increment the patch version. Coordinate binding/kit releases
+with the Rust library. Version numbers describe library releases, not Cashu
+keyset versions or the Spilman wire protocol. A version bump in a PR is not a
+published release/tag.
