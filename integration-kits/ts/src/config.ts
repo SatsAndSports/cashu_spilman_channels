@@ -81,8 +81,9 @@ export class ConfigurableSpilman {
 
     const instance = new ConfigurableSpilman(config, stores, host, bridge, spilman, router);
     
-    // Initial keyset fetch (non-blocking)
-    instance.initializeKeysets().catch(e => console.error(`Failed to initialize keysets: ${e}`));
+    // Populate active-unit pricing before callers start accepting requests.
+    // initializeKeysets logs individual mint failures and retains successful results.
+    await instance.initializeKeysets();
 
     return instance;
   }
