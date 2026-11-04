@@ -135,7 +135,7 @@ async function mintFundingProofs(
 
 
 describe('WASM close retry with real mint', () => {
-  it('retries cooperative close with refreshed keysets after first swap fails', async () => {
+  it.each(['rejection', 'http', 'transport'])('classifies %s before deciding whether to retry close', async (mode) => {
     // ================================================================
     // Setup: generate keys, build channel params, fund the channel
     // ================================================================
@@ -261,16 +261,18 @@ describe('WASM close retry with real mint', () => {
       // REAL MINT: actually POST to the mint
       callMintSwap: async (mintUrl: string, swapRequestJson: string): Promise<string> => {
         swapCallCount++;
+        if (mode !== 'rejection') {
+          const body = JSON.stringify({ code: 12002, detail: 'inactive keyset' });
+          if (mode === 'transport') throw new Error(body);
+          return JSON.stringify({ status: 503, body });
+        }
         const response = await fetch(`${mintUrl}/v1/swap`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: swapRequestJson,
         });
         const text = await response.text();
-        if (!response.ok) {
-          throw (text || `Mint rejected swap with status ${response.status}`);
-        }
-        return text;
+        return JSON.stringify({ status: response.status, body: text });
       },
 
       markChannelClosed: (
@@ -308,6 +310,15 @@ describe('WASM close retry with real mint', () => {
     });
 
     console.log('Executing cooperative close (expecting retry)...');
+    if (mode !== 'rejection') {
+      await expect(bridge.executeCooperativeClose(paymentJson)).rejects.toMatchObject({
+        type: 'mint_request_failed', mint_error: { type: mode },
+      });
+      expect(swapCallCount).toBe(1);
+      expect(refreshCount).toBe(0);
+      expect(channelState).toBe('closing');
+      return;
+    }
     const result = await bridge.executeCooperativeClose(paymentJson);
 
     console.log('Close result:', JSON.stringify(result));

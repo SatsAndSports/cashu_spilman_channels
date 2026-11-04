@@ -435,12 +435,17 @@ impl SpilmanAsyncMintClient for WasmSpilmanHostProxy {
         &self,
         mint_url: &str,
         swap_request_json: &str,
-    ) -> Result<String, String> {
-        JsFuture::from(self.js_host.call_mint_swap(mint_url, swap_request_json))
-            .await
-            .map_err(js_error_to_string)?
-            .as_string()
-            .ok_or_else(|| "Result not a string".to_string())
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        cdk_spilman::MintResponse::from_callback(
+            async {
+                JsFuture::from(self.js_host.call_mint_swap(mint_url, swap_request_json))
+                    .await
+                    .map_err(js_error_to_string)?
+                    .as_string()
+                    .ok_or_else(|| "Result not a string".to_string())
+            }
+            .await,
+        )
     }
 }
 
@@ -462,8 +467,10 @@ impl SpilmanAsyncMintClient for WasmSpilmanHostProxy {
         &self,
         _mint_url: &str,
         _swap_request_json: &str,
-    ) -> Result<String, String> {
-        Err("WASM proxy only works on wasm32".to_string())
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "WASM proxy only works on wasm32",
+        ))
     }
 }
 
@@ -646,21 +653,37 @@ impl RustSpilmanClientHost for WasmSpilmanClientHostProxy {
 struct WasmDummyNetworking;
 
 impl SpilmanClientNetworking for WasmDummyNetworking {
-    fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
-        Err("Sync networking not supported in WASM; use openChannelFromTokenAsync".to_string())
+    fn call_mint_swap(
+        &self,
+        _mint_url: &str,
+        _swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "Sync networking not supported in WASM; use openChannelFromTokenAsync",
+        ))
     }
     fn call_mint_restore(
         &self,
         _mint_url: &str,
         _restore_request_json: &str,
-    ) -> Result<String, String> {
-        Err("Sync networking not supported in WASM; use async restore".to_string())
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "Sync networking not supported in WASM; use async restore",
+        ))
     }
-    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
-        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "Sync networking not supported in WASM; use async keyset fetch",
+        ))
     }
-    fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
-        Err("Sync networking not supported in WASM; use async keyset fetch".to_string())
+    fn call_mint_keys(
+        &self,
+        _mint_url: &str,
+        _keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "Sync networking not supported in WASM; use async keyset fetch",
+        ))
     }
 }
 
@@ -682,43 +705,70 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         &self,
         mint_url: &str,
         swap_request_json: &str,
-    ) -> Result<String, String> {
-        JsFuture::from(
-            self.js_host
-                .client_call_mint_swap(mint_url, swap_request_json),
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        cdk_spilman::MintResponse::from_callback(
+            async {
+                JsFuture::from(
+                    self.js_host
+                        .client_call_mint_swap(mint_url, swap_request_json),
+                )
+                .await
+                .map_err(js_error_to_string)?
+                .as_string()
+                .ok_or_else(|| "Result not a string".to_string())
+            }
+            .await,
         )
-        .await
-        .map_err(js_error_to_string)?
-        .as_string()
-        .ok_or_else(|| "Result not a string".to_string())
     }
     async fn call_mint_restore(
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
-        JsFuture::from(
-            self.js_host
-                .client_call_mint_restore(mint_url, restore_request_json),
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        cdk_spilman::MintResponse::from_callback(
+            async {
+                JsFuture::from(
+                    self.js_host
+                        .client_call_mint_restore(mint_url, restore_request_json),
+                )
+                .await
+                .map_err(js_error_to_string)?
+                .as_string()
+                .ok_or_else(|| "Result not a string".to_string())
+            }
+            .await,
         )
-        .await
-        .map_err(js_error_to_string)?
-        .as_string()
-        .ok_or_else(|| "Result not a string".to_string())
     }
-    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
-        JsFuture::from(self.js_host.client_call_mint_keysets(mint_url))
-            .await
-            .map_err(js_error_to_string)?
-            .as_string()
-            .ok_or_else(|| "Result not a string".to_string())
+    async fn call_mint_keysets(
+        &self,
+        mint_url: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        cdk_spilman::MintResponse::from_callback(
+            async {
+                JsFuture::from(self.js_host.client_call_mint_keysets(mint_url))
+                    .await
+                    .map_err(js_error_to_string)?
+                    .as_string()
+                    .ok_or_else(|| "Result not a string".to_string())
+            }
+            .await,
+        )
     }
-    async fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
-        JsFuture::from(self.js_host.client_call_mint_keys(mint_url, keyset_id))
-            .await
-            .map_err(js_error_to_string)?
-            .as_string()
-            .ok_or_else(|| "Result not a string".to_string())
+    async fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        cdk_spilman::MintResponse::from_callback(
+            async {
+                JsFuture::from(self.js_host.client_call_mint_keys(mint_url, keyset_id))
+                    .await
+                    .map_err(js_error_to_string)?
+                    .as_string()
+                    .ok_or_else(|| "Result not a string".to_string())
+            }
+            .await,
+        )
     }
 }
 
@@ -729,21 +779,36 @@ impl SpilmanClientAsyncNetworking for WasmSpilmanClientAsyncNetworkingProxy {
         &self,
         _mint_url: &str,
         _swap_request_json: &str,
-    ) -> Result<String, String> {
-        Err("WASM proxy only works on wasm32".to_string())
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "WASM proxy only works on wasm32",
+        ))
     }
     async fn call_mint_restore(
         &self,
         _mint_url: &str,
         _restore_request_json: &str,
-    ) -> Result<String, String> {
-        Err("WASM proxy only works on wasm32".to_string())
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "WASM proxy only works on wasm32",
+        ))
     }
-    async fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
-        Err("WASM proxy only works on wasm32".to_string())
+    async fn call_mint_keysets(
+        &self,
+        _mint_url: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "WASM proxy only works on wasm32",
+        ))
     }
-    async fn call_mint_keys(&self, _mint_url: &str, _keyset_id: &str) -> Result<String, String> {
-        Err("WASM proxy only works on wasm32".to_string())
+    async fn call_mint_keys(
+        &self,
+        _mint_url: &str,
+        _keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
+        Err(cdk_spilman::MintRequestError::transport(
+            "WASM proxy only works on wasm32",
+        ))
     }
 }
 
@@ -899,7 +964,10 @@ impl WasmSpilmanClientBridge {
             )
             .await
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap())
-            .map_err(|e| JsValue::from_str(&e.message))
+            .map_err(|e| {
+                serde_wasm_bindgen::to_value(&e)
+                    .unwrap_or_else(|_| JsValue::from_str(&e.to_string()))
+            })
     }
 
     /// Sign a payment for a channel without funding data or local recording.

@@ -232,9 +232,7 @@ class MockClientHost:
             data=swap_request_json,
             headers={"Content-Type": "application/json"},
         )
-        if resp.status_code != 200:
-            raise RuntimeError(resp.text or f"swap failed with status {resp.status_code}")
-        return resp.text
+        return json.dumps({"status": resp.status_code, "body": resp.content.decode("utf-8")})
 
     def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
         resp = requests.post(
@@ -242,9 +240,7 @@ class MockClientHost:
             data=restore_request_json,
             headers={"Content-Type": "application/json"},
         )
-        if resp.status_code != 200:
-            raise RuntimeError(resp.text or f"restore failed with status {resp.status_code}")
-        return resp.text
+        return json.dumps({"status": resp.status_code, "body": resp.content.decode("utf-8")})
 
     # ========================================================================
     # Funding Data (immutable after creation)
@@ -603,7 +599,8 @@ class TestClientBridge:
         assert len(client_bridge.list_channels()) == 0, "Channel list should be empty"
         print("Channel deleted from storage")
 
-    def test_open_channel_preserves_structured_mint_error(self):
+    @pytest.mark.parametrize("status,transport,kind", [(400, False, "rejected"), (503, False, "http"), (400, True, "transport")])
+    def test_open_channel_preserves_structured_mint_error(self, status, transport, kind):
         mint_url = get_mint_url()
 
         keyset_info = fetch_active_keyset(mint_url, "sat")
@@ -625,7 +622,10 @@ class TestClientBridge:
 
         class FailingClientHost(MockClientHost):
             def call_mint_swap(self, mint_url: str, swap_request_json: str) -> str:
-                raise RuntimeError(json.dumps({"code": 12001, "detail": "Unknown Keyset"}, indent=2))
+                body = json.dumps({"code": 12001, "detail": "Unknown Keyset"})
+                if transport:
+                    raise RuntimeError(body)
+                return json.dumps({"status": status, "body": body})
 
         client_host = FailingClientHost(mint_url)
         client_host.register_key(alice_secret, sender_pubkey)
@@ -642,7 +642,14 @@ class TestClientBridge:
             )
 
         err_json = json.loads(str(excinfo.value))
-        assert err_json["code"] == 12001
-        assert err_json["detail"] == "Unknown Keyset"
+        assert err_json["mint_error"]["type"] == kind
+        if kind == "rejected":
+            assert err_json["mint_error"]["rejection"]["code"] == 12001
+            assert err_json["mint_error"]["rejection"]["detail"] == "Unknown Keyset"
+            assert client_host.channel_state[err_json["channel_id"]] == "opening_failed"
+        else:
+            assert err_json["input_may_be_spent"] is True
+            assert err_json["stage"] == "SwapSubmitted"
+            assert client_host.channel_state[err_json["channel_id"]] == "opening_from_swap"
 
         print("All client bridge tests passed!")

@@ -77,13 +77,14 @@ export interface SpilmanClientHost {
 
   /**
    * Executes a swap with the mint (async for JS).
-   * Posts swapRequestJson to {mintUrl}/v1/swap and returns the response body.
+   * Returns JSON.stringify({status, body}) for complete HTTP responses,
+   * including HTTP errors. Throw only for transport/read failures.
    */
   callMintSwap(mintUrl: string, swapRequestJson: string): Promise<string>;
 
   /**
    * Executes a NUT-09 restore with the mint (async for JS).
-   * Posts restoreRequestJson to {mintUrl}/v1/restore and returns the response body.
+   * Returns JSON.stringify({status, body}); exceptions are transport failures.
    */
   callMintRestore(mintUrl: string, restoreRequestJson: string): Promise<string>;
 }

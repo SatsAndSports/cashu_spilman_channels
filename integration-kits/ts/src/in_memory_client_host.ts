@@ -7,6 +7,7 @@
 
 import { sign_with_tweaked_key, compute_channel_secret } from "../wasm/cdk_wasm.js";
 import type { SpilmanClientHost } from "./client_bridge.js";
+import { mintResponseEnvelope } from "./mint_response.js";
 
 /**
  * In-memory implementation of SpilmanClientHost.
@@ -173,11 +174,7 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
       body: swapRequestJson,
     });
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `Mint rejected swap with status ${response.status}`);
-    }
-    return text;
+    return mintResponseEnvelope(response);
   }
 
   async callMintRestore(mintUrl: string, restoreRequestJson: string): Promise<string> {
@@ -187,10 +184,6 @@ export class InMemorySpilmanClientHost implements SpilmanClientHost {
       body: restoreRequestJson,
     });
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `Mint rejected restore with status ${response.status}`);
-    }
-    return text;
+    return mintResponseEnvelope(response);
   }
 }

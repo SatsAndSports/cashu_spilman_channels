@@ -82,24 +82,21 @@ Errors thrown by the bridge are structured objects:
 
 ### WASM-JS Error Boundary
 
-When implementing host callbacks that can fail, throw string errors to preserve structured error information:
+Mint callbacks return a serialized response envelope for every complete HTTP
+response. Exceptions/rejected promises represent transport failures, never mint
+rejection evidence, even if their text is JSON.
 
 ```typescript
-// Good: throw string for structured errors
 callMintSwap: async (mintUrl, swapJson) => {
   const resp = await fetch(`${mintUrl}/v1/swap`, { ... });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw body;  // Preserves raw NUT-00 JSON: {"code":11001,"detail":"..."}
-  }
-  return await resp.text();
+  const body = new TextDecoder('utf-8', { fatal: true }).decode(await resp.arrayBuffer());
+  return JSON.stringify({ status: resp.status, body });
 }
-
-// Bad: wrapping loses structure
-throw new Error(body);  // Becomes "Error: {\"code\":11001,...}"
 ```
 
-The Rust WASM bindings extract string content from `JsValue` errors, preserving structured error information for proper NUT-00 error code handling and selective retry logic.
+The Rust WASM bindings validate the envelope and classify status/body together.
+Only validated HTTP 400 keyset rejections can authorize automatic reselection.
+See [typed mint outcomes](../../INTEGRATION.md#typed-mint-outcomes).
 
 ## Build Outputs
 

@@ -367,7 +367,7 @@ impl ReqwestClientNetworking {
         Ok(Self { client, runtime })
     }
 
-    fn blocking_get(&self, url: &str) -> Result<String, String> {
+    fn blocking_get(&self, url: &str) -> Result<String, crate::MintRequestError> {
         let client = self.client.clone();
         let url = url.to_string();
         tokio::task::block_in_place(|| {
@@ -379,15 +379,16 @@ impl ReqwestClientNetworking {
                     .map_err(|e| format!("GET {url} failed: {e}"))?;
                 let status = resp.status();
                 let body = read_body(resp).await?;
-                if !status.is_success() {
-                    return Err(format!("GET {url}: {status} - {body}"));
+                crate::MintResponse {
+                    status: status.as_u16(),
+                    body,
                 }
-                Ok(body)
+                .into_result()
             })
         })
     }
 
-    fn blocking_post(&self, url: &str, body: &str) -> Result<String, String> {
+    fn blocking_post(&self, url: &str, body: &str) -> Result<String, crate::MintRequestError> {
         let client = self.client.clone();
         let url = url.to_string();
         let body = body.to_string();
@@ -402,17 +403,22 @@ impl ReqwestClientNetworking {
                     .map_err(|e| format!("POST {url} failed: {e}"))?;
                 let status = resp.status();
                 let body = read_body(resp).await?;
-                if !status.is_success() {
-                    return Err(body);
+                crate::MintResponse {
+                    status: status.as_u16(),
+                    body,
                 }
-                Ok(body)
+                .into_result()
             })
         })
     }
 }
 
 impl SpilmanClientNetworking for ReqwestClientNetworking {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, crate::MintRequestError> {
         self.blocking_post(&format!("{mint_url}/v1/swap"), swap_request_json)
     }
 
@@ -420,15 +426,19 @@ impl SpilmanClientNetworking for ReqwestClientNetworking {
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, crate::MintRequestError> {
         self.blocking_post(&format!("{mint_url}/v1/restore"), restore_request_json)
     }
 
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, crate::MintRequestError> {
         self.blocking_get(&format!("{mint_url}/v1/keysets"))
     }
 
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+    fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, crate::MintRequestError> {
         self.blocking_get(&format!("{mint_url}/v1/keys/{keyset_id}"))
     }
 }
@@ -464,7 +474,7 @@ impl SpilmanAsyncMintClient for ReqwestNetworking {
         &self,
         mint_url: &str,
         swap_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, crate::MintRequestError> {
         let client = reqwest::Client::new();
         let url = format!("{mint_url}/v1/swap");
 
@@ -479,29 +489,11 @@ impl SpilmanAsyncMintClient for ReqwestNetworking {
 
         let status = resp.status();
         let body = read_body(resp).await?;
-        if !status.is_success() {
-            // Try to parse the body as a NUT-00 error: {"detail": "...", "code": ...}
-            // Mints may also include an "error" field (e.g. nutmix).
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-                let code = parsed.get("code").and_then(|v| v.as_u64());
-                let detail = parsed
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                tracing::warn!(
-                    %status,
-                    nut00_code = ?code,
-                    detail,
-                    "Mint rejected swap (NUT-00 error)"
-                );
-                // Return the raw JSON body so callers can deserialize it.
-                return Err(body);
-            }
-
-            return Err(format!("Swap failed: {status} - {body}"));
+        crate::MintResponse {
+            status: status.as_u16(),
+            body,
         }
-
-        Ok(body)
+        .into_result()
     }
 }
 

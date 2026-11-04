@@ -3,9 +3,7 @@ package spilman
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"reflect"
 	"sync"
@@ -253,18 +251,7 @@ func (h *InMemoryClientHost) CallMintSwap(mintURL, swapRequestJSON string) (stri
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			var errResp map[string]interface{}
-			if json.Unmarshal(body, &errResp) == nil {
-				return "", errors.New(string(body))
-			}
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("swap failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *InMemoryClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (string, error) {
@@ -278,18 +265,7 @@ func (h *InMemoryClientHost) CallMintRestore(mintURL, restoreRequestJSON string)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			var errResp map[string]interface{}
-			if json.Unmarshal(body, &errResp) == nil {
-				return "", errors.New(string(body))
-			}
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("restore failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *InMemoryClientHost) CallMintKeysets(mintURL string) (string, error) {
@@ -299,14 +275,7 @@ func (h *InMemoryClientHost) CallMintKeysets(mintURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("keysets failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *InMemoryClientHost) CallMintKeys(mintURL, keysetID string) (string, error) {
@@ -316,12 +285,5 @@ func (h *InMemoryClientHost) CallMintKeys(mintURL, keysetID string) (string, err
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("keys failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }

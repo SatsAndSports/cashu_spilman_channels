@@ -4,6 +4,7 @@ import requests
 from typing import Optional, Tuple, List, Dict, Any
 from .stores import SpilmanStores, ChannelClosedData, UsageMap
 from .keysets import refresh_keyset_cache
+from .mint_response import mint_response_envelope
 
 DEFAULT_TIMEOUT = 10
 
@@ -168,9 +169,7 @@ class BaseSpilmanHost:
             json=json.loads(swap_request_json),
             timeout=DEFAULT_TIMEOUT,
         )
-        if resp.status_code != 200:
-            raise RuntimeError(resp.text or f"Mint rejected swap with status {resp.status_code}")
-        return resp.text
+        return mint_response_envelope(resp)
 
     def refresh_all_keysets(self, mint: str):
         refresh_keyset_cache(self.stores, mint, list(self.pricing.keys()))

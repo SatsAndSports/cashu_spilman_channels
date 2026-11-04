@@ -33,7 +33,8 @@ mod established_channel;
 mod keyset_retry;
 mod keyset_versions;
 mod keysets_and_amounts;
-mod mint_errors;
+mod mint_outcome;
+pub use mint_outcome::{MintRejection, MintRequestError, MintResponse};
 mod params;
 mod sender_and_receiver;
 
@@ -95,9 +96,6 @@ pub use keyset_versions::{
     KeysetSelectionPolicy, KeysetVersion, KeysetVersions, SkippedKeysetVersion,
 };
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
-pub use mint_errors::{
-    extract_nut00_error_code, is_retryable_keyset_error_code, is_retryable_keyset_mint_error,
-};
 pub use params::{compute_channel_secret, ChannelId, ChannelParameters};
 pub use sender_and_receiver::{
     verify_valid_channel, ChannelVerificationError, ChannelVerificationResult,
