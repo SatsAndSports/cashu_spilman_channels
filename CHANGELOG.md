@@ -2,6 +2,18 @@
 
 ## 0.3.0 — Unreleased
 
+### Ordinary channel reconciliation (Rust)
+
+- Add identity-checked full-funding NUT-07 inspection and NUT-07-first sender and
+  receiver recovery APIs. Alice restores retained refunds before falling back to
+  discovery of her share of Charlie's close; Charlie restores retained close
+  attempts against their historical output keys.
+- Distinguish unspent, pending, mixed, recovered, and spent-with-no-known-payout
+  outcomes. No witness-count classification, mint submission, automatic retry,
+  host storage mutation, or inferred refund/zero payout occurs in these methods.
+- Add real-mint direct/HTTP race and lost-reply coverage. APIs are additive and
+  Rust-only; schemas, bindings, daemon options, and MONAD are unchanged.
+
 ### Experimental test-mint primitive
 
 - Pin a compatible CDK v0.18.1 fork backport of draft nuts#463/cdk#2735, with

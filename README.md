@@ -115,6 +115,22 @@ Oversized, malformed, truncated, or timed-out responses are transport/read failu
 not evidence that a submitted swap was rejected or unspent. Preserve the prepared
 operation and use the existing recovery flow to resolve an ambiguous outcome.
 
+## Ordinary Channel Recovery (Rust)
+
+When a close/refund outcome is uncertain, use the state-first recovery APIs:
+
+- Alice: `sender.recover_funds(&mint, &refund_attempts, &close_output_keysets).await`.
+- Charlie: `bridge.recover_close(&channel_id, &close_attempts, &mint).await`.
+
+Both query NUT-07 before NUT-09. Alice tries retained maybe-submitted refunds
+first, then discovers her share of Charlie's close if those restores are empty.
+Charlie restores his retained close attempts. Verified payouts are returned for
+the host to persist/import; neither method submits swaps or mutates storage.
+Spent funding without a recovered payout stays unresolved, not a classified refund
+or a zero-value close. See [the recovery contract](INTEGRATION.md#state-first-channel-recovery-rust)
+for outcomes, historical keys, and host responsibilities. These additive APIs are
+Rust-only; existing raw restore/completion primitives remain available.
+
 ## Sender Refunds (Rust)
 
 After `now_seconds > expiry_timestamp`, use

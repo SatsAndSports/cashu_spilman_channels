@@ -412,6 +412,10 @@ impl SpilmanChannelSender {
     ///     - If restore succeeds, unblind and collect the proof, increment index
     ///
     /// Returns all recovered proofs for Alice.
+    ///
+    /// This is a low-level NUT-09 primitive, not a channel-state check. Prefer
+    /// [`Self::recover_funds`] for NUT-07-first reconciliation, including fallback
+    /// from possibly submitted refunds to receiver-close output discovery.
     pub async fn restore_sender_proofs<M: MintConnection + ?Sized>(
         &self,
         mint_connection: &M,
@@ -427,6 +431,8 @@ impl SpilmanChannelSender {
     /// signatures under a different, caller-supplied same-unit historical keyset.
     /// Unlike exact request recovery, NUT-09 discovery does not know the output
     /// keyset chosen by the receiver in advance.
+    /// This low-level primitive does not inspect funding; [`Self::recover_funds`]
+    /// provides the state-first recovery sequence.
     pub async fn restore_sender_proofs_with_keysets<M: MintConnection + ?Sized>(
         &self,
         mint_connection: &M,

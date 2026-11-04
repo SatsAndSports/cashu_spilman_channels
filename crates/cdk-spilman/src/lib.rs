@@ -36,6 +36,7 @@ mod keysets_and_amounts;
 mod mint_outcome;
 pub use mint_outcome::{MintRejection, MintRequestError, MintResponse};
 mod params;
+mod recovery;
 mod sender_and_receiver;
 
 pub use balance_update::{
@@ -97,6 +98,9 @@ pub use keyset_versions::{
 };
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 pub use params::{compute_channel_secret, ChannelId, ChannelParameters};
+pub use recovery::{
+    ChannelRecovery, FundingInspection, FundingState, RecoveredSenderFunds, SenderRecoverySource,
+};
 pub use sender_and_receiver::{
     verify_valid_channel, ChannelVerificationError, ChannelVerificationResult,
     SenderCloseKeysetMissing, SpilmanChannelSender,
