@@ -56,18 +56,19 @@ Charlie verifies the signature by reconstructing the same swap request.
 
 ### 4. Channel ID
 
-The channel ID is a SHA256 hash of all canonical channel parameters, using pipe-delimited decimal text:
+The channel ID is a tagged SHA-256 commitment to a canonical Lightning-style
+TLV stream containing all channel parameters:
 
 ```
-channel_id = SHA256(
-  mint_url | unit | capacity | funding_token_amount |
-  keyset_id | input_fee_ppk | maximum_amount_for_one_output |
-  setup_timestamp | sender_pubkey | receiver_pubkey |
-  expiry_timestamp | channel_secret_hex
-)
+tag_hash = SHA256("Cashu_Spilman_channel_id")
+channel_id = SHA256(tag_hash || tag_hash || channel_parameter_tlv)
 ```
 
-All fields are pipe-delimited decimal text for cross-platform consistency. `channel_secret_hex` (the hex-encoded `_channel secret_`) ensures that only the two parties who know the secret can compute the channel ID.
+The TLV records use Lightning `BigSize` type and length fields, strictly
+increasing even type numbers, raw UTF-8 or binary values, and minimally encoded
+big-endian `tu64` integers. The raw `_channel secret_` is the final required
+record, ensuring that only the two parties who know it can compute the channel
+ID. The complete registry and canonicality rules are defined by NUT-XX.
 
 `funding_token_amount` is an explicit channel parameter. Use `compute_funding_token_amount()` when constructing a channel; do not recompute it from capacity.
 

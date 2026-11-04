@@ -1,5 +1,6 @@
 //! Test vector for canonical Offline Spilman channel-ID derivation.
 
+use lightning::util::ser::{BigSize, Writeable};
 use sha2::{Digest, Sha256};
 
 use crate::channel_secret::spilman_test_vector_channel_secret_hkdf;
@@ -21,7 +22,17 @@ const SETUP_TIMESTAMP: u64 = 1_700_000_000;
 const EXPIRY_TIMESTAMP: u64 = 1_800_000_000;
 const SENDER_PUBKEY: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const RECEIVER_PUBKEY: &str = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-const CHANNEL_ID_HEX: &str = "7af675f4f1b9843200d23060ebeb5bf5abea67fa511af79aefa4ba6a19b88c2e";
+const CHANNEL_ID_HEX: &str = "22d8063ac8592223c0cb20d9da883787382db861569c0aa84f664ae75c641781";
+const CHANNEL_ID_TAG: &[u8] = b"Cashu_Spilman_channel_id";
+const CANONICAL_TLV_HEX: &str = concat!(
+    "000101021b68747470733a2f2f766563746f722d6d696e742e6578616d706c65",
+    "04037361740601640801640a2101fd5a9250eb619ce33b33bf6e752634a5a8ca4",
+    "bb629c6b48a99db9c94d09d310d0c000e014010210279be667ef9dcbbac55a062",
+    "95ce870b07029bfcdb2dce28d959f2815b16f81798122102c6047f9441ed7d6d3",
+    "045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee514046553f10016046b",
+    "49d2001820acfc96a584e645524b017b75cfe0770c3b8dc2ba4f9cef6d99f2cb7",
+    "bcee691cf"
+);
 
 const PUBLIC_KEYS: &[(u64, &str)] = &[
     (
@@ -183,9 +194,9 @@ pub struct ChannelIdTestVector {
     pub channel_secret: [u8; 32],
     /// Full public keyset from the deterministic real mint.
     pub public_keys: &'static [(u64, &'static str)],
-    /// Exact UTF-8 input to SHA-256.
-    pub canonical_preimage: &'static str,
-    /// SHA-256 channel ID.
+    /// Exact canonical channel-parameter TLV stream.
+    pub canonical_tlv: &'static str,
+    /// Tagged SHA-256 channel ID.
     pub channel_id: [u8; 32],
 }
 
@@ -199,15 +210,6 @@ fn decode_hex<const N: usize>(value: &str) -> [u8; N] {
 /// Return the fixed values for `spilman-test-vector-channel-id-keysetv2`.
 pub fn spilman_test_vector_channel_id_keysetv2() -> ChannelIdTestVector {
     let channel_secret = spilman_test_vector_channel_secret_hkdf().channel_secret;
-    let canonical_preimage = concat!(
-        "https://vector-mint.example|sat|100|100|",
-        "01fd5a9250eb619ce33b33bf6e752634a5a8ca4bb629c6b48a99db9c94d09d310d",
-        "|0|64|1700000000|",
-        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798|",
-        "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
-        "|1800000000|",
-        "acfc96a584e645524b017b75cfe0770c3b8dc2ba4f9cef6d99f2cb7bcee691cf"
-    );
     ChannelIdTestVector {
         mint: MINT,
         unit: "sat",
@@ -222,7 +224,7 @@ pub fn spilman_test_vector_channel_id_keysetv2() -> ChannelIdTestVector {
         expiry_timestamp: EXPIRY_TIMESTAMP,
         channel_secret,
         public_keys: PUBLIC_KEYS,
-        canonical_preimage,
+        canonical_tlv: CANONICAL_TLV_HEX,
         channel_id: decode_hex(CHANNEL_ID_HEX),
     }
 }
@@ -235,36 +237,65 @@ pub fn spilman_test_vector_channel_id_keysetv2_mint_trailing_slash() -> ChannelI
     }
 }
 
-fn canonical_preimage(vector: ChannelIdTestVector) -> String {
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        vector.mint.trim_end_matches('/'),
-        vector.unit,
-        vector.capacity,
-        vector.funding_token_amount,
-        vector.keyset_id,
-        vector.input_fee_ppk,
-        vector.maximum_amount,
-        vector.setup_timestamp,
-        vector.sender_pubkey,
-        vector.receiver_pubkey,
-        vector.expiry_timestamp,
-        hex::encode(vector.channel_secret),
-    )
+fn tu64_bytes(value: u64) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    bytes[(value.leading_zeros() / 8) as usize..].to_vec()
 }
 
-/// Independently derive a channel-ID vector's normalized SHA-256 output.
+fn append_tlv_record(stream: &mut Vec<u8>, typ: u64, value: &[u8]) {
+    stream.extend(BigSize(typ).encode());
+    stream.extend(BigSize(value.len() as u64).encode());
+    stream.extend_from_slice(value);
+}
+
+fn canonical_tlv(vector: ChannelIdTestVector) -> Vec<u8> {
+    let mut stream = Vec::new();
+    append_tlv_record(&mut stream, 0, &tu64_bytes(1));
+    append_tlv_record(&mut stream, 2, vector.mint.trim_end_matches('/').as_bytes());
+    append_tlv_record(&mut stream, 4, vector.unit.as_bytes());
+    append_tlv_record(&mut stream, 6, &tu64_bytes(vector.capacity));
+    append_tlv_record(&mut stream, 8, &tu64_bytes(vector.funding_token_amount));
+    append_tlv_record(
+        &mut stream,
+        10,
+        &hex::decode(vector.keyset_id).expect("valid keyset ID"),
+    );
+    append_tlv_record(&mut stream, 12, &tu64_bytes(vector.input_fee_ppk));
+    append_tlv_record(&mut stream, 14, &tu64_bytes(vector.maximum_amount));
+    append_tlv_record(
+        &mut stream,
+        16,
+        &hex::decode(vector.sender_pubkey).expect("valid sender public key"),
+    );
+    append_tlv_record(
+        &mut stream,
+        18,
+        &hex::decode(vector.receiver_pubkey).expect("valid receiver public key"),
+    );
+    append_tlv_record(&mut stream, 20, &tu64_bytes(vector.setup_timestamp));
+    append_tlv_record(&mut stream, 22, &tu64_bytes(vector.expiry_timestamp));
+    append_tlv_record(&mut stream, 24, &vector.channel_secret);
+    stream
+}
+
+/// Independently derive a channel-ID vector's canonical tagged SHA-256 output.
 ///
 /// # Panics
 ///
-/// Panics if the derived canonical preimage differs from the fixed fixture.
+/// Panics if the derived canonical TLV stream differs from the fixed fixture.
 pub fn derive_channel_id_reference(vector: ChannelIdTestVector) -> [u8; 32] {
-    let preimage = canonical_preimage(vector);
+    let tlv = canonical_tlv(vector);
     assert_eq!(
-        preimage, vector.canonical_preimage,
-        "channel-ID reference preimage must match the published fixture"
+        hex::encode(&tlv),
+        vector.canonical_tlv,
+        "channel-ID reference TLV stream must match the published fixture"
     );
-    Sha256::digest(preimage.as_bytes()).into()
+    let tag_hash = Sha256::digest(CHANNEL_ID_TAG);
+    let mut hasher = Sha256::new();
+    hasher.update(tag_hash);
+    hasher.update(tag_hash);
+    hasher.update(tlv);
+    hasher.finalize().into()
 }
 
 #[cfg(test)]
@@ -284,7 +315,7 @@ mod tests {
         assert_eq!(
             derive_channel_id_reference(vector),
             vector.channel_id,
-            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: independent SHA-256 derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_NAME}: independent tagged SHA-256 derivation"
         );
     }
 
@@ -294,7 +325,7 @@ mod tests {
         assert_eq!(
             derive_channel_id_reference(vector),
             vector.channel_id,
-            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME}: independent normalized SHA-256 derivation"
+            "{SPILMAN_TEST_VECTOR_CHANNEL_ID_KEYSETV2_MINT_TRAILING_SLASH_NAME}: independent normalized tagged SHA-256 derivation"
         );
     }
 
