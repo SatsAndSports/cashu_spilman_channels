@@ -508,6 +508,10 @@ committed randomness; NUT-09 restores derived points. Ordinary requests retain
 their prior authorization, issuance and recovery behavior. This milestone adds
 no channel-mode field or channel-level rerandomized signing/closing behavior;
 see the [test-mint guide](crates/cdk-spilman-test-mint/README.md).
+The dependency pin is workspace-wide, not test-only. Functional tests use the
+existing in-memory mint builder directly and through its HTTP router, including
+lost-response recovery against the running mint; no new daemon options or
+process/crash harness are introduced.
 
 `cdk-spilman-test-mint::build_persistent_test_mint(config, path)` uses a file-backed
 CDK mint/signatory database and the same public test seed/configuration on reopen.

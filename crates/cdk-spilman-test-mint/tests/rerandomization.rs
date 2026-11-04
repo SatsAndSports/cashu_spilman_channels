@@ -1,11 +1,11 @@
-//! Milestone 1 only: real-process mint swap primitive, not rerandomized channels.
+//! Milestone 1 only: real-mint swap primitive, not rerandomized channels.
 #![cfg(feature = "http")]
 #[path = "rerandomization_support/crypto.rs"]
 mod crypto;
 #[path = "rerandomization_support/notifications.rs"]
 mod notifications;
-#[path = "rerandomization_support/process.rs"]
-mod process;
+#[path = "rerandomization_support/server.rs"]
+mod server;
 
 use anyhow::{anyhow, ensure, Result};
 use bitcoin::hashes::{sha256, Hash};
@@ -23,9 +23,9 @@ use cashu::nuts::{
 };
 use cashu::secret::Secret;
 use notifications::Subscription;
-use process::MintProcess;
-use serde::{Deserialize, Serialize};
+use serde_json::value::to_value;
 use serde_json::{json, Value};
+use server::HttpMint;
 use std::time::Duration;
 
 struct Http {
@@ -55,7 +55,7 @@ impl Http {
         );
         Ok(response.json().await?)
     }
-    async fn post(&self, path: &str, body: impl Serialize) -> Result<Value> {
+    async fn post(&self, path: &str, body: Value) -> Result<Value> {
         let response = self
             .client
             .post(format!("{}{path}", self.url))
@@ -108,7 +108,6 @@ impl Http {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 struct Prepared {
     outputs: Vec<BlindedMessage>,
     secrets: Vec<Secret>,
@@ -366,7 +365,7 @@ async fn htlc(http: &Http, input: Proof, id: Id, keys: &Keys, refund: bool) -> R
         preimage,
         signatures: Some(vec![signature]),
     }));
-    let result = http.post("/v1/swap", &request).await?;
+    let result = http.post("/v1/swap", to_value(&request)?).await?;
     let r = result["rerandomization_r"]
         .as_str()
         .ok_or_else(|| anyhow!("HTLC R missing"))?;
@@ -426,14 +425,73 @@ fn recovery_rejects_pending_missing_mismatched_or_noncanonical_states() -> Resul
 }
 
 #[tokio::test]
-async fn real_process_both_modes_authorization_and_restart_recovery() -> Result<()> {
+async fn direct_real_mint_issues_individually_spendable_proofs() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(30), direct_scenario()).await?
+}
+
+async fn direct_scenario() -> Result<()> {
+    let mint = cdk_spilman_test_mint::create_test_mint().await?;
+    let id = *mint
+        .get_active_keysets()
+        .get(&cashu::nuts::CurrencyUnit::Sat)
+        .ok_or_else(|| anyhow!("no SAT keyset"))?;
+    let keys = mint.keyset_pubkeys(&id)?.keysets.remove(0).keys;
+    let funding = cdk_spilman_test_mint::mint_test_proofs(&mint, 2).await?;
+    let signer = SecretKey::generate();
+    let secret: Secret = SpendingConditions::new_p2pk(
+        signer.public_key(),
+        Some(Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        }),
+    )
+    .try_into()?;
+    let mut locked = outputs(id, vec![secret])?;
+    locked.outputs[0].amount = 2.into();
+    let response = mint
+        .process_swap_request(SwapRequest::new(funding, locked.outputs))
+        .await?;
+    ensure!(response.rerandomization_r.is_none(), "ordinary response R");
+    let inputs = construct_proofs(response.signatures, locked.rs, locked.secrets, &keys)?;
+    let prepared = plain(id, 2)?;
+    let wrong =
+        request(inputs.clone(), prepared.outputs.clone(), &signer, false)?.with_rerandomization();
+    ensure!(
+        mint.process_swap_request(wrong).await.is_err(),
+        "ordinary authorization accepted in rerandomized mode"
+    );
+    let response = mint
+        .process_swap_request(request(inputs, prepared.outputs.clone(), &signer, true)?)
+        .await?;
+    let proofs = unblind(prepared, response, &keys)?;
+    ensure!(proofs.len() == 2, "missing output value");
+    // Each recovered output is independently transferable/spendable, not just
+    // accepted as part of a combined swap that could conceal a missing output.
+    for proof in proofs {
+        ensure!(proof.amount == 1.into(), "wrong recovered value");
+        let next = plain(id, 1)?;
+        let response = mint
+            .process_swap_request(SwapRequest::new(vec![proof], next.outputs))
+            .await?;
+        ensure!(response.rerandomization_r.is_none(), "ordinary spend R");
+        let spent = construct_proofs(response.signatures, next.rs, next.secrets, &keys)?;
+        ensure!(
+            spent.len() == 1 && spent[0].amount == 1.into(),
+            "value lost"
+        );
+    }
+    mint.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_both_modes_authorization_and_lost_response_recovery() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(90), scenarios()).await?
 }
 
 async fn scenarios() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let mut process = MintProcess::start(&directory.path().join("mint.sqlite")).await?;
-    let http = Http::new(&process.url)?;
+    let server = HttpMint::start().await?;
+    let http = Http::new(&server.url)?;
     ensure!(
         http.get("/v1/info").await?["nuts"]["3"]["rerandomize"] == true,
         "capability missing"
@@ -481,16 +539,15 @@ async fn scenarios() -> Result<()> {
     if let Some(Witness::P2PKWitness(witness)) = &mut multisig.inputs_mut()[0].witness {
         witness.signatures.push(additional);
     }
-    let result: SwapResponse = serde_json::from_value(http.post("/v1/swap", multisig).await?)?;
+    let result: SwapResponse =
+        serde_json::from_value(http.post("/v1/swap", to_value(multisig)?).await?)?;
     spend(&http, unblind(prepared, result, &keys)?, id, &keys).await?;
 
     // Missing and false flags retain ordinary output, state, and restore semantics.
-    let mut ordinary_restores = Vec::new();
     for explicit_false in [false, true] {
         let input = purse.pop().ok_or_else(|| anyhow!("purse exhausted"))?;
         let prepared = plain(id, 1)?;
         let originals = prepared.outputs.clone();
-        ordinary_restores.push((input.clone(), originals.clone()));
         let mut sub = Subscription::open(&http.url, input.y()?).await?;
         let _ = ordinary(&http, vec![input], prepared, &keys, explicit_false).await?;
         sub.spent(None).await?;
@@ -508,10 +565,10 @@ async fn scenarios() -> Result<()> {
     let prepared = plain(id, 1)?;
     http.post(
         "/v1/swap",
-        SwapRequest::new(
+        to_value(SwapRequest::new(
             vec![purse.pop().ok_or_else(|| anyhow!("purse"))?],
             prepared.outputs.clone(),
-        ),
+        ))?,
     )
     .await?;
     let locked = p2pk(
@@ -524,7 +581,7 @@ async fn scenarios() -> Result<()> {
     .await?;
     let good = request(vec![locked], prepared.outputs.clone(), &signer, true)?;
     let mut sub = Subscription::open(&http.url, good.inputs()[0].y()?).await?;
-    let result = http.post("/v1/swap", &good).await?;
+    let result = http.post("/v1/swap", to_value(&good)?).await?;
     let r = result["rerandomization_r"]
         .as_str()
         .ok_or_else(|| anyhow!("R missing"))?;
@@ -580,7 +637,8 @@ async fn scenarios() -> Result<()> {
     let mut wrong = serde_json::to_value(&good)?;
     wrong["rerandomize"] = json!(false);
     http.reject(&serde_json::from_value(wrong)?).await?;
-    let result: SwapResponse = serde_json::from_value(http.post("/v1/swap", &good).await?)?;
+    let result: SwapResponse =
+        serde_json::from_value(http.post("/v1/swap", to_value(&good)?).await?)?;
     spend(&http, unblind(prepared, result, &keys)?, id, &keys).await?;
 
     for refund in [false, true] {
@@ -627,9 +685,7 @@ async fn scenarios() -> Result<()> {
     wrong.outputs_mut()[0].amount = 2.into();
     http.reject(&wrong).await?;
 
-    // Persist recovery material before sending, then discard the success body.
-    let state_path = directory.path().join("recovery.json");
-    std::fs::write(&state_path, serde_json::to_vec(&(good.clone(), prepared))?)?;
+    // Retain original outputs/secrets/blindings, then discard the success body.
     let mut subscriptions = Vec::new();
     for input in good.inputs() {
         subscriptions.push(Subscription::open(&http.url, input.y()?).await?);
@@ -651,33 +707,13 @@ async fn scenarios() -> Result<()> {
         sub.spent(Some(&committed_r)).await?;
     }
     drop(subscriptions);
-    process.restart().await?;
-    let http = Http::new(&process.url)?;
-    for (input, originals) in ordinary_restores {
-        http.state(&[input], "SPENT", None).await?;
-        let restored: RestoreResponse = serde_json::from_value(
-            http.post("/v1/restore", json!({"outputs":originals}))
-                .await?,
-        )?;
-        ensure!(
-            restored.signatures.len() == 1 && restored.outputs == originals,
-            "ordinary restore changed after restart"
-        );
-    }
-    let (request, prepared): (SwapRequest, Prepared) =
-        serde_json::from_slice(&std::fs::read(state_path)?)?;
-    let restarted_state=http.post("/v1/checkstate",json!({"Ys":request.inputs().iter().map(|p|p.y().map(|y|y.to_hex())).collect::<Result<Vec<_>,_>>()?})).await?;
-    let recovered_r = recovery_r(&restarted_state, request.inputs())?;
-    ensure!(recovered_r == committed_r, "R changed after restart");
-    http.state(request.inputs(), "SPENT", Some(&committed_r))
-        .await?;
-    for input in request.inputs() {
+    for input in good.inputs() {
         Subscription::open(&http.url, input.y()?)
             .await?
             .spent(Some(&committed_r))
             .await?;
     }
-    let r: cashu::nuts::nut03::RerandomizationR = serde_json::from_value(json!(recovered_r))?;
+    let r: cashu::nuts::nut03::RerandomizationR = serde_json::from_value(json!(committed_r))?;
     let derived = crypto::derived(&r.0, &prepared.outputs)?;
     let originals: RestoreResponse = serde_json::from_value(
         http.post("/v1/restore", json!({"outputs":prepared.outputs}))
@@ -698,9 +734,6 @@ async fn scenarios() -> Result<()> {
         rerandomization_r: Some(r),
     };
     spend(&http, unblind(prepared, result, &keys)?, id, &keys).await?;
-    // Ordinary swaps are still ordinary after the same database restarts.
-    let funding = mint(&http, id, &keys, 2).await?;
-    let _ = ordinary(&http, funding, plain(id, 2)?, &keys, true).await?;
-    process.stop().await?;
+    server.stop().await?;
     Ok(())
 }

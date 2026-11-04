@@ -1,22 +1,17 @@
 //! Binary entry point for the standalone test mint daemon.
 
 use std::env;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use cdk_spilman_test_mint::{
-    build_persistent_test_mint, serve_existing_mint_with_shutdown, serve_mint, TestMintConfig,
-};
+use cdk_spilman_test_mint::{serve_mint, TestMintConfig};
 
 fn print_usage(binary: &str) {
-    eprintln!("Usage: {binary} [--listen-host HOST] [--listen-port PORT] [--base-url URL] [--database PATH] [--input-fee-ppk 0..999]");
+    eprintln!("Usage: {binary} [--listen-host HOST] [--listen-port PORT] [--base-url URL]");
 }
 
-fn parse_args() -> Result<(TestMintConfig, Option<PathBuf>)> {
+fn parse_args() -> Result<TestMintConfig> {
     let mut config = TestMintConfig::default();
     let mut base_url_override: Option<String> = None;
-    let mut database = None;
     let binary = env::args()
         .next()
         .unwrap_or_else(|| "cdk-spilman-test-mintd".to_string());
@@ -24,19 +19,6 @@ fn parse_args() -> Result<(TestMintConfig, Option<PathBuf>)> {
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--database" => {
-                database = Some(PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow!("Missing database path"))?,
-                ));
-            }
-            "--input-fee-ppk" => {
-                config.default_input_fee_ppk =
-                    args.next().ok_or_else(|| anyhow!("Missing fee"))?.parse()?;
-                if config.default_input_fee_ppk > 999 {
-                    return Err(anyhow!("input fee must be 0..999 ppk"));
-                }
-            }
             "--listen-host" | "--host" => {
                 config.listen_host = args
                     .next()
@@ -67,7 +49,7 @@ fn parse_args() -> Result<(TestMintConfig, Option<PathBuf>)> {
     config.base_url =
         base_url_override.unwrap_or_else(|| format!("http://127.0.0.1:{}", config.listen_port));
 
-    Ok((config, database))
+    Ok(config)
 }
 
 fn setup_tracing() {
@@ -83,25 +65,6 @@ fn setup_tracing() {
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_tracing();
-    let (config, database) = parse_args()?;
-    match database {
-        Some(path) => {
-            let mint = Arc::new(build_persistent_test_mint(&config, &path).await?);
-            serve_existing_mint_with_shutdown(mint, config, async {
-                #[cfg(unix)]
-                {
-                    let mut signal =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                            .expect("SIGTERM handler");
-                    tokio::select! { _ = signal.recv() => {}, _ = tokio::signal::ctrl_c() => {} }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = tokio::signal::ctrl_c().await;
-                }
-            })
-            .await
-        }
-        None => serve_mint(config).await,
-    }
+    let config = parse_args()?;
+    serve_mint(config).await
 }

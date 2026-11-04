@@ -93,7 +93,8 @@ The test mint now supports the opt-in V2 swap primitive proposed in
 This is mint-side test infrastructure; existing Spilman channels still use their
 ordinary mode and unchanged channel-ID vectors. See the
 [test-mint guide](crates/cdk-spilman-test-mint/README.md) for the exact CDK backport,
-persistent daemon options, and HTTP/restart/backend tests.
+direct-call, HTTP lost-response recovery, and backend tests. The exact CDK fork
+pin applies workspace-wide, including the library, rather than only to tests.
 
 ## Rust HTTP adapter limits
 
