@@ -2,6 +2,16 @@
 
 ## 0.3.0 — Unreleased
 
+### Experimental test-mint primitive
+
+- Pin a compatible CDK v0.18.1 fork backport of draft nuts#463/cdk#2735, with
+  ordinary and opted-in rerandomized V2 swaps. Existing channel IDs, signing,
+  deterministic vectors, and channel close construction are unchanged.
+- Add `--database PATH` and `--input-fee-ppk` daemon options for reproducible
+  persistent restart tests; default storage remains ephemeral.
+- Add independent vectors, real-process HTTP/WebSocket tests and pinned backend
+  tests covering authorization, issuance, atomic recovery, and collision handling.
+
 ### Breaking networking API
 
 - Rust mint traits return `MintRequestError` evidence instead of string errors.

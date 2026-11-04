@@ -499,6 +499,16 @@ errors preserve `mint_error` evidence separately from display text. See
 
 ## Persistent Test Mint
 
+The test-mint backend includes the experimental NUT-03 rerandomized V2 swap
+primitive, pinned to a narrow CDK v0.18.1 backport. An explicit per-request flag
+selects a separately tagged authorization over original outputs. The backend
+reserves/signs derived additive points and atomically persists the shared mint
+randomness with signatures and spent-input state. HTTP NUT-07/NUT-17 expose only
+committed randomness; NUT-09 restores derived points. Ordinary requests retain
+their prior authorization, issuance and recovery behavior. This milestone adds
+no channel-mode field or channel-level rerandomized signing/closing behavior;
+see the [test-mint guide](crates/cdk-spilman-test-mint/README.md).
+
 `cdk-spilman-test-mint::build_persistent_test_mint(config, path)` uses a file-backed
 CDK mint/signatory database and the same public test seed/configuration on reopen.
 It is opt-in; existing in-memory builders and standalone defaults are unchanged.

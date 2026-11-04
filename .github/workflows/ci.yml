@@ -45,6 +45,9 @@ jobs:
       - name: Rust-only tests
         run: make test-rust-only
 
+      - name: Pinned rerandomization backend tests
+        run: make test-mint-rerandomization-backend
+
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7

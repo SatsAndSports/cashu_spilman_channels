@@ -86,6 +86,15 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
    npm install && npm start
    ```
 
+## Experimental test-mint rerandomization
+
+The test mint now supports the opt-in V2 swap primitive proposed in
+[NUT PR #463](https://github.com/cashubtc/nuts/pull/463), alongside ordinary swaps.
+This is mint-side test infrastructure; existing Spilman channels still use their
+ordinary mode and unchanged channel-ID vectors. See the
+[test-mint guide](crates/cdk-spilman-test-mint/README.md) for the exact CDK backport,
+persistent daemon options, and HTTP/restart/backend tests.
+
 ## Rust HTTP adapter limits
 
 Mint networking now returns typed failure evidence (`MintRequestError`) rather
