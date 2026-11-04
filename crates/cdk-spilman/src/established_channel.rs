@@ -420,6 +420,9 @@ impl EstablishedChannel {
     }
 
     /// Restore prepared sender refund outputs after an ambiguous submit.
+    /// This low-level exact-restore primitive does not inspect funding. Use
+    /// [`SpilmanChannelSender::recover_funds`] to reconcile NUT-07 first and fall
+    /// back to receiver-close discovery when valid refund restores are empty.
     pub async fn restore_prepared_sender_refund_outputs<M>(
         &self,
         prepared: &PreparedSenderRefund,
@@ -611,6 +614,9 @@ impl EstablishedChannel {
     /// attach their witness only to the first input.
     ///
     /// Returns the state (UNSPENT, PENDING, or SPENT) of the funding token.
+    /// For recovery prefer [`Self::inspect_funding`], which checks all identities
+    /// and reports mixed states without assuming that the first proof represents
+    /// a possible partial post-expiry spend.
     pub async fn check_funding_token_state<M>(
         &self,
         mint_connection: &M,
@@ -640,6 +646,8 @@ impl EstablishedChannel {
     /// recovery. After exact persisted-refund restore, callers may use checked
     /// sender-close discovery for `Unknown` too; do not treat invalid/partial
     /// restore responses as absence or import proofs based on this hint alone.
+    /// The state-first [`SpilmanChannelSender::recover_funds`] operation does not
+    /// use this hint to select or skip recovery paths.
     pub fn classify_funding_spend_witness(
         proof_state: &cashu::nuts::ProofState,
     ) -> FundingSpendKind {

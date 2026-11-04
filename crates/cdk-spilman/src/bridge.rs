@@ -2310,6 +2310,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     /// Complete an exact NUT-09 restore without mutating storage or selecting keys.
     /// Only two empty arrays mean absence, not successful close or spent funding.
     /// The caller must authenticate the persisted preparation against its journal.
+    /// This is a pure completion primitive, not a funding-state check. Use
+    /// [`Self::recover_close`] for NUT-07-first reconciliation of retained attempts.
     pub fn complete_prepared_close_restore(
         &self,
         resp_json: &str,

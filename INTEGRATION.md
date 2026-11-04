@@ -311,6 +311,92 @@ Python, Go, or WASM bridges.
 
 ---
 
+## State-First Channel Recovery (Rust)
+
+Use these additive Rust APIs when the mint outcome is uncertain, when Alice
+checks whether Charlie closed, or when resuming a retained close/refund. They
+require no new feature flag, storage schema, daemon option, or reset. They are
+not yet exposed through the Python/Go/WASM bridges. MONAD's existing orchestration
+is not changed by this library PR; it must explicitly adopt this contract later.
+
+`EstablishedChannel::inspect_funding(&mint).await` queries every funding Y in one
+NUT-07 request. It validates the local funding model and exact response identity
+coverage (no missing, duplicate, or unrelated Ys; response ordering is immaterial).
+The returned `FundingInspection` retains the complete response and reports
+`Unspent`, `Pending`, `Spent`, or `Mixed`. Generated close/refund requests normally
+spend the whole funding token atomically. Mixed states can represent a partial
+post-expiry refund and are left to the host rather than classified.
+
+For Alice:
+
+```rust,ignore
+let recovery = sender.recover_funds(
+    &mint_connection,
+    &retained_refund_attempts,
+    &historical_close_output_keysets,
+).await?;
+```
+
+Each refund must belong to this sender/channel and be authenticated before I/O.
+If funding is spent, all valid empty refund restores permit discovery of Alice's
+deterministic close outputs. A possibly submitted refund never excludes the
+possibility that Charlie won the race. A verified refund returns
+`SenderRecoverySource::Refund { attempt_index }`; verified close outputs return
+`ReceiverClose`. Close outputs carry Alice's second-stage authorization but still
+need the ordinary second-stage swap; refund outputs are already loose proofs.
+Supply cached same-unit historical close output keys, not merely today's active
+keys; missing keys remain a recoverable error (`SenderCloseKeysetMissing`). The
+library does not silently refresh or reselect keys.
+
+For Charlie:
+
+```rust,ignore
+let recovery = bridge.recover_close(
+    &channel_id,
+    &retained_close_attempts,
+    &mint_connection,
+).await?;
+```
+
+The host must already be `Closing`, with stored funding and a fixed closing
+payment. Every supplied attempt is authenticated against those records before
+I/O; retained historical output-keyset attempts can be recovered independently.
+The returned payout is a verified `CompletedClose`, not a storage transition.
+Persist the completion before finalizing/importing it according to your journal.
+Use a mint connection bound to the channel's mint for either party.
+
+Both operations return `ChannelRecovery<T>`:
+
+| Outcome | Meaning / host action |
+|---|---|
+| `Unspent` | No committed spend observed. Apply existing expiry and immutable-request replay rules; this is not a reservation or permission to replace an uncertain request. |
+| `Pending` | Wait and retain the unresolved operation. No NUT-09 call is made. |
+| `Mixed` | Partial/mixed funding state. No NUT-09 call or inferred refund classification is made. |
+| `Recovered { funding, payout }` | Verified payout to durably persist/import. No host state is mutated. |
+| `SpentNoKnownPayout` | Valid empty restores found no known payout; not proof of refund, zero entitlement, or successful settlement. |
+
+Transport errors and invalid/nonempty restore responses return errors, never
+absence. Another retained exact attempt may positively recover the payout despite
+a response invalid for an earlier attempt (for example, a different output keyset).
+Otherwise, any invalid refund restore prevents Alice from treating the refund as
+absent and falling through to discovery. Discovery errors return no partial proof
+set. Neither witness signature count nor failure to match a known signature routes
+these recovery operations.
+
+These methods inspect/recover only: they never submit/replay, inspect time, refresh
+keys, release reservations, or install terminal states. They are explicit calls,
+not background polling. Already verified responses or saved completions can still
+be completed/finalized without requiring a fresh online NUT-07 query. Charlie's
+host can abandon further collection after expiry, but must distinguish that policy
+from a factual claim that Alice refunded; first recover any known earlier close.
+Raw NUT-09 helpers and pure response-completion APIs retain their narrower contracts
+and do not themselves enforce the new orchestration order. Ordinary channels only:
+this PR does not add rerandomized signing or restore-point derivation.
+
+Run `cargo test -p cdk-spilman-client-integration-tests --test recovery` for direct
+and loopback HTTP real-mint races, lost successful replies, independently spendable
+payouts, partial post-expiry spend, historical keysets, and injected bad evidence.
+
 ## Post-Expiry Sender Refunds (Rust)
 
 These `cdk-spilman` APIs are available without the `wallet` feature. This is a

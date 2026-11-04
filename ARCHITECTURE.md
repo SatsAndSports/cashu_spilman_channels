@@ -396,21 +396,28 @@ ascending-denomination/index algorithm and returns no partial results on errors.
 Prepared refund recovery works with historical inactive output keys, not today's
 active keyset. Empty restore cannot resolve submission ambiguity by itself.
 
-Supported generated close/refund transactions spend all funding inputs atomically;
-under that assumption one representative suffices for NUT-07 state checks. This
-is not a guarantee about arbitrary transactions. Exactly the first funding proof's
-Y must be returned: the first proof is selected specifically because generated
-SIG_ALL transactions attach the witness only to the first input.
+Ordinary channel reconciliation separates funding state, spending-transaction
+identity, and recovered value. `inspect_funding` queries every funding Y once,
+checks exact identity coverage, retains complete NUT-07 evidence, and reports
+unspent, pending, spent, or mixed states. Generated transactions normally spend
+all funding inputs atomically; a partial post-expiry refund can produce mixed
+states. The older first-proof `check_funding_token_state` shortcut remains a
+low-level helper, not the basis of the new recovery flow.
 
-Witness-shape classification is advisory, not cryptographic settlement proof or
-a prerequisite for checked recovery. A valid receiver close accepted by an honest
-mint may contain unrelated extra signatures and thus classify as `Unknown` under
-the exact-count heuristic. After exact persisted-refund restore, checked
-sender-close discovery remains available for `Unknown`; neither malformed restore
-responses nor an unrecognized witness justify skipping validation or importing
-partial results. Applications own retry budgets, keyset refresh, ambiguous-attempt
-reconciliation, proof custody, and persistence. See the
-[integration guide](INTEGRATION.md#post-expiry-sender-refunds-rust).
+`SpilmanChannelSender::recover_funds` and `SpilmanBridge::recover_close` use NUT-07
+before NUT-09. Only spent funding leads to output restoration. Alice restores
+retained refunds first, then discovers her close outputs if the refund restores
+are valid and empty; Charlie restores retained exact close attempts. Errors and
+invalid responses remain unresolved unless another authenticated exact attempt
+positively recovers the payout. Empty discovery is not proof of zero entitlement.
+No signature-count or nonmatching-witness inference selects the recovery path.
+
+Recovery neither submits transactions nor mutates storage. Existing successful
+response completion and offline finalization remain independent of state queries.
+Hosts own retry budgets, time/expiry policy, keyset refresh, immutable attempt
+journals, proof custody, and durable finalization. The operations preserve funding
+evidence for future issuance metadata without implementing rerandomized channels.
+See the [recovery contract](INTEGRATION.md#state-first-channel-recovery-rust).
 
 The implementation handles mint keyset rotation using a **Persistent Cache** strategy:
 
@@ -524,15 +531,14 @@ a completed HTTP response, not merely request arrival, before killing the mint.
 
 `SenderRefundedAfterExpiry` is distinct from `Closed` and has no `ClosedDataView`.
 Storage atomically CASes the application's close journal and terminal state.
-The contextual `EstablishedChannel::sender_refund_attested` helper requires valid
-generated funding, two distinct x-only close keys, exact coverage of every
-funding Y as spent, and exactly one well-formed Schnorr signature in the complete
-mint-recorded witness of the original first input. Under the honest-mint model
-this attests the refund branch, not independently verified full-request evidence.
-Two signatures are ambiguous: the mint accepts a valid refund with an unrelated
-extra signature. Applications must finish exact restoration of every saved close
-attempt before installing terminal refund evidence. Unknown spend is recoverable,
-not a third authorized spending path or a zero-value close payout.
+Existing contextual spend classifiers rely on their documented generated-request
+and retained-attempt assumptions. Witness counts or failure to match known close
+digests are not a general proof of refund: Alice can append an unrelated signature,
+and a verifier cannot identify a Schnorr signer without a candidate message.
+The state-first recovery APIs do not invoke these classifiers or install this
+terminal state. They return verified payouts or `SpentNoKnownPayout`; hosts must
+distinguish abandoning collection from proving a particular refund. Unknown spend
+is unresolved, not a zero-value close payout.
 
 ## Output Keyset Expiry
 
