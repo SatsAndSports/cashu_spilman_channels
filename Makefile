@@ -226,6 +226,14 @@ test-vectors:
 test-test-mint:
 	cargo test -p cdk-spilman-test-mint --manifest-path Cargo.toml
 
+# Experimental mint primitive, independent of channel-mode changes.
+.PHONY: test-mint-rerandomization test-mint-rerandomization-backend
+test-mint-rerandomization:
+	cargo test -p cdk-spilman-test-mint --test rerandomization --manifest-path Cargo.toml
+
+test-mint-rerandomization-backend:
+	bash scripts/test_rerandomization_backend.sh
+
 test-interop:
 	cargo test -p cdk-spilman-interop-tests --manifest-path Cargo.toml
 

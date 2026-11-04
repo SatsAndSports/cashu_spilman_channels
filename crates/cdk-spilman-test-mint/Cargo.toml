@@ -31,5 +31,11 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+bitcoin.workspace = true
+reqwest.workspace = true
+futures-util = "0.3"
+tokio-tungstenite = "0.26"
+
 [lints]
 workspace = true

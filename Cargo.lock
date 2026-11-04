@@ -497,7 +497,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 [[package]]
 name = "cashu"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "bitcoin",
  "cbor-diag",
@@ -558,7 +558,7 @@ dependencies = [
 [[package]]
 name = "cdk"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "cdk-axum"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -611,7 +611,7 @@ dependencies = [
 [[package]]
 name = "cdk-common"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "cdk-fake-wallet"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -665,7 +665,7 @@ dependencies = [
 [[package]]
 name = "cdk-http-client"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "async-trait",
  "bitreq",
@@ -692,7 +692,7 @@ dependencies = [
 [[package]]
 name = "cdk-signatory"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -836,6 +836,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bip39",
+ "bitcoin",
  "cashu",
  "cdk",
  "cdk-axum",
@@ -843,8 +844,11 @@ dependencies = [
  "cdk-fake-wallet",
  "cdk-spilman",
  "cdk-sqlite",
+ "futures-util",
+ "reqwest",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
 ]
@@ -852,7 +856,7 @@ dependencies = [
 [[package]]
 name = "cdk-sql-common"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -868,7 +872,7 @@ dependencies = [
 [[package]]
 name = "cdk-sqlite"
 version = "0.18.1"
-source = "git+https://github.com/cashubtc/cdk.git?tag=v0.18.1#a056e0f0f69e94f431b1aeb90d883f18c61ea4c6"
+source = "git+https://github.com/SatsAndSports/cdk.git?rev=da5cf282dd070772af830fa5215630f059e5f1ad#da5cf282dd070772af830fa5215630f059e5f1ad"
 dependencies = [
  "async-trait",
  "cdk-common",

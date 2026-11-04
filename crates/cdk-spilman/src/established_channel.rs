@@ -1164,6 +1164,7 @@ mod tests {
             y: channel.funding_proofs[0].y().unwrap(),
             state: State::Spent,
             witness: None,
+            rerandomization_r: None,
         };
         channel
             .check_funding_token_state(&StateMint(vec![state.clone()]))
