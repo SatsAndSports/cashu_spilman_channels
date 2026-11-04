@@ -1,6 +1,7 @@
 import * as secp from "@noble/secp256k1";
 import { compute_channel_secret, sign_with_tweaked_key } from "../wasm/cdk_wasm.js";
 import { PricingTable, SpilmanStores } from "./stores.js";
+import { mintResponseEnvelope } from "./mint_response.js";
 
 export interface SpilmanHostOptions {
   secretKeyHex: string;
@@ -162,11 +163,7 @@ export function createSpilmanHost(options: SpilmanHostOptions) {
         headers: { "Content-Type": "application/json" },
         body: swapRequestJson,
       });
-      const text = await response.text();
-      if (!response.ok) {
-        throw (text || `Mint rejected swap with status ${response.status}`);
-      }
-      return text;
+      return mintResponseEnvelope(response);
     },
 
     markChannelClosed: (

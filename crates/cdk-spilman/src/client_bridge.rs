@@ -61,8 +61,6 @@ use super::client_storage::{
     ClientOpeningFailure, ClientPaymentState,
 };
 #[cfg(feature = "wallet")]
-use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_mint_error};
-#[cfg(feature = "wallet")]
 use crate::{with_active_keyset_retry, KeysetRetryError, SelectedOutputKeyset};
 
 // ============================================================================
@@ -283,7 +281,11 @@ pub trait SpilmanClientNetworking {
     ///
     /// Posts `swap_request_json` to `{mint_url}/v1/swap` and returns the
     /// response body as a JSON string.
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, crate::MintRequestError>;
 
     /// Execute a NUT-09 restore with the mint.
     ///
@@ -293,19 +295,23 @@ pub trait SpilmanClientNetworking {
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String>;
+    ) -> Result<String, crate::MintRequestError>;
 
     /// Fetch the list of keysets from a mint.
     ///
     /// Calls `GET {mint_url}/v1/keysets` and returns the response body as a
     /// JSON string.
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String>;
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, crate::MintRequestError>;
 
     /// Fetch the keys for a specific keyset from a mint.
     ///
     /// Calls `GET {mint_url}/v1/keys/{keyset_id}` and returns the response
     /// body as a JSON string.
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String>;
+    fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, crate::MintRequestError>;
 }
 
 // ============================================================================
@@ -327,7 +333,7 @@ pub trait SpilmanClientAsyncNetworking {
         &self,
         mint_url: &str,
         swap_request_json: &str,
-    ) -> Result<String, String>;
+    ) -> Result<String, crate::MintRequestError>;
 
     /// Execute a NUT-09 restore with the mint (async version).
     ///
@@ -337,19 +343,23 @@ pub trait SpilmanClientAsyncNetworking {
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String>;
+    ) -> Result<String, crate::MintRequestError>;
 
     /// Fetch the list of keysets from a mint (async version).
     ///
     /// Calls `GET {mint_url}/v1/keysets` and returns the response body as a
     /// JSON string.
-    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String>;
+    async fn call_mint_keysets(&self, mint_url: &str) -> Result<String, crate::MintRequestError>;
 
     /// Fetch the keys for a specific keyset from a mint (async version).
     ///
     /// Calls `GET {mint_url}/v1/keys/{keyset_id}` and returns the response
     /// body as a JSON string.
-    async fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String>;
+    async fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, crate::MintRequestError>;
 }
 
 // ============================================================================
@@ -492,10 +502,22 @@ pub struct OpenChannelError {
     pub input_may_be_spent: bool,
     /// Human-readable failure details.
     pub message: String,
+    /// Networking evidence; display messages never authorize retries.
+    pub mint_error: Option<crate::MintRequestError>,
 }
 
 #[cfg(feature = "wallet")]
 impl OpenChannelError {
+    fn network(
+        stage: OpenChannelFailureStage,
+        channel_id: Option<String>,
+        evidence: crate::MintRequestError,
+    ) -> Self {
+        let mut error = Self::new(stage, channel_id, evidence.to_string());
+        error.mint_error = Some(evidence);
+        error
+    }
+
     fn new(
         stage: OpenChannelFailureStage,
         channel_id: Option<String>,
@@ -513,6 +535,7 @@ impl OpenChannelError {
             channel_id,
             input_may_be_spent,
             message: message.into(),
+            mint_error: None,
         }
     }
 }
@@ -523,7 +546,11 @@ impl OpenChannelError {
     /// or unknown keyset state and the input proofs are known not to be spent.
     pub fn is_retryable_keyset_rejection(&self) -> bool {
         self.stage == OpenChannelFailureStage::MintRejected
-            && is_keyset_mint_rejection(&self.message)
+            && !self.input_may_be_spent
+            && self
+                .mint_error
+                .as_ref()
+                .is_some_and(crate::MintRequestError::permits_keyset_retry)
     }
 }
 
@@ -606,23 +633,6 @@ pub struct SpilmanClientBridge<H: SpilmanClientHost, N: SpilmanClientNetworking>
     host: H,
     #[allow(dead_code)] // Used only with "wallet" feature for open_channel_from_token
     networking: N,
-}
-
-#[cfg(feature = "wallet")]
-fn normalize_mint_error_string(raw: String) -> String {
-    serde_json::from_str::<serde_json::Value>(&raw)
-        .map(|value| value.to_string())
-        .unwrap_or(raw)
-}
-
-#[cfg(feature = "wallet")]
-fn is_explicit_mint_rejection(raw: &str) -> bool {
-    extract_nut00_error_code(raw).is_some()
-}
-
-#[cfg(feature = "wallet")]
-fn is_keyset_mint_rejection(raw: &str) -> bool {
-    is_retryable_keyset_mint_error(raw)
 }
 
 /// Build keyset info JSON from the responses of `/v1/keysets` and `/v1/keys/{id}`.
@@ -2026,8 +2036,18 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     pub fn mark_prepared_open_rejected(
         &self,
         prepared: &PreparedOpenChannel,
-        message: String,
+        evidence: crate::MintRequestError,
     ) -> Result<OpenChannelError, OpenChannelError> {
+        if !evidence.permits_keyset_retry() {
+            let mut error = OpenChannelError::new(
+                OpenChannelFailureStage::SwapSubmitted,
+                Some(prepared.channel_id.clone()),
+                evidence.to_string(),
+            );
+            error.mint_error = Some(evidence);
+            return Err(error);
+        }
+        let message = evidence.to_string();
         let failure = ClientOpeningFailure {
             stage: OpenChannelFailureStage::MintRejected.as_str().to_string(),
             message: message.clone(),
@@ -2042,11 +2062,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                     format!("mint rejected swap, but failed to mark opening failed: {mark_err}; mint error: {message}"),
                 )
             })?;
-        Ok(OpenChannelError::new(
+        let mut error = OpenChannelError::new(
             OpenChannelFailureStage::MintRejected,
             Some(prepared.channel_id.clone()),
             message,
-        ))
+        );
+        error.mint_error = Some(evidence);
+        Ok(error)
     }
 
     #[cfg(feature = "wallet")]
@@ -2071,24 +2093,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
         &self,
         prepared: PreparedOpenChannel,
     ) -> Result<OpenChannelResult, OpenChannelError> {
+        self.require_fresh_open_submission(&prepared)?;
         self.mark_prepared_open_saved(&prepared)?;
 
         let swap_response_json = self
             .networking
             .call_mint_swap(&prepared.mint_url, &prepared.swap_request_json)
-            .map_err(|e| {
-                let message = normalize_mint_error_string(e);
-                if is_explicit_mint_rejection(&message) {
-                    return self
-                        .mark_prepared_open_rejected(&prepared, message)
-                        .unwrap_or_else(|error| error);
-                }
-                OpenChannelError::new(
-                    OpenChannelFailureStage::SwapSubmitted,
-                    Some(prepared.channel_id.clone()),
-                    message,
-                )
-            })?;
+            .map_err(|e| self.open_network_error(&prepared, e))?;
 
         let completed = self.complete_prepared_open_channel(&prepared, &swap_response_json)?;
 
@@ -2097,7 +2108,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .networking
             .call_mint_restore(&prepared.mint_url, &restore_request)
             .map_err(|e| {
-                OpenChannelError::new(
+                OpenChannelError::network(
                     OpenChannelFailureStage::RestoreVerification,
                     Some(prepared.channel_id.clone()),
                     e,
@@ -2109,6 +2120,53 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
 
         self.mark_completed_open(&completed)?;
         Ok(completed.result)
+    }
+
+    #[cfg(feature = "wallet")]
+    fn open_network_error(
+        &self,
+        prepared: &PreparedOpenChannel,
+        evidence: crate::MintRequestError,
+    ) -> OpenChannelError {
+        let mut error = if evidence.permits_keyset_retry() {
+            self.mark_prepared_open_rejected(prepared, evidence.clone())
+                .unwrap_or_else(|error| error)
+        } else {
+            // Rejection of this request does not establish that its inputs are
+            // unspent, particularly after a prior ambiguous submission.
+            OpenChannelError::new(
+                OpenChannelFailureStage::SwapSubmitted,
+                Some(prepared.channel_id.clone()),
+                evidence.to_string(),
+            )
+        };
+        error.mint_error = Some(evidence);
+        error
+    }
+
+    #[cfg(feature = "wallet")]
+    fn require_fresh_open_submission(
+        &self,
+        prepared: &PreparedOpenChannel,
+    ) -> Result<(), OpenChannelError> {
+        let existing = self
+            .host
+            .get_channel_opening_from_swap(&prepared.channel_id)
+            .map_err(|message| {
+                OpenChannelError::new(
+                    OpenChannelFailureStage::SwapSubmitted,
+                    Some(prepared.channel_id.clone()),
+                    message,
+                )
+            })?;
+        if existing.is_some() {
+            return Err(OpenChannelError::new(
+                OpenChannelFailureStage::SwapSubmitted,
+                Some(prepared.channel_id.clone()),
+                "existing opening requires recovery, not a fresh submission",
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(feature = "wallet")]
@@ -2158,24 +2216,13 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             max_amount,
         )?;
 
+        self.require_fresh_open_submission(&prepared)?;
         self.mark_prepared_open_saved(&prepared)?;
 
         let swap_response_json = async_networking
             .call_mint_swap(&prepared.mint_url, &prepared.swap_request_json)
             .await
-            .map_err(|e| {
-                let message = normalize_mint_error_string(e);
-                if is_explicit_mint_rejection(&message) {
-                    return self
-                        .mark_prepared_open_rejected(&prepared, message)
-                        .unwrap_or_else(|error| error);
-                }
-                OpenChannelError::new(
-                    OpenChannelFailureStage::SwapSubmitted,
-                    Some(prepared.channel_id.clone()),
-                    message,
-                )
-            })?;
+            .map_err(|e| self.open_network_error(&prepared, e))?;
 
         let completed = self.complete_prepared_open_channel(&prepared, &swap_response_json)?;
 
@@ -2184,7 +2231,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .call_mint_restore(&prepared.mint_url, &restore_request)
             .await
             .map_err(|e| {
-                OpenChannelError::new(
+                OpenChannelError::network(
                     OpenChannelFailureStage::RestoreVerification,
                     Some(prepared.channel_id.clone()),
                     e,
@@ -2498,7 +2545,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .networking
             .call_mint_restore(&prepared.mint_url, &prepared.funding_restore_request_json)
             .map_err(|e| {
-                OpenChannelError::new(
+                OpenChannelError::network(
                     OpenChannelFailureStage::RestoreVerification,
                     Some(channel_id.to_string()),
                     e,
@@ -2509,7 +2556,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 self.networking
                     .call_mint_restore(&prepared.mint_url, request)
                     .map_err(|e| {
-                        OpenChannelError::new(
+                        OpenChannelError::network(
                             OpenChannelFailureStage::RestoreVerification,
                             Some(channel_id.to_string()),
                             e,
@@ -2890,20 +2937,20 @@ mod tests {
     struct NoopNetworking;
 
     impl SpilmanClientNetworking for NoopNetworking {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_keysets(&self, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
     }
 
@@ -2911,6 +2958,12 @@ mod tests {
     #[test]
     fn retryable_keyset_rejection_requires_safe_mint_rejection_stage() {
         let retryable = OpenChannelError {
+            mint_error: crate::MintResponse {
+                status: 400,
+                body: r#"{"code":12001,"detail":"keyset is not known"}"#.to_owned(),
+            }
+            .into_result()
+            .err(),
             stage: OpenChannelFailureStage::MintRejected,
             channel_id: Some("channel".to_string()),
             input_may_be_spent: false,
@@ -2919,6 +2972,7 @@ mod tests {
         assert!(retryable.is_retryable_keyset_rejection());
 
         let ambiguous = OpenChannelError {
+            mint_error: None,
             stage: OpenChannelFailureStage::SwapSubmitted,
             channel_id: Some("channel".to_string()),
             input_may_be_spent: true,
@@ -2931,6 +2985,12 @@ mod tests {
     #[test]
     fn retryable_keyset_rejection_rejects_non_keyset_mint_errors() {
         let error = OpenChannelError {
+            mint_error: crate::MintResponse {
+                status: 400,
+                body: r#"{"code":11001,"detail":"proofs already spent"}"#.to_owned(),
+            }
+            .into_result()
+            .err(),
             stage: OpenChannelFailureStage::MintRejected,
             channel_id: Some("channel".to_string()),
             input_may_be_spent: false,
@@ -2947,21 +3007,21 @@ mod tests {
 
     #[cfg(feature = "wallet")]
     impl SpilmanClientNetworking for KeysetsNetworking {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+        fn call_mint_keysets(&self, _: &str) -> Result<String, crate::MintRequestError> {
             self.keysets_calls.set(self.keysets_calls.get() + 1);
             Ok(self.keysets_json.clone())
         }
 
-        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
     }
 
@@ -2975,25 +3035,28 @@ mod tests {
 
     #[cfg(feature = "wallet")]
     impl SpilmanClientNetworking for RefreshKeysetsNetworking {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
-            Err("not used".to_string())
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
+            Err(crate::MintRequestError::transport("not used"))
         }
 
-        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
+        fn call_mint_keysets(&self, _: &str) -> Result<String, crate::MintRequestError> {
             self.keysets_calls.set(self.keysets_calls.get() + 1);
             Ok(self.keysets_json.clone())
         }
 
-        fn call_mint_keys(&self, _: &str, keyset_id: &str) -> Result<String, String> {
+        fn call_mint_keys(
+            &self,
+            _: &str,
+            keyset_id: &str,
+        ) -> Result<String, crate::MintRequestError> {
             self.keys_calls.set(self.keys_calls.get() + 1);
-            self.keys_by_id
-                .get(keyset_id)
-                .cloned()
-                .ok_or_else(|| format!("missing keys for {keyset_id}"))
+            self.keys_by_id.get(keyset_id).cloned().ok_or_else(|| {
+                crate::MintRequestError::transport(format!("missing keys for {keyset_id}"))
+            })
         }
     }
 
@@ -3310,7 +3373,7 @@ mod tests {
 
     #[cfg(feature = "wallet")]
     #[test]
-    fn prepare_open_channel_from_token_has_no_network_or_storage_side_effects() {
+    fn prepare_open_is_side_effect_free_and_existing_opening_requires_recovery() {
         let output_keyset = crate::params::mock_keyset_info(vec![1, 2, 4, 8, 16, 32, 64], 0);
         let output_keyset_json = serde_json::to_string(&output_keyset).unwrap();
         let input_proofs = proof_json(output_keyset.keyset_id, 16);
@@ -3344,6 +3407,17 @@ mod tests {
             .get_channel_opening_from_swap(&prepared.channel_id)
             .unwrap()
             .is_none());
+        bridge.mark_prepared_open_saved(&prepared).unwrap();
+        let error = bridge
+            .submit_prepared_open_with_network(prepared.clone())
+            .unwrap_err();
+        assert_eq!(error.stage, OpenChannelFailureStage::SwapSubmitted);
+        assert!(error.input_may_be_spent);
+        assert!(error.message.contains("existing opening requires recovery"));
+        assert_eq!(
+            bridge.host.get_channel_state(&prepared.channel_id),
+            Some(ClientChannelState::OpeningFromSwap)
+        );
     }
 
     #[cfg(feature = "wallet")]

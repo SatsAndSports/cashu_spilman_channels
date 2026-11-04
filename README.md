@@ -88,6 +88,12 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
 
 ## Rust HTTP adapter limits
 
+Mint networking now returns typed failure evidence (`MintRequestError`) rather
+than raw error strings. Custom Rust implementations and Python/Go/WASM networking
+callbacks must adopt the new contract and rebuild matching bindings. See
+[typed mint outcomes](INTEGRATION.md#typed-mint-outcomes) for the callback envelope,
+retry rules, and handling of uncertain submissions.
+
 With `configurable-host-reqwest`, mint response bodies are limited to **4 MiB of
 decoded bytes**, including compressed responses. Mint JSON must be valid UTF-8.
 `ReqwestNetworking` applies a **30-second total deadline per settlement swap

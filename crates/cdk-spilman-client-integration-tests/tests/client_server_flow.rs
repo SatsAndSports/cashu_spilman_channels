@@ -488,33 +488,46 @@ struct StaleFirstKeysetNetworking {
 struct AmbiguousSwapFailureNetworking {
     inner: InMemoryMintNetworking,
     swap_calls: Arc<AtomicUsize>,
+    error: cdk_spilman::MintRequestError,
 }
 
 impl AmbiguousSwapFailureNetworking {
     fn new(inner: InMemoryMintNetworking, swap_calls: Arc<AtomicUsize>) -> Self {
-        Self { inner, swap_calls }
+        Self {
+            inner,
+            swap_calls,
+            error: cdk_spilman::MintRequestError::transport("connection reset after request write"),
+        }
     }
 }
 
 impl SpilmanClientNetworking for AmbiguousSwapFailureNetworking {
-    fn call_mint_swap(&self, _mint_url: &str, _swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        _mint_url: &str,
+        _swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.swap_calls.fetch_add(1, Ordering::SeqCst);
-        Err("connection reset after request write".to_string())
+        Err(self.error.clone())
     }
 
     fn call_mint_restore(
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.inner.call_mint_restore(mint_url, restore_request_json)
     }
 
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, cdk_spilman::MintRequestError> {
         self.inner.call_mint_keysets(mint_url)
     }
 
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+    fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.inner.call_mint_keys(mint_url, keyset_id)
     }
 }
@@ -535,14 +548,22 @@ impl StaleFirstKeysetNetworking {
 }
 
 impl SpilmanClientNetworking for StaleFirstKeysetNetworking {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let call = self.swap_calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
-            return Err(serde_json::json!({
-                "code": 12001,
-                "detail": "Keyset is not active"
-            })
-            .to_string());
+            return cdk_spilman::MintResponse {
+                status: 400,
+                body: serde_json::json!({
+                    "code": 12001,
+                    "detail": "Keyset is not active"
+                })
+                .to_string(),
+            }
+            .into_result();
         }
         self.inner.call_mint_swap(mint_url, swap_request_json)
     }
@@ -551,11 +572,11 @@ impl SpilmanClientNetworking for StaleFirstKeysetNetworking {
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.inner.call_mint_restore(mint_url, restore_request_json)
     }
 
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, cdk_spilman::MintRequestError> {
         let call = self.keysets_calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
             return Ok(self.stale_keysets_json.clone());
@@ -563,7 +584,11 @@ impl SpilmanClientNetworking for StaleFirstKeysetNetworking {
         self.inner.call_mint_keysets(mint_url)
     }
 
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+    fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.inner.call_mint_keys(mint_url, keyset_id)
     }
 }
@@ -1288,50 +1313,76 @@ async fn test_open_channel_from_proofs_with_inactive_output_keyset_leaves_inputs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_open_channel_from_proofs_auto_keeps_ambiguous_swap_failure_opening() {
     let mint_helper = TestMintHelper::new().await.unwrap();
-    let receiver_secret = SecretKey::generate();
+    let code_body = r#"{"code":12002,"detail":"inactive"}"#;
+    for evidence in [
+        cdk_spilman::MintRequestError::transport(code_body),
+        cdk_spilman::MintResponse {
+            status: 503,
+            body: code_body.to_owned(),
+        }
+        .into_result()
+        .unwrap_err(),
+        cdk_spilman::MintResponse {
+            status: 400,
+            body: r#"{"code":11001,"detail":"spent"}"#.to_owned(),
+        }
+        .into_result()
+        .unwrap_err(),
+        cdk_spilman::MintResponse {
+            status: 400,
+            body: r#"{"code":99999,"detail":"unknown"}"#.to_owned(),
+        }
+        .into_result()
+        .unwrap_err(),
+    ] {
+        let receiver_secret = SecretKey::generate();
 
-    let sender_secret = SecretKey::generate();
-    let storage = SqliteClientStorage::open_in_memory().unwrap();
-    let storage_view = storage.clone();
-    let mut client_host = ConfigurableClientHost::new(storage);
-    client_host.add_key(sender_secret.clone());
-    let swap_calls = Arc::new(AtomicUsize::new(0));
-    let networking = AmbiguousSwapFailureNetworking::new(
-        InMemoryMintNetworking::new(mint_helper.mint()),
-        swap_calls.clone(),
-    );
-    let client_bridge = SpilmanClientBridge::new(client_host, networking);
+        let sender_secret = SecretKey::generate();
+        let storage = SqliteClientStorage::open_in_memory().unwrap();
+        let storage_view = storage.clone();
+        let mut client_host = ConfigurableClientHost::new(storage);
+        client_host.add_key(sender_secret.clone());
+        let swap_calls = Arc::new(AtomicUsize::new(0));
+        let mut networking = AmbiguousSwapFailureNetworking::new(
+            InMemoryMintNetworking::new(mint_helper.mint()),
+            swap_calls.clone(),
+        );
+        networking.error = evidence.clone();
+        let client_bridge = SpilmanClientBridge::new(client_host, networking);
 
-    let proofs = mint_helper.mint_proofs(500).await.unwrap();
-    let proofs_json = serde_json::to_string(&proofs).unwrap();
-    let err = client_bridge
-        .open_channel_from_proofs_auto(
-            "https://test-mint",
-            "sat",
-            &proofs_json,
-            &receiver_secret.public_key().to_hex(),
-            &sender_secret.public_key().to_hex(),
-            now_seconds() + 3600,
-            64,
-            cdk_spilman::KeysetSelectionPolicy {
-                allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
-            },
-        )
-        .expect_err("ambiguous swap failure should fail opening");
+        let proofs = mint_helper.mint_proofs(500).await.unwrap();
+        let proofs_json = serde_json::to_string(&proofs).unwrap();
+        let err = client_bridge
+            .open_channel_from_proofs_auto(
+                "https://test-mint",
+                "sat",
+                &proofs_json,
+                &receiver_secret.public_key().to_hex(),
+                &sender_secret.public_key().to_hex(),
+                now_seconds() + 3600,
+                64,
+                cdk_spilman::KeysetSelectionPolicy {
+                    allowed_versions: cdk_spilman::KeysetVersions::V1_AND_V2,
+                },
+            )
+            .expect_err("ambiguous swap failure should fail opening");
 
-    assert!(err.input_may_be_spent);
-    assert_eq!(swap_calls.load(Ordering::SeqCst), 1);
-    let channel_ids = storage_view.list_channel_ids();
-    assert_eq!(channel_ids.len(), 1);
-    assert_eq!(
-        storage_view.get_state(&channel_ids[0]),
-        Some(ClientChannelState::OpeningFromSwap)
-    );
-    assert!(storage_view
-        .get_opening_from_swap(&channel_ids[0])
-        .unwrap()
-        .is_some());
-    assert!(storage_view.get_opening_failure(&channel_ids[0]).is_none());
+        assert!(err.input_may_be_spent);
+        assert_eq!(err.mint_error, Some(evidence));
+        assert!(!err.is_retryable_keyset_rejection());
+        assert_eq!(swap_calls.load(Ordering::SeqCst), 1);
+        let channel_ids = storage_view.list_channel_ids();
+        assert_eq!(channel_ids.len(), 1);
+        assert_eq!(
+            storage_view.get_state(&channel_ids[0]),
+            Some(ClientChannelState::OpeningFromSwap)
+        );
+        assert!(storage_view
+            .get_opening_from_swap(&channel_ids[0])
+            .unwrap()
+            .is_some());
+        assert!(storage_view.get_opening_failure(&channel_ids[0]).is_none());
+    }
 }
 
 /// Test that fetch_keyset_info rejects keys that don't match the claimed keyset ID.
@@ -1558,7 +1609,10 @@ async fn test_reqwest_client_networking_times_out_slow_keyset_request() {
         started.elapsed() < Duration::from_millis(150),
         "request exceeded its total timeout: {error}"
     );
-    assert!(error.contains("GET"), "unexpected timeout error: {error}");
+    assert!(
+        matches!(error, cdk_spilman::MintRequestError::Transport { .. }),
+        "unexpected timeout error: {error}"
+    );
 
     let _ = shutdown_tx.send(());
     mint_task.await.expect("slow mint task");

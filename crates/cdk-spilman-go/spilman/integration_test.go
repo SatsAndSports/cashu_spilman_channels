@@ -175,14 +175,7 @@ func (h *testClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("swap failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *testClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (string, error) {
@@ -196,14 +189,7 @@ func (h *testClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (st
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("restore failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *testClientHost) CallMintKeysets(mintURL string) (string, error) {
@@ -213,14 +199,7 @@ func (h *testClientHost) CallMintKeysets(mintURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("keysets failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 func (h *testClientHost) CallMintKeys(mintURL, keysetID string) (string, error) {
@@ -230,14 +209,7 @@ func (h *testClientHost) CallMintKeys(mintURL, keysetID string) (string, error) 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		if len(body) > 0 {
-			return "", errors.New(string(body))
-		}
-		return "", fmt.Errorf("keys failed with status %d", resp.StatusCode)
-	}
-	return string(body), nil
+	return MintResponseEnvelope(resp)
 }
 
 // Funding Data
@@ -390,11 +362,17 @@ func (h *testClientHost) ComputeChannelSecret(senderPubkeyHex, receiverPubkeyHex
 
 type failingClientHost struct {
 	*testClientHost
-	mintErr string
+	mintErr   string
+	status    int
+	transport bool
 }
 
 func (h *failingClientHost) CallMintSwap(mintURL, swapRequestJSON string) (string, error) {
-	return "", errors.New(h.mintErr)
+	if h.transport {
+		return "", errors.New(h.mintErr)
+	}
+	body, err := json.Marshal(map[string]interface{}{"status": h.status, "body": h.mintErr})
+	return string(body), err
 }
 
 func (h *failingClientHost) CallMintRestore(mintURL, restoreRequestJSON string) (string, error) {
@@ -818,39 +796,59 @@ func TestClientBridgePreservesStructuredMintError(t *testing.T) {
 		t.Fatalf("GenerateKeypair (alice) failed: %v", err)
 	}
 
-	host := &failingClientHost{
-		testClientHost: newTestClientHost(mintURL),
-		mintErr:        "{\n  \"code\": 12001,\n  \"detail\": \"Unknown Keyset\"\n}",
-	}
-	host.RegisterKey(aliceSecret, senderPubkey)
+	for _, tc := range []struct {
+		status    int
+		transport bool
+		kind      string
+	}{
+		{400, false, "rejected"}, {503, false, "http"}, {400, true, "transport"},
+	} {
+		host := &failingClientHost{
+			testClientHost: newTestClientHost(mintURL),
+			mintErr:        "{\n  \"code\": 12001,\n  \"detail\": \"Unknown Keyset\"\n}",
+			status:         tc.status, transport: tc.transport,
+		}
+		host.RegisterKey(aliceSecret, senderPubkey)
 
-	clientBridge, err := NewClientBridge(host)
-	if err != nil {
-		t.Fatalf("NewClientBridge failed: %v", err)
-	}
-	defer clientBridge.Free()
+		clientBridge, err := NewClientBridge(host)
+		if err != nil {
+			t.Fatalf("NewClientBridge failed: %v", err)
+		}
+		defer clientBridge.Free()
 
-	_, err = clientBridge.OpenChannelFromToken(
-		token,
-		receiverPubkey,
-		senderPubkey,
-		uint64(time.Now().Unix())+7200,
-		string(keysetJSON),
-		64,
-	)
-	if err == nil {
-		t.Fatal("expected open channel to fail")
-	}
+		_, err = clientBridge.OpenChannelFromToken(
+			token,
+			receiverPubkey,
+			senderPubkey,
+			uint64(time.Now().Unix())+7200,
+			string(keysetJSON),
+			64,
+		)
+		if err == nil {
+			t.Fatal("expected open channel to fail")
+		}
 
-	var errJSON map[string]interface{}
-	if decodeErr := json.Unmarshal([]byte(err.Error()), &errJSON); decodeErr != nil {
-		t.Fatalf("expected structured JSON error, got %q: %v", err.Error(), decodeErr)
-	}
-	if uint64(errJSON["code"].(float64)) != 12001 {
-		t.Fatalf("expected code 12001, got %v", errJSON["code"])
-	}
-	if errJSON["detail"].(string) != "Unknown Keyset" {
-		t.Fatalf("expected detail %q, got %q", "Unknown Keyset", errJSON["detail"])
+		var errJSON map[string]interface{}
+		if decodeErr := json.Unmarshal([]byte(err.Error()), &errJSON); decodeErr != nil {
+			t.Fatalf("expected structured JSON error, got %q: %v", err.Error(), decodeErr)
+		}
+		evidence := errJSON["mint_error"].(map[string]interface{})
+		if evidence["type"] != tc.kind {
+			t.Fatalf("wrong evidence: %v", evidence)
+		}
+		if tc.kind != "rejected" {
+			if errJSON["input_may_be_spent"] != true || errJSON["stage"] != "SwapSubmitted" {
+				t.Fatalf("lost uncertainty: %v", errJSON)
+			}
+			continue
+		}
+		errJSON = evidence["rejection"].(map[string]interface{})
+		if uint64(errJSON["code"].(float64)) != 12001 {
+			t.Fatalf("expected code 12001, got %v", errJSON["code"])
+		}
+		if errJSON["detail"].(string) != "Unknown Keyset" {
+			t.Fatalf("expected detail %q, got %q", "Unknown Keyset", errJSON["detail"])
+		}
 	}
 }
 

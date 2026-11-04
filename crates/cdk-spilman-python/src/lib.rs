@@ -20,6 +20,7 @@ use spilman_core::{
     SpilmanClientBridge as RustSpilmanClientBridge, SpilmanClientHost, SpilmanClientNetworking,
     SpilmanHost, SpilmanKeysetRefresher, SpilmanMintClient,
 };
+use spilman_core::{MintRequestError, MintResponse};
 
 // ============================================================================
 // Result types for Python
@@ -139,7 +140,7 @@ impl From<spilman_core::CloseSuccess> for CloseSuccess {
 /// - get_balance_and_signature_for_unilateral_exit(channel_id: str) -> Optional[Tuple[int, str]]
 /// - get_active_keyset_ids(mint: str, unit: str) -> List[str]
 /// - get_keyset_info(mint: str, keyset_id: str) -> Optional[str]
-/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Returns response JSON or raises
+/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # JSON {status, body}; raises for transport failures
 /// - mark_channel_closed(channel_id: str, ...) -> None  # Raises on error
 ///
 /// Optional methods (default implementations exist):
@@ -535,8 +536,12 @@ impl SpilmanHost for PySpilmanHost {
 }
 
 impl SpilmanMintClient for PySpilmanHost {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        Python::attach(|py| {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, MintRequestError> {
+        MintResponse::from_callback(Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
@@ -544,7 +549,7 @@ impl SpilmanMintClient for PySpilmanHost {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
             }
-        })
+        }))
     }
 }
 
@@ -1155,10 +1160,12 @@ struct PySpilmanClientHost {
 /// Wrapper that delegates SpilmanClientNetworking trait calls to a Python object.
 ///
 /// The Python object must implement:
-/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # Raises on error
-/// - call_mint_restore(mint_url: str, restore_request_json: str) -> str  # Raises on error
-/// - call_mint_keysets(mint_url: str) -> str  # Raises on error
-/// - call_mint_keys(mint_url: str, keyset_id: str) -> str  # Raises on error
+/// - call_mint_swap(mint_url: str, swap_request_json: str) -> str  # JSON {status, body}
+/// - call_mint_restore(mint_url: str, restore_request_json: str) -> str  # JSON {status, body}
+/// - call_mint_keysets(mint_url: str) -> str  # JSON {status, body}
+/// - call_mint_keys(mint_url: str, keyset_id: str) -> str  # JSON {status, body}
+///
+/// HTTP errors return envelopes normally; exceptions indicate transport failures.
 struct PySpilmanClientNetworking {
     py_host: Py<PyAny>,
 }
@@ -1408,8 +1415,12 @@ impl SpilmanClientHost for PySpilmanClientHost {
 }
 
 impl SpilmanClientNetworking for PySpilmanClientNetworking {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
-        Python::attach(|py| {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, MintRequestError> {
+        MintResponse::from_callback(Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_swap", (mint_url, swap_request_json))
@@ -1417,15 +1428,15 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
             }
-        })
+        }))
     }
 
     fn call_mint_restore(
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
-        Python::attach(|py| {
+    ) -> Result<String, MintRequestError> {
+        MintResponse::from_callback(Python::attach(|py| {
             match self.py_host.call_method1(
                 py,
                 "call_mint_restore",
@@ -1434,11 +1445,11 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
             }
-        })
+        }))
     }
 
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
-        Python::attach(|py| {
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, MintRequestError> {
+        MintResponse::from_callback(Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_keysets", (mint_url,))
@@ -1446,11 +1457,11 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
             }
-        })
+        }))
     }
 
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
-        Python::attach(|py| {
+    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, MintRequestError> {
+        MintResponse::from_callback(Python::attach(|py| {
             match self
                 .py_host
                 .call_method1(py, "call_mint_keys", (mint_url, keyset_id))
@@ -1458,7 +1469,7 @@ impl SpilmanClientNetworking for PySpilmanClientNetworking {
                 Ok(result) => result.extract::<String>(py).map_err(|e| e.to_string()),
                 Err(e) => Err(python_error_message(py, e)),
             }
-        })
+        }))
     }
 }
 
@@ -1542,7 +1553,9 @@ impl ClientBridge {
                 keyset_info_json,
                 max_amount,
             )
-            .map_err(|e| PyRuntimeError::new_err(e.message))?;
+            .map_err(|e| {
+                PyRuntimeError::new_err(serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))
+            })?;
 
         Ok(ClientOpenChannelResult {
             channel_id: result.channel_id,

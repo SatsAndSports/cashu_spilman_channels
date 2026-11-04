@@ -527,7 +527,11 @@ impl SpilmanHost<String> for CGoSpilmanHost {
 }
 
 impl SpilmanMintClient for CGoSpilmanHost {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let mint_c = CString::new(mint_url).unwrap();
         let req_c = CString::new(swap_request_json).unwrap();
         let mut response_ptr: *mut c_char = ptr::null_mut();
@@ -539,14 +543,14 @@ impl SpilmanMintClient for CGoSpilmanHost {
             &mut response_ptr,
         );
 
-        unsafe {
+        cdk_spilman::MintResponse::from_callback(unsafe {
             let response = CString::from_raw(response_ptr).into_string().unwrap();
             if ok != 0 {
                 Ok(response)
             } else {
                 Err(response)
             }
-        }
+        })
     }
 }
 
@@ -1373,7 +1377,11 @@ unsafe impl Send for CGoSpilmanClientNetworking {}
 unsafe impl Sync for CGoSpilmanClientNetworking {}
 
 impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let mint_c = CString::new(mint_url).unwrap();
         let req_c = CString::new(swap_request_json).unwrap();
         let mut response_ptr: *mut c_char = ptr::null_mut();
@@ -1385,21 +1393,21 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             &mut response_ptr,
         );
 
-        unsafe {
+        cdk_spilman::MintResponse::from_callback(unsafe {
             let response = CString::from_raw(response_ptr).into_string().unwrap();
             if ok != 0 {
                 Ok(response)
             } else {
                 Err(response)
             }
-        }
+        })
     }
 
     fn call_mint_restore(
         &self,
         mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let mint_c = CString::new(mint_url).unwrap();
         let req_c = CString::new(restore_request_json).unwrap();
         let mut response_ptr: *mut c_char = ptr::null_mut();
@@ -1411,17 +1419,17 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             &mut response_ptr,
         );
 
-        unsafe {
+        cdk_spilman::MintResponse::from_callback(unsafe {
             let response = CString::from_raw(response_ptr).into_string().unwrap();
             if ok != 0 {
                 Ok(response)
             } else {
                 Err(response)
             }
-        }
+        })
     }
 
-    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, String> {
+    fn call_mint_keysets(&self, mint_url: &str) -> Result<String, cdk_spilman::MintRequestError> {
         let mint_c = CString::new(mint_url).unwrap();
         let mut response_ptr: *mut c_char = ptr::null_mut();
 
@@ -1431,17 +1439,21 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             &mut response_ptr,
         );
 
-        unsafe {
+        cdk_spilman::MintResponse::from_callback(unsafe {
             let response = CString::from_raw(response_ptr).into_string().unwrap();
             if ok != 0 {
                 Ok(response)
             } else {
                 Err(response)
             }
-        }
+        })
     }
 
-    fn call_mint_keys(&self, mint_url: &str, keyset_id: &str) -> Result<String, String> {
+    fn call_mint_keys(
+        &self,
+        mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let mint_c = CString::new(mint_url).unwrap();
         let id_c = CString::new(keyset_id).unwrap();
         let mut response_ptr: *mut c_char = ptr::null_mut();
@@ -1453,14 +1465,14 @@ impl SpilmanClientNetworking for CGoSpilmanClientNetworking {
             &mut response_ptr,
         );
 
-        unsafe {
+        cdk_spilman::MintResponse::from_callback(unsafe {
             let response = CString::from_raw(response_ptr).into_string().unwrap();
             if ok != 0 {
                 Ok(response)
             } else {
                 Err(response)
             }
-        }
+        })
     }
 }
 
@@ -1563,7 +1575,7 @@ pub unsafe extern "C" fn spilman_client_bridge_open_channel_from_token(
             let json = serde_json::to_string(&result).unwrap();
             CResult::success(json)
         }
-        Err(e) => CResult::error(e.message),
+        Err(e) => CResult::error(serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())),
     }
 }
 

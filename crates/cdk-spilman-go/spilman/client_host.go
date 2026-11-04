@@ -114,13 +114,12 @@ type SpilmanClientHost interface {
 	// ========================================================================
 
 	// CallMintSwap executes a swap with the mint.
-	// Posts swapRequestJSON to {mintURL}/v1/swap and returns the response body.
-	// Returns the response JSON string on success, or an error.
+	// Returns a serialized {status, body} envelope for complete HTTP responses.
+	// Only transport/read failures return an error; HTTP failures return envelopes.
 	CallMintSwap(mintURL, swapRequestJSON string) (string, error)
 
 	// CallMintRestore executes a NUT-09 restore with the mint.
-	// Posts restoreRequestJSON to {mintURL}/v1/restore and returns the response body.
-	// Returns the response JSON string on success, or an error.
+	// Returns a serialized {status, body} envelope; errors mean transport failure.
 	CallMintRestore(mintURL, restoreRequestJSON string) (string, error)
 
 	// CallMintKeysets fetches /v1/keysets from the mint.

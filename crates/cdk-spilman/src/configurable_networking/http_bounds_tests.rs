@@ -128,7 +128,7 @@ async fn swap_bounds_success_and_error_bodies_before_parsing() {
             let result = server.networking().call_mint_swap(&server.url, "{}").await;
             assert!(result.is_err(), "oversized success body must be refused");
             assert!(
-                result.unwrap_err().contains("byte limit"),
+                result.unwrap_err().to_string().contains("byte limit"),
                 "{status}, declared={declared}"
             );
         }
@@ -159,7 +159,11 @@ async fn swap_preserves_small_success_and_nut00_errors() {
             if success {
                 Ok(body.to_owned())
             } else {
-                Err(body.to_owned())
+                crate::MintResponse {
+                    status: 400,
+                    body: body.to_owned(),
+                }
+                .into_result()
             }
         );
     }
@@ -209,7 +213,7 @@ async fn client_bounds_swap_restore_and_keyset_responses() {
                 networking.call_mint_keysets(&server.url),
                 networking.call_mint_keys(&server.url, "test-keyset"),
             ] {
-                assert!(result.unwrap_err().contains("byte limit"));
+                assert!(result.unwrap_err().to_string().contains("byte limit"));
             }
         }
     }
@@ -245,8 +249,13 @@ async fn accepts_exact_limit_and_preserves_client_errors() {
     })
     .await;
     assert_eq!(
-        networking.call_mint_swap(&server.url, "{}").unwrap_err(),
-        r#"{"code":12001,"detail":"inactive keyset"}"#
+        networking
+            .call_mint_swap(&server.url, "{}")
+            .unwrap_err()
+            .rejection()
+            .unwrap()
+            .code(),
+        12001
     );
 }
 
@@ -275,8 +284,8 @@ async fn invalid_utf8_is_not_repaired_into_a_retryable_mint_error() {
             .unwrap_err(),
         client.call_mint_swap(&server.url, "{}").unwrap_err(),
     ] {
-        assert!(error.contains("UTF-8"), "{error}");
-        assert!(!crate::is_retryable_keyset_mint_error(&error));
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+        assert!(!error.permits_keyset_retry());
     }
 }
 
@@ -317,11 +326,11 @@ async fn gzip_limit_applies_to_decoded_bytes_on_success_and_error() {
                 client.call_mint_keys(&server.url, "test-keyset"),
             ] {
                 if size > LIMIT {
-                    assert!(result.unwrap_err().contains("byte limit"));
+                    assert!(result.unwrap_err().to_string().contains("byte limit"));
                 } else if status == "200 OK" {
                     assert_eq!(result.unwrap().len(), LIMIT);
                 } else {
-                    assert!(!result.unwrap_err().contains("byte limit"));
+                    assert!(!result.unwrap_err().to_string().contains("byte limit"));
                 }
             }
         }
@@ -361,9 +370,9 @@ async fn chunked_and_truncated_bodies_never_expose_a_retryable_prefix() {
             client.call_mint_swap(&server.url, "{}").unwrap_err(),
         ] {
             if oversized {
-                assert!(error.contains("byte limit"), "{error}");
+                assert!(error.to_string().contains("byte limit"), "{error}");
             }
-            assert!(!crate::is_retryable_keyset_mint_error(&error));
+            assert!(!error.permits_keyset_retry());
         }
     }
 }
@@ -420,7 +429,7 @@ async fn client_timeout_covers_stalled_success_and_error_bodies() {
             client.call_mint_keysets(&server.url),
         ] {
             let error = result.unwrap_err();
-            assert!(!crate::is_retryable_keyset_mint_error(&error));
+            assert!(!error.permits_keyset_retry());
         }
     }
 }
@@ -448,7 +457,7 @@ async fn swap_stalled_headers_obey_production_deadline() {
         .expect("swap headers exceeded the production deadline")
         .unwrap_err();
     assert!(start.elapsed() >= Duration::from_secs(29));
-    assert!(!crate::is_retryable_keyset_mint_error(&error));
+    assert!(!error.permits_keyset_retry());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -471,16 +471,16 @@ The bridge implements intelligent error handling based on [NUT-00](https://githu
 |------------|----------|----------------|
 | 10xxx | Proof/Token verification | Fail immediately |
 | 11xxx | Input/Output errors (e.g., spent proofs) | Fail immediately |
-| 12000..13000 | Keyset errors (not found, inactive) | Retry after refresh |
-| 99999 | Unknown keyset (NutMix workaround) | Retry after refresh |
+| 12001, 12002 | Validated HTTP 400 keyset rejections | Retry after refresh |
+| Other codes / HTTP or transport failures | Not sufficient retry evidence | Preserve uncertainty; no automatic keyset retry |
 | 20xxx+ | Quote/Payment/Auth errors | Fail immediately |
 
 #### Selective Retry Logic
 
 When a swap fails during channel closing:
 
-1. **Parse the NUT-00 error code** from the mint's JSON response (`{"code": 12001, "detail": "..."}`)
-2. **Check if retryable**: Only keyset errors (`12000..13000`) and the NutMix unknown-keyset workaround (`99999`) trigger retry
+1. **Classify complete HTTP evidence** into a validated rejection, unclassified HTTP failure, or transport/read failure. Validate NUT-00 fields and code range without lossy integer narrowing.
+2. **Check if retryable**: Only typed HTTP 400 rejections with code `12001` or `12002` trigger retry. Exception strings, unclassified HTTP errors, and unknown codes cannot authorize it.
 3. **If retryable**: refresh keysets from the mint, reselect the active output keyset from cache, and rebuild the swap request
 4. **Skip unchanged retry**: if refresh selects the same output keyset id, fail with the first mint rejection instead of resubmitting the same stale swap
 5. **If changed**: submit one rebuilt swap attempt
@@ -490,7 +490,12 @@ This prevents wasted retries on errors that can't be fixed by refreshing keysets
 
 #### WASM Error Boundary
 
-Errors crossing the WASM-JS boundary must preserve their string content. The `js_error_to_string()` helper extracts string values from `JsValue` errors, ensuring NUT-00 JSON is passed through cleanly rather than being wrapped as `JsValue("...")`.
+Mint callbacks resolve with a serialized `{status, body}` envelope for complete
+HTTP responses. Rejected promises/exceptions are transport failures, even when
+their text is NUT-00-shaped JSON. Rust classifies the envelope before retry or
+state decisions. The same envelope is used by Python and Go callbacks; opening
+errors preserve `mint_error` evidence separately from display text. See
+[typed mint outcomes](INTEGRATION.md#typed-mint-outcomes) for the breaking API.
 
 ## Persistent Test Mint
 

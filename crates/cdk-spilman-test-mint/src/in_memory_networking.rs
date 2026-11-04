@@ -36,7 +36,7 @@ impl InMemoryMintNetworking {
     ///
     /// Uses `block_in_place` to safely call async code from a sync context
     /// within a tokio multi-threaded runtime.
-    fn do_swap(&self, swap_request_json: &str) -> Result<String, String> {
+    fn do_swap(&self, swap_request_json: &str) -> Result<String, cdk_spilman::MintRequestError> {
         let swap_request: SwapRequest = serde_json::from_str(swap_request_json)
             .map_err(|e| format!("Failed to parse swap request: {}", e))?;
 
@@ -49,19 +49,36 @@ impl InMemoryMintNetworking {
             handle.block_on(async move {
                 mint.process_swap_request(swap_request).await.map_err(|e| {
                     let response = ErrorResponse::from(e);
-                    serde_json::to_string(&response)
-                        .unwrap_or_else(|ser_err| format!("Mint swap failed: {ser_err}"))
+                    match serde_json::to_string(&response) {
+                        Ok(body) => cdk_spilman::MintResponse { status: 400, body }
+                            .into_result()
+                            .err()
+                            .unwrap_or_else(|| {
+                                cdk_spilman::MintRequestError::transport(
+                                    "unexpected success classification",
+                                )
+                            }),
+                        Err(error) => cdk_spilman::MintRequestError::transport(error.to_string()),
+                    }
                 })
             })
         })?;
 
-        serde_json::to_string(&response)
-            .map_err(|e| format!("Failed to serialize swap response: {}", e))
+        serde_json::to_string(&response).map_err(|e| {
+            cdk_spilman::MintRequestError::transport(format!(
+                "Failed to serialize swap response: {}",
+                e
+            ))
+        })
     }
 }
 
 impl SpilmanClientNetworking for InMemoryMintNetworking {
-    fn call_mint_swap(&self, _mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        _mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.do_swap(swap_request_json)
     }
 
@@ -69,7 +86,7 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
         &self,
         _mint_url: &str,
         restore_request_json: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let restore_request: cdk::nuts::RestoreRequest = serde_json::from_str(restore_request_json)
             .map_err(|e| format!("Failed to parse restore request: {}", e))?;
 
@@ -86,17 +103,29 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
             })
         })?;
 
-        serde_json::to_string(&response)
-            .map_err(|e| format!("Failed to serialize restore response: {}", e))
+        serde_json::to_string(&response).map_err(|e| {
+            cdk_spilman::MintRequestError::transport(format!(
+                "Failed to serialize restore response: {}",
+                e
+            ))
+        })
     }
 
-    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+    fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, cdk_spilman::MintRequestError> {
         let response = self.mint.keysets();
-        serde_json::to_string(&response)
-            .map_err(|e| format!("Failed to serialize keysets response: {}", e))
+        serde_json::to_string(&response).map_err(|e| {
+            cdk_spilman::MintRequestError::transport(format!(
+                "Failed to serialize keysets response: {}",
+                e
+            ))
+        })
     }
 
-    fn call_mint_keys(&self, _mint_url: &str, keyset_id: &str) -> Result<String, String> {
+    fn call_mint_keys(
+        &self,
+        _mint_url: &str,
+        keyset_id: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         let id: cashu::nuts::Id = keyset_id
             .parse()
             .map_err(|e| format!("Invalid keyset ID '{}': {}", keyset_id, e))?;
@@ -104,13 +133,21 @@ impl SpilmanClientNetworking for InMemoryMintNetworking {
             .mint
             .keyset_pubkeys(&id)
             .map_err(|e| format!("Failed to get keyset pubkeys: {}", e))?;
-        serde_json::to_string(&response)
-            .map_err(|e| format!("Failed to serialize keys response: {}", e))
+        serde_json::to_string(&response).map_err(|e| {
+            cdk_spilman::MintRequestError::transport(format!(
+                "Failed to serialize keys response: {}",
+                e
+            ))
+        })
     }
 }
 
 impl SpilmanMintClient for InMemoryMintNetworking {
-    fn call_mint_swap(&self, _mint_url: &str, swap_request_json: &str) -> Result<String, String> {
+    fn call_mint_swap(
+        &self,
+        _mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, cdk_spilman::MintRequestError> {
         self.do_swap(swap_request_json)
     }
 }

@@ -96,17 +96,17 @@ class SpilmanClientHost(Protocol):
     # ========================================================================
 
     def call_mint_swap(self, mint_url: str, swap_request_json: str) -> str:
-        """Executes a swap with the mint. Returns response JSON string."""
+        """Returns a JSON {status, body} HTTP envelope; raises for transport failure."""
         ...
 
     def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
-        """Executes a NUT-09 restore with the mint. Returns response JSON string."""
+        """Returns a JSON {status, body} restore envelope; raises for transport failure."""
         ...
 
     def call_mint_keysets(self, mint_url: str) -> str:
-        """Fetches the mint's keyset list. Returns response JSON string."""
+        """Returns a JSON {status, body} keysets envelope; raises for transport failure."""
         ...
 
     def call_mint_keys(self, mint_url: str, keyset_id: str) -> str:
-        """Fetches keys for one keyset. Returns response JSON string."""
+        """Returns a JSON {status, body} keys envelope; raises for transport failure."""
         ...

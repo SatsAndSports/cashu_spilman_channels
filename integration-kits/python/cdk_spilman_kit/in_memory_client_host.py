@@ -7,6 +7,7 @@ For production, you would implement a custom host with persistent storage.
 import json
 import time
 import requests
+from .mint_response import mint_response_envelope
 from typing import Optional, List, Dict
 
 
@@ -39,11 +40,7 @@ class InMemorySpilmanClientHost:
             json=json.loads(swap_request_json),
             timeout=30,
         )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                resp.text or f"Mint rejected swap with status {resp.status_code}"
-            )
-        return resp.text
+        return mint_response_envelope(resp)
 
     def call_mint_restore(self, mint_url: str, restore_request_json: str) -> str:
         """Call the mint's restore endpoint."""
@@ -52,29 +49,17 @@ class InMemorySpilmanClientHost:
             json=json.loads(restore_request_json),
             timeout=30,
         )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                resp.text or f"Mint rejected restore with status {resp.status_code}"
-            )
-        return resp.text
+        return mint_response_envelope(resp)
 
     def call_mint_keysets(self, mint_url: str) -> str:
         """Fetch the mint's keyset list."""
         resp = requests.get(f"{mint_url}/v1/keysets", timeout=30)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                resp.text or f"Mint keyset request failed with status {resp.status_code}"
-            )
-        return resp.text
+        return mint_response_envelope(resp)
 
     def call_mint_keys(self, mint_url: str, keyset_id: str) -> str:
         """Fetch denomination keys for one keyset."""
         resp = requests.get(f"{mint_url}/v1/keys/{keyset_id}", timeout=30)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                resp.text or f"Mint keys request failed with status {resp.status_code}"
-            )
-        return resp.text
+        return mint_response_envelope(resp)
 
     # ========================================================================
     # Channel Opening (two-phase)

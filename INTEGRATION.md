@@ -8,6 +8,58 @@ This guide is for developers who want to accept or send Cashu micropayments via 
 
 ---
 
+## Typed mint outcomes
+
+This is a coordinated breaking API change within unreleased 0.3.0. Rebuild all
+bindings and update custom networking implementations together. There is no
+automatic fallback to parsing old exception/error strings as mint responses.
+
+Rust mint networking traits return `Result<String, MintRequestError>`. The success
+string is the complete response body, still subject to JSON, output and signature
+verification. Use `MintResponse { status, body }.into_result()` to classify a
+complete HTTP response, and `MintRequestError::transport(message)` for failures
+to send or fully read/decode one. A string converted into `MintRequestError`
+always becomes a transport failure, even if its contents look like NUT-00 JSON.
+
+Python, Go/C and WASM/TypeScript mint callbacks return a **serialized JSON
+envelope**, for both successful and unsuccessful HTTP statuses:
+
+```json
+{"status":400,"body":"{\"code\":12002,\"detail\":\"Inactive Keyset\"}"}
+```
+
+Use `json.dumps({"status": resp.status_code, "body": resp.content.decode("utf-8")})`
+in Python, `MintResponseEnvelope(resp)` in Go, or serialize `{status, body}` after
+strict UTF-8 decoding in TypeScript. Exceptions, rejected promises and callback
+failure returns represent transport/read failures; never throw a raw
+HTTP error body. The Go/C callback success flag now means a complete response
+envelope was returned, not that the HTTP status was successful. This contract
+applies to swap, restore and keyset callbacks, not the separate demo minting
+`http_call` callback. Callback providers are trusted to report actual status and
+complete bodies; an envelope is evidence provenance, not mint authentication.
+
+Only HTTP 400 with a numeric `u32` NUT-00 `code` and string `detail` is classified
+as `Rejected`. Duplicate known fields, overflow, malformed JSON, and other HTTP
+statuses become `Http` failures. Read failures become `Transport`; both preserve
+submission uncertainty. Only known codes **12001 and 12002** can permit keyset
+reselection. The former blanket 12xxx rule and 99999 workaround are removed.
+
+Rejection does not mean inputs are spendable: 11001 explicitly reports spent
+inputs. Opening helpers only mark a fresh attempt `OpeningFailed` for a qualifying
+keyset rejection; other submission failures retain `OpeningFromSwap` with
+`input_may_be_spent=true`. An existing opening record requires recovery, rather
+than another fresh high-level submission. Applications must serialize channel
+operations and retain earlier uncertainty in their own journals; evidence from
+a later rejection cannot erase an earlier possibly successful submission.
+
+`OpenChannelError.mint_error` preserves structured evidence separately from its
+display message. Python/Go opening exceptions carry serialized `OpenChannelError`;
+WASM rejects with its structured object. Close transport/unclassified failures use
+`mint_request_failed` with evidence and any preceding rejection, instead of being
+misreported as `mint_rejected`. No failed submission finalizes a close or releases
+application-owned reservations. Durable replay and exact restore remain the
+application's responsibility; the typed evidence is not a settlement journal.
+
 ## Overview
 
 Spilman channels enable **streaming micropayments** between a client (payer) and a server (payee). Instead of paying per-request with individual tokens, the client opens a channel with a set capacity and then makes many small payments by signing incremental balance updates.

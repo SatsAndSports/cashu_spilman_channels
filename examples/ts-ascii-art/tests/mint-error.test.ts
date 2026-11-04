@@ -5,15 +5,12 @@ import { createInMemoryStores, createSpilmanHost } from 'cdk-spilman-kit';
 describe('mint error handling', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it('preserves raw NUT-00 mint JSON in callMintSwap rejections', async () => {
+  it('preserves status and raw NUT-00 JSON as response evidence', async () => {
     const nut00Error = '{"code":12001,"detail":"Unknown Keyset"}';
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: async () => nut00Error,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(nut00Error, { status: 400 })));
 
     const host = createSpilmanHost({
       secretKeyHex: '0000000000000000000000000000000000000000000000000000000000000001',
@@ -22,6 +19,6 @@ describe('mint error handling', () => {
       stores: createInMemoryStores(),
     });
 
-    await expect(host.callMintSwap('http://localhost:3338', '{}')).rejects.toBe(nut00Error);
+    expect(JSON.parse(await host.callMintSwap('http://localhost:3338', '{}'))).toEqual({status: 400, body: nut00Error});
   });
 });

@@ -32,6 +32,7 @@ use cdk_common::{
     MintQuoteResponse,
 };
 use cdk_fake_wallet::FakeWallet;
+use cdk_spilman::MintRequestError;
 use cdk_spilman::{
     complete_funding_swap, compute_channel_from_token, create_funding_swap, ChannelFunding,
     ChannelParameters, ChannelPolicy, ChannelState, CloseError, ClosingData, CommitmentOutputs,
@@ -41,6 +42,15 @@ use cdk_spilman::{
 };
 use cdk_sqlite::wallet::memory;
 use rand::random;
+
+fn rejected(body: impl Into<String>) -> MintRequestError {
+    cdk_spilman::MintResponse {
+        status: 400,
+        body: body.into(),
+    }
+    .into_result()
+    .expect_err("HTTP 400 is a failure")
+}
 
 const DEFAULT_TEST_FEE_PPK: u64 = 400;
 const REFUND_TEST_EXPIRY_DELAY_SECS: u64 = 10;
@@ -1863,7 +1873,7 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             &self,
             _mint_url: &str,
             swap_request_json: &str,
-        ) -> Result<String, String> {
+        ) -> Result<String, MintRequestError> {
             let swap_request: SwapRequest = serde_json::from_str(swap_request_json)
                 .map_err(|e| format!("Failed to parse swap request: {}", e))?;
             let mint = Arc::clone(&self.mint);
@@ -1872,18 +1882,18 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                     .block_on(async { mint.process_swap_request(swap_request).await })
             })
             .map_err(|e| {
-                serde_json::to_string(&cdk_common::error::ErrorResponse::from(e))
-                    .unwrap_or_else(|ser_err| format!("Mint swap failed: {ser_err}"))
+                rejected(serde_json::to_string(&cdk_common::error::ErrorResponse::from(e)).unwrap())
             })?;
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize swap response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize swap response: {}", e))
+            })
         }
 
         fn call_mint_restore(
             &self,
             _mint_url: &str,
             restore_request_json: &str,
-        ) -> Result<String, String> {
+        ) -> Result<String, MintRequestError> {
             let restore_request: RestoreRequest = serde_json::from_str(restore_request_json)
                 .map_err(|e| format!("Failed to parse restore request: {}", e))?;
             let mint = Arc::clone(&self.mint);
@@ -1895,17 +1905,23 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 serde_json::to_string(&cdk_common::error::ErrorResponse::from(e))
                     .unwrap_or_else(|ser_err| format!("Mint restore failed: {ser_err}"))
             })?;
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize restore response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize restore response: {}", e))
+            })
         }
 
-        fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, String> {
+        fn call_mint_keysets(&self, _mint_url: &str) -> Result<String, MintRequestError> {
             let response = self.mint.keysets();
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize keysets response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize keysets response: {}", e))
+            })
         }
 
-        fn call_mint_keys(&self, _mint_url: &str, keyset_id: &str) -> Result<String, String> {
+        fn call_mint_keys(
+            &self,
+            _mint_url: &str,
+            keyset_id: &str,
+        ) -> Result<String, MintRequestError> {
             let id: cdk::nuts::Id = keyset_id
                 .parse()
                 .map_err(|e| format!("Invalid keyset ID: {}", e))?;
@@ -1913,8 +1929,9 @@ async fn test_client_bridge() -> anyhow::Result<()> {
                 .mint
                 .keyset_pubkeys(&id)
                 .map_err(|e| format!("Failed to get keyset pubkeys: {}", e))?;
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize keys response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize keys response: {}", e))
+            })
         }
     }
 
@@ -2248,8 +2265,8 @@ async fn test_client_bridge() -> anyhow::Result<()> {
             &self,
             _mint_url: &str,
             _swap_request_json: &str,
-        ) -> Result<String, String> {
-            Err("not used in this test".to_string())
+        ) -> Result<String, MintRequestError> {
+            Err(MintRequestError::transport("not used in this test"))
         }
     }
 
@@ -2536,20 +2553,20 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     }
 
     impl SpilmanClientNetworking for FailingClientNetworking {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
-            Err(self.mint_error_json.clone())
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
+            Err(rejected(self.mint_error_json.clone()))
         }
 
-        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, String> {
-            Err(self.mint_error_json.clone())
+        fn call_mint_restore(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
+            Err(rejected(self.mint_error_json.clone()))
         }
 
-        fn call_mint_keysets(&self, _: &str) -> Result<String, String> {
-            Err(self.mint_error_json.clone())
+        fn call_mint_keysets(&self, _: &str) -> Result<String, MintRequestError> {
+            Err(rejected(self.mint_error_json.clone()))
         }
 
-        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, String> {
-            Err(self.mint_error_json.clone())
+        fn call_mint_keys(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
+            Err(rejected(self.mint_error_json.clone()))
         }
     }
 
@@ -2727,7 +2744,15 @@ async fn test_client_bridge_preserves_structured_mint_error() -> anyhow::Result<
     assert!(err.input_may_be_spent);
     assert_eq!(err.stage, OpenChannelFailureStage::MarkOpen);
     assert!(err.message.contains("12001"));
-    assert!(err.message.contains("Unknown Keyset"));
+    assert_eq!(
+        err.mint_error
+            .as_ref()
+            .unwrap()
+            .rejection()
+            .unwrap()
+            .detail(),
+        "Unknown Keyset"
+    );
 
     Ok(())
 }
@@ -2896,7 +2921,7 @@ mod close_balance_tests {
             &self,
             _mint_url: &str,
             swap_request_json: &str,
-        ) -> Result<String, String> {
+        ) -> Result<String, MintRequestError> {
             self.swap_call_count.set(self.swap_call_count.get() + 1);
             let swap_request: SwapRequest = serde_json::from_str(swap_request_json)
                 .map_err(|e| format!("Failed to parse swap request: {}", e))?;
@@ -2906,8 +2931,9 @@ mod close_balance_tests {
                     .block_on(async { mint.process_swap_request(swap_request).await })
             })
             .map_err(|e| serde_json::json!({"detail": e.to_string(), "code": 0}).to_string())?;
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize swap response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize swap response: {}", e))
+            })
         }
     }
 
@@ -3410,7 +3436,7 @@ mod retry_tests {
             &self,
             _mint_url: &str,
             swap_request_json: &str,
-        ) -> Result<String, String> {
+        ) -> Result<String, MintRequestError> {
             self.swap_call_count.set(self.swap_call_count.get() + 1);
             let swap_request: SwapRequest = serde_json::from_str(swap_request_json)
                 .map_err(|e| format!("Failed to parse swap request: {}", e))?;
@@ -3431,10 +3457,11 @@ mod retry_tests {
                     error_json
                 );
                 *self.last_swap_error.borrow_mut() = Some(error_json.clone());
-                error_json
+                rejected(error_json)
             })?;
-            serde_json::to_string(&response)
-                .map_err(|e| format!("Failed to serialize swap response: {}", e))
+            serde_json::to_string(&response).map_err(|e| {
+                MintRequestError::transport(format!("Failed to serialize swap response: {}", e))
+            })
         }
     }
 
@@ -3865,13 +3892,13 @@ struct JsonFailingNetworking {
 }
 
 impl SpilmanMintClient for JsonFailingNetworking {
-    fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+    fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
         let attempt = self.swap_call_count.get();
         self.swap_call_count.set(attempt + 1);
 
         match attempt {
-            0 => Err(r#"{"code":12002,"detail":"Inactive Keyset"}"#.to_string()),
-            _ => Err(r#"{"code":12001,"detail":"Unknown Keyset"}"#.to_string()),
+            0 => Err(rejected(r#"{"code":12002,"detail":"Inactive Keyset"}"#)),
+            _ => Err(rejected(r#"{"code":12001,"detail":"Unknown Keyset"}"#)),
         }
     }
 }
@@ -4135,12 +4162,12 @@ impl SelectiveRetryTestNetworking {
 }
 
 impl SpilmanMintClient for SelectiveRetryTestNetworking {
-    fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+    fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
         self.swap_call_count.set(self.swap_call_count.get() + 1);
-        Err(format!(
+        Err(rejected(format!(
             r#"{{"code":{},"detail":"{}"}}"#,
             self.error_code, self.error_detail
-        ))
+        )))
     }
 }
 
@@ -4259,10 +4286,10 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
     }
 
     impl SpilmanMintClient for UnparseableErrorNetworking {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, MintRequestError> {
             self.swap_call_count.set(self.swap_call_count.get() + 1);
             // Return a plain string error without JSON structure
-            Err("Internal server error".to_string())
+            Err(MintRequestError::transport("Internal server error"))
         }
     }
 
@@ -4303,14 +4330,21 @@ async fn test_close_no_retry_on_unparseable_error() -> anyhow::Result<()> {
         "Should not refresh keysets for unparseable error"
     );
 
-    // Should return MintRejected with the error as a string value
+    // Transport failures remain distinct from a verified mint rejection.
     match err {
-        CloseError::MintRejected { mint_error, status } => {
+        CloseError::MintRequestFailed {
+            mint_error,
+            status,
+            original_error,
+        } => {
             assert_eq!(status, 502);
-            // The unparseable error should be wrapped as a JSON string
-            assert_eq!(mint_error, serde_json::json!("Internal server error"));
+            assert_eq!(
+                mint_error,
+                MintRequestError::transport("Internal server error")
+            );
+            assert!(original_error.is_none());
         }
-        other => panic!("expected MintRejected, got {other:?}"),
+        other => panic!("expected MintRequestFailed, got {other:?}"),
     }
 
     Ok(())

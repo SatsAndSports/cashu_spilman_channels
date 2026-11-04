@@ -26,7 +26,6 @@ use cashu::nuts::{BlindSignature, CurrencyUnit, Id, Proof, PublicKey, SwapReques
 use cashu::util::hex;
 use std::str::FromStr;
 
-use crate::mint_errors::{extract_nut00_error_code, is_retryable_keyset_error_code};
 use crate::{
     with_active_keyset_retry, with_active_keyset_retry_async, KeysetRetryError,
     SelectedOutputKeyset,
@@ -193,7 +192,11 @@ pub trait SpilmanHost<C = String> {
 /// Sync mint HTTP hooks for the Spilman bridge.
 pub trait SpilmanMintClient {
     /// Call the mint's /v1/swap endpoint
-    fn call_mint_swap(&self, mint_url: &str, swap_request_json: &str) -> Result<String, String>;
+    fn call_mint_swap(
+        &self,
+        mint_url: &str,
+        swap_request_json: &str,
+    ) -> Result<String, crate::MintRequestError>;
 }
 
 /// Sync keyset cache refresh hook for the Spilman bridge.
@@ -211,7 +214,7 @@ pub trait SpilmanAsyncMintClient {
         &self,
         mint_url: &str,
         swap_request_json: &str,
-    ) -> Result<String, String>;
+    ) -> Result<String, crate::MintRequestError>;
 }
 
 /// Async keyset cache refresh hook for the Spilman bridge.
@@ -730,6 +733,12 @@ pub enum CloseError {
         retry_error: serde_json::Value,
         status: u16,
     },
+    #[serde(rename = "mint_request_failed")]
+    MintRequestFailed {
+        mint_error: crate::MintRequestError,
+        original_error: Option<crate::MintRequestError>,
+        status: u16,
+    },
     #[serde(rename = "unblind_failed")]
     UnblindFailed { reason: String, status: u16 },
     #[serde(rename = "storage_failed")]
@@ -744,6 +753,7 @@ impl CloseError {
             | Self::AlreadyClosed { status, .. }
             | Self::MintRejected { status, .. }
             | Self::MintRejectedAfterRetry { status, .. }
+            | Self::MintRequestFailed { status, .. }
             | Self::UnblindFailed { status, .. }
             | Self::StorageFailed { status, .. } => *status,
         }
@@ -799,8 +809,11 @@ impl CloseError {
     }
 }
 
-fn parse_mint_error_value(raw: &str) -> serde_json::Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+fn parse_mint_error_value(error: &crate::MintRequestError) -> serde_json::Value {
+    match error.rejection() {
+        Some(rejection) => serde_json::to_value(rejection).unwrap_or(serde_json::Value::Null),
+        None => serde_json::to_value(error).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 fn close_expiry_timestamp(prep: &PreparedClose) -> u64 {
@@ -811,32 +824,18 @@ fn close_expiry_timestamp(prep: &PreparedClose) -> u64 {
 }
 
 /// Determine if a swap error should trigger a retry (refresh keysets + re-attempt).
-/// Keyset errors (12xxx) and code 99999 (nutmix workaround) are retryable.
-/// All other errors fail immediately. If the error can't be parsed, fail immediately.
-fn should_retry_swap_error(raw: &str) -> bool {
-    match extract_nut00_error_code(raw) {
-        Some(code) => {
-            let retryable = is_retryable_keyset_error_code(code);
-            if retryable {
-                tracing::debug!(
-                    code,
-                    "Keyset error detected, will retry after refreshing keysets"
-                );
-            } else {
-                tracing::debug!(code, "Non-retryable NUT-00 error code, failing immediately");
-            }
-            retryable
-        }
-        None => {
-            tracing::debug!(error = %raw, "Could not parse NUT-00 error code, failing immediately");
-            false
-        }
-    }
+/// Only validated HTTP 400 rejections for known keyset codes permit a retry.
+/// Unknown codes and transport diagnostics never authorize changed requests.
+fn should_retry_swap_error(error: &crate::MintRequestError) -> bool {
+    error.permits_keyset_retry()
 }
 
 impl std::fmt::Display for CloseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::MintRequestFailed { mint_error, .. } => {
+                write!(f, "mint request failed: {mint_error}")
+            }
             Self::ValidationFailed { reason, .. } => write!(f, "validation failed: {}", reason),
             Self::UnknownChannel { .. } => write!(f, "unknown channel"),
             Self::AlreadyClosed {
@@ -2608,9 +2607,9 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
     fn close_retry_result(
         result: Result<
             crate::KeysetRetrySuccess<PreparedClose, String>,
-            KeysetRetryError<PreparedClose, CloseError, String>,
+            KeysetRetryError<PreparedClose, CloseError, crate::MintRequestError>,
         >,
-        first_rejection: Option<String>,
+        first_rejection: Option<crate::MintRequestError>,
     ) -> Result<crate::KeysetRetrySuccess<PreparedClose, String>, CloseError> {
         match result {
             Ok(success) => Ok(success),
@@ -2622,17 +2621,37 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                 error,
                 retried: false,
                 ..
-            }) => Err(CloseError::mint_rejected(parse_mint_error_value(&error))),
+            }) => {
+                if error.rejection().is_some() {
+                    Err(CloseError::mint_rejected(parse_mint_error_value(&error)))
+                } else {
+                    Err(CloseError::MintRequestFailed {
+                        mint_error: error,
+                        original_error: None,
+                        status: 502,
+                    })
+                }
+            }
             Err(KeysetRetryError::Submit {
                 error,
                 retried: true,
                 ..
             }) => {
-                let first = first_rejection.as_deref().unwrap_or(&error);
-                Err(CloseError::mint_rejected_after_retry(
-                    parse_mint_error_value(first),
-                    parse_mint_error_value(&error),
-                ))
+                if error.rejection().is_some() {
+                    Err(CloseError::mint_rejected_after_retry(
+                        first_rejection
+                            .as_ref()
+                            .map(parse_mint_error_value)
+                            .unwrap_or(serde_json::Value::Null),
+                        parse_mint_error_value(&error),
+                    ))
+                } else {
+                    Err(CloseError::MintRequestFailed {
+                        mint_error: error,
+                        original_error: first_rejection,
+                        status: 502,
+                    })
+                }
             }
             Err(KeysetRetryError::RetryKeysetUnchanged { error, .. }) => {
                 Err(CloseError::mint_rejected(parse_mint_error_value(&error)))
@@ -2673,7 +2692,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     expected_balance: None,
                     actual_balance: None,
                 })?;
-        let first_rejection = std::sync::Mutex::new(None::<String>);
+        let first_rejection = std::sync::Mutex::new(None::<crate::MintRequestError>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
         self.ensure_close_keysets_cached(channel_id, keyset_refresher)?;
         // Closing a channel spends the stored channel funding proofs through a
@@ -2689,7 +2708,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         // again, so the helper returns the first mint rejection.
         let result: Result<
             crate::KeysetRetrySuccess<PreparedClose, String>,
-            KeysetRetryError<PreparedClose, CloseError, String>,
+            KeysetRetryError<PreparedClose, CloseError, crate::MintRequestError>,
         > = with_active_keyset_retry(
             // Select the output keyset from the host's cached mint keyset data.
             // Close intentionally uses the first active keyset for the channel's
@@ -2783,7 +2802,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
                     expected_balance: None,
                     actual_balance: None,
                 })?;
-        let first_rejection = std::sync::Mutex::new(None::<String>);
+        let first_rejection = std::sync::Mutex::new(None::<crate::MintRequestError>);
         let retry_mint_url = std::sync::Mutex::new(None::<String>);
         self.ensure_close_keysets_cached_async(channel_id, keyset_refresher)
             .await?;
@@ -2792,7 +2811,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         // retryable keyset rejection causes the helper to refresh and reselect.
         let result: Result<
             crate::KeysetRetrySuccess<PreparedClose, String>,
-            KeysetRetryError<PreparedClose, CloseError, String>,
+            KeysetRetryError<PreparedClose, CloseError, crate::MintRequestError>,
         > = with_active_keyset_retry_async(
             // Select active close output keyset from host cache.
             || {
@@ -3048,7 +3067,7 @@ mod tests {
         }
     }
     impl SpilmanMintClient for MockHost {
-        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, String> {
+        fn call_mint_swap(&self, _: &str, _: &str) -> Result<String, crate::MintRequestError> {
             Err("N/A".into())
         }
     }
@@ -3061,7 +3080,12 @@ mod tests {
 
     #[test]
     fn close_retry_unchanged_keyset_returns_first_mint_rejection() {
-        let error = r#"{"code":12001,"detail":"keyset stale"}"#.to_string();
+        let error = crate::MintResponse {
+            status: 400,
+            body: r#"{"code":12001,"detail":"keyset stale"}"#.to_owned(),
+        }
+        .into_result()
+        .unwrap_err();
         let result: Result<crate::KeysetRetrySuccess<PreparedClose, String>, _> =
             Err(KeysetRetryError::RetryKeysetUnchanged {
                 attempt: PreparedClose {

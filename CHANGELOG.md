@@ -2,6 +2,17 @@
 
 ## 0.3.0 — Unreleased
 
+### Breaking networking API
+
+- Rust mint traits return `MintRequestError` evidence instead of string errors.
+  Python/Go/WASM callbacks return complete `{status, body}` JSON envelopes;
+  ordinary exceptions remain transport failures. Rebuild bindings and update
+  custom adapters together; see [the integration guide](INTEGRATION.md#typed-mint-outcomes).
+- Retry decisions use validated HTTP 400 rejections with known code 12001/12002,
+  not display-message parsing, all 12xxx codes, or the historical 99999 workaround.
+  Uncertain opening outcomes retain their pending records; high-level opening
+  cannot resubmit an existing record. No storage migration or automatic reset.
+
 ### Breaking protocol change
 
 - Replace the ad hoc pipe-delimited channel-ID preimage with a versioned,
