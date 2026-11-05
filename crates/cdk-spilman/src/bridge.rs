@@ -62,8 +62,6 @@ pub enum ChannelState {
     Closing,
     /// Channel is closed (swap completed, proofs stored)
     Closed,
-    /// Mint-attested sender refund; no receiver-close payout exists.
-    SenderRefundedAfterExpiry,
 }
 
 impl ChannelState {
@@ -75,7 +73,6 @@ impl ChannelState {
             Some("open") => Ok(Some(Self::Open)),
             Some("closing") => Ok(Some(Self::Closing)),
             Some("closed") => Ok(Some(Self::Closed)),
-            Some("sender_refunded_after_expiry") => Ok(Some(Self::SenderRefundedAfterExpiry)),
             Some(_) => Err("invalid receiver channel state".to_string()),
         }
     }
@@ -400,48 +397,6 @@ pub struct CompletedClose {
 impl core::fmt::Debug for PreparedClose {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PreparedClose").finish_non_exhaustive()
-    }
-}
-
-impl PreparedClose {
-    /// Whether a spent NUT-07 witness contains a receiver signature for this
-    /// exact close transaction. The preparation must first be authenticated
-    /// with [`SpilmanBridge::verify_prepared_close`].
-    pub fn matches_spent_witness(
-        &self,
-        proof_state: &cashu::nuts::ProofState,
-    ) -> Result<bool, String> {
-        if proof_state.state != cashu::nuts::State::Spent {
-            return Ok(false);
-        }
-        let Some(cashu::nuts::Witness::P2PKWitness(witness)) = &proof_state.witness else {
-            return Ok(false);
-        };
-        if witness.signatures.is_empty() {
-            return Ok(false);
-        }
-
-        let digest: [u8; 32] = hex::decode(&self.sig_all_message_hash)
-            .map_err(|_| "invalid cached SIG_ALL message hash".to_string())?
-            .try_into()
-            .map_err(|_| "invalid cached SIG_ALL message hash length".to_string())?;
-        let message = bitcoin::secp256k1::Message::from_digest(digest);
-        let receiver = PublicKey::from_str(&self.blinded_receiver_pubkey)
-            .map_err(|_| "invalid cached blinded receiver public key".to_string())?;
-        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
-
-        let mut matched = false;
-        for signature in &witness.signatures {
-            let signature = bitcoin::secp256k1::schnorr::Signature::from_str(signature)
-                .map_err(|_| "invalid NUT-07 witness signature".to_string())?;
-            if secp
-                .verify_schnorr(&signature, &message, &receiver.x_only_public_key())
-                .is_ok()
-            {
-                matched = true;
-            }
-        }
-        Ok(matched)
     }
 }
 
@@ -1463,9 +1418,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .get_channel_state(channel_id)
             .map_err(BridgeError::Internal)?
         {
-            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
-                Err(BridgeError::ChannelClosed)
-            }
+            Some(ChannelState::Closed) => Err(BridgeError::ChannelClosed),
             Some(ChannelState::Closing) => Err(BridgeError::ChannelClosing),
             Some(ChannelState::Open) => Ok(Some(ChannelState::Open)),
             None => Ok(None),
@@ -1493,9 +1446,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .get_channel_state(channel_id)
             .map_err(BridgeError::Internal)?
         {
-            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
-                return Err(BridgeError::ChannelClosed)
-            }
+            Some(ChannelState::Closed) => return Err(BridgeError::ChannelClosed),
             Some(ChannelState::Closing) => return Err(BridgeError::ChannelClosing),
             Some(ChannelState::Open) => {}
             None => return Err(BridgeError::UnknownChannel),
@@ -1553,9 +1504,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .get_channel_state(channel_id)
             .map_err(BridgeError::Internal)?
         {
-            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
-                return Err(BridgeError::ChannelClosed)
-            }
+            Some(ChannelState::Closed) => return Err(BridgeError::ChannelClosed),
             Some(ChannelState::Closing) => return Err(BridgeError::ChannelClosing),
             Some(ChannelState::Open) => {
                 return self.validate_existing_channel_funding(channel_id, balance, signature);
@@ -1913,7 +1862,7 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             .get_channel_state(channel_id)
             .map_err(BridgeError::Internal)?
         {
-            Some(ChannelState::Closed | ChannelState::SenderRefundedAfterExpiry) => {
+            Some(ChannelState::Closed) => {
                 return Err(BridgeError::ChannelClosed);
             }
             None => return Err(BridgeError::UnknownChannel),
@@ -3192,23 +3141,25 @@ mod tests {
     }
 
     #[test]
-    fn receiver_callback_states_are_strict_and_include_refund_terminal() {
+    fn receiver_callback_states_reject_removed_refund_terminal() {
         assert_eq!(ChannelState::from_host_value(None), Ok(None));
         for (value, expected) in [
             ("open", ChannelState::Open),
             ("closing", ChannelState::Closing),
             ("closed", ChannelState::Closed),
-            (
-                "sender_refunded_after_expiry",
-                ChannelState::SenderRefundedAfterExpiry,
-            ),
         ] {
             assert_eq!(
                 ChannelState::from_host_value(Some(value)),
                 Ok(Some(expected))
             );
         }
-        for invalid in ["", "unknown", "Open", "broken"] {
+        for invalid in [
+            "",
+            "unknown",
+            "Open",
+            "broken",
+            "sender_refunded_after_expiry",
+        ] {
             assert!(ChannelState::from_host_value(Some(invalid)).is_err());
         }
     }

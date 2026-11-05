@@ -5,8 +5,8 @@
 use bitcoin::hashes::{sha256, Hash};
 use cashu::nuts::nut10::SpendingConditionVerification;
 use cashu::nuts::{
-    BlindSignature, BlindedMessage, Proof, RestoreRequest, RestoreResponse, SecretKey, State,
-    SwapRequest, Witness,
+    BlindSignature, BlindedMessage, Proof, RestoreRequest, RestoreResponse, SecretKey, SwapRequest,
+    Witness,
 };
 use cashu::secret::Secret;
 use cashu::util::hex;
@@ -18,7 +18,6 @@ use super::deterministic::MintConnection;
 use super::keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
 use super::params::{hash_to_secp_scalar, ChannelParameters};
 use super::sender_and_receiver::SpilmanChannelSender;
-use super::PreparedClose;
 use crate::bindings::{
     complete_exact_signatures, match_restore_response, parse_keyset_info_from_json, PreparedOutput,
 };
@@ -83,19 +82,6 @@ pub struct PreparedSenderRefund {
     pub swap_request: SwapRequest,
 }
 
-/// Classification of complete spent funding evidence against authenticated,
-/// durable receiver-close attempts. Exact output restoration remains the
-/// authoritative recovery path and must be exhausted before using this result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FundingSpendKind {
-    /// Complete spent evidence excludes every authenticated receiver-close attempt.
-    PostExpiryRefund,
-    /// A spent witness contains the receiver signature for an authenticated close.
-    RelayClose,
-    /// No recognized shape; this does not exclude a valid refund or receiver close.
-    Unknown,
-}
-
 /// An established Spilman payment channel
 /// Contains all channel components after funding transaction is complete
 #[derive(Debug, Clone)]
@@ -107,91 +93,6 @@ pub struct EstablishedChannel {
 }
 
 impl EstablishedChannel {
-    /// Classify complete spent evidence against every durable receiver-close
-    /// attempt. Each preparation must first be authenticated with
-    /// `SpilmanBridge::verify_prepared_close`, and callers must exhaust exact
-    /// close restores before treating a non-match as a sender refund.
-    pub fn classify_funding_spend_against_prepared_closes<'a>(
-        &self,
-        response: &cashu::nuts::CheckStateResponse,
-        prepared_closes: impl IntoIterator<Item = &'a PreparedClose>,
-    ) -> anyhow::Result<FundingSpendKind> {
-        anyhow::ensure!(
-            crate::sender_and_receiver::verify_valid_channel(&self.funding_proofs, &self.params)
-                .valid,
-            "invalid generated funding model"
-        );
-        let sender = self.params.get_sender_blinded_pubkey_for_stage1()?.to_hex();
-        let receiver = self
-            .params
-            .get_receiver_blinded_pubkey_for_stage1()?
-            .to_hex();
-        anyhow::ensure!(
-            sender[2..] != receiver[2..],
-            "close requires distinct x-only keys"
-        );
-        let ys = self
-            .funding_proofs
-            .iter()
-            .map(Proof::y)
-            .collect::<Result<Vec<_>, _>>()?;
-        anyhow::ensure!(
-            !ys.is_empty() && ys.iter().collect::<std::collections::HashSet<_>>().len() == ys.len(),
-            "invalid funding identities"
-        );
-        anyhow::ensure!(
-            response.states.len() == ys.len()
-                && ys
-                    .iter()
-                    .all(|y| response.states.iter().filter(|s| s.y == *y).count() == 1),
-            "incomplete funding state coverage"
-        );
-        if response.states.iter().any(|s| s.state != State::Spent) {
-            return Ok(FundingSpendKind::Unknown);
-        }
-        let channel_id = self.params.get_channel_id();
-        let blinded_receiver = self
-            .params
-            .get_receiver_blinded_pubkey_for_stage1()?
-            .to_hex();
-        let prepared_closes = prepared_closes.into_iter().collect::<Vec<_>>();
-        anyhow::ensure!(
-            !prepared_closes.is_empty(),
-            "no authenticated close attempts"
-        );
-        for prepared in &prepared_closes {
-            anyhow::ensure!(
-                prepared.channel_id == channel_id
-                    && prepared.blinded_receiver_pubkey == blinded_receiver,
-                "close attempt does not belong to channel"
-            );
-        }
-
-        let mut saw_witness = false;
-        let mut matched = false;
-        for state in &response.states {
-            if matches!(
-                &state.witness,
-                Some(Witness::P2PKWitness(witness)) if !witness.signatures.is_empty()
-            ) {
-                saw_witness = true;
-            }
-            for prepared in &prepared_closes {
-                matched |= prepared
-                    .matches_spent_witness(state)
-                    .map_err(anyhow::Error::msg)?;
-            }
-        }
-        if !saw_witness {
-            return Ok(FundingSpendKind::Unknown);
-        }
-        Ok(if matched {
-            FundingSpendKind::RelayClose
-        } else {
-            FundingSpendKind::PostExpiryRefund
-        })
-    }
-
     /// Create new established channel
     pub fn new(
         params: ChannelParameters,
@@ -588,83 +489,6 @@ impl EstablishedChannel {
             blinded_message,
         })
     }
-
-    /// Get the Y value for checking the funding token state
-    ///
-    /// Supported generated close/refund transactions spend all funding inputs
-    /// atomically, so one representative suffices for state checks under that
-    /// assumption. Use the first proof specifically because generated SIG_ALL
-    /// transactions attach the witness only to the first input.
-    fn get_one_funding_token_y_for_state_check(
-        &self,
-    ) -> Result<cashu::nuts::PublicKey, anyhow::Error> {
-        let proof = self
-            .funding_proofs
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No funding proofs available"))?;
-        Ok(proof.y()?)
-    }
-
-    /// Check the state of the funding token using NUT-07
-    ///
-    /// Supported generated close/refund transactions spend all funding inputs
-    /// atomically; this assumption is not a guarantee about arbitrary transactions.
-    /// Checks exactly the first funding proof's Y and validates response count and
-    /// identity. The first proof is used because generated SIG_ALL transactions
-    /// attach their witness only to the first input.
-    ///
-    /// Returns the state (UNSPENT, PENDING, or SPENT) of the funding token.
-    /// For recovery prefer [`Self::inspect_funding`], which checks all identities
-    /// and reports mixed states without assuming that the first proof represents
-    /// a possible partial post-expiry spend.
-    pub async fn check_funding_token_state<M>(
-        &self,
-        mint_connection: &M,
-    ) -> Result<cashu::nuts::ProofState, anyhow::Error>
-    where
-        M: MintConnection + ?Sized,
-    {
-        let y = self.get_one_funding_token_y_for_state_check()?;
-        let response = mint_connection.check_state(vec![y]).await?;
-        anyhow::ensure!(
-            response.states.len() == 1 && response.states[0].y == y,
-            "funding state response must contain exactly the requested Y"
-        );
-        response
-            .states
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No state returned for funding token"))
-    }
-
-    /// Classify a spent funding proof from its NUT-07 witness signature shape.
-    ///
-    /// Advisory only: generated refunds normally carry one signature and receiver
-    /// closes two, but a refund plus an extra unrelated signature also has two.
-    /// Two or more therefore remain `Unknown`. No signatures are cryptographically verified here.
-    /// This result is neither settlement proof nor a prerequisite for checked
-    /// recovery. After exact persisted-refund restore, callers may use checked
-    /// sender-close discovery for `Unknown` too; do not treat invalid/partial
-    /// restore responses as absence or import proofs based on this hint alone.
-    /// The state-first [`SpilmanChannelSender::recover_funds`] operation does not
-    /// use this hint to select or skip recovery paths.
-    pub fn classify_funding_spend_witness(
-        proof_state: &cashu::nuts::ProofState,
-    ) -> FundingSpendKind {
-        if proof_state.state != State::Spent {
-            return FundingSpendKind::Unknown;
-        }
-
-        match &proof_state.witness {
-            Some(Witness::P2PKWitness(witness)) => match witness.signatures.len() {
-                1 => FundingSpendKind::PostExpiryRefund,
-                // A valid refund plus an unrelated signature has this shape too.
-                2 => FundingSpendKind::Unknown,
-                _ => FundingSpendKind::Unknown,
-            },
-            _ => FundingSpendKind::Unknown,
-        }
-    }
 }
 
 impl PreparedSenderRefund {
@@ -728,7 +552,7 @@ impl PreparedSenderRefund {
 mod tests {
     use super::*;
     use crate::DeterministicOutputsForOneContext;
-    use cashu::nuts::{CheckStateResponse, CurrencyUnit, Id, Keys, ProofState, SwapResponse};
+    use cashu::nuts::{CheckStateResponse, CurrencyUnit, Id, Keys, SwapResponse};
 
     fn keyset(secret: &SecretKey) -> KeysetInfo {
         let keys = Keys::new(
@@ -1143,55 +967,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.downcast_ref::<MintRejection>().is_some());
-    }
-
-    struct StateMint(Vec<ProofState>);
-    #[async_trait::async_trait]
-    impl MintConnection for StateMint {
-        async fn process_swap(&self, _: SwapRequest) -> anyhow::Result<SwapResponse> {
-            unreachable!()
-        }
-        async fn post_restore(&self, _: RestoreRequest) -> anyhow::Result<RestoreResponse> {
-            unreachable!()
-        }
-        async fn check_state(
-            &self,
-            ys: Vec<cashu::nuts::PublicKey>,
-        ) -> anyhow::Result<CheckStateResponse> {
-            assert_eq!(ys.len(), 1, "atomic funding needs just one representative");
-            Ok(CheckStateResponse {
-                states: self.0.clone(),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn funding_state_requires_one_matching_identity() {
-        let (channel, _, _, _) = fixture();
-        let state = ProofState {
-            y: channel.funding_proofs[0].y().unwrap(),
-            state: State::Spent,
-            witness: None,
-            rerandomization_r: None,
-        };
-        channel
-            .check_funding_token_state(&StateMint(vec![state.clone()]))
-            .await
-            .unwrap();
-        assert!(channel
-            .check_funding_token_state(&StateMint(vec![]))
-            .await
-            .is_err());
-        assert!(channel
-            .check_funding_token_state(&StateMint(vec![state.clone(), state.clone()]))
-            .await
-            .is_err());
-        assert!(channel
-            .check_funding_token_state(&StateMint(vec![ProofState {
-                y: SecretKey::generate().public_key(),
-                ..state
-            }]))
-            .await
-            .is_err());
     }
 }

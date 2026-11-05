@@ -18,7 +18,7 @@ class StateHost:
     (None, "unknown_channel"),
     ("closing", "channel_closing"),
     ("closed", "channel_closed"),
-    ("sender_refunded_after_expiry", "channel_closed"),
+    ("sender_refunded_after_expiry", "internal"),
     ("garbage", "internal"),
     ("", "internal"),
     (42, "internal"),
