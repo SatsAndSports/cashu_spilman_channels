@@ -9,10 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use bitcoin::hashes::{sha256, Hash};
 use cdk::dhke::{blind_message, construct_proofs};
 use cdk::mint::{MintBuilder, MintMeltLimits};
-use cdk::nuts::nut10::{Secret as Nut10Secret, SpendingConditionVerification};
+use cdk::nuts::nut10::Secret as Nut10Secret;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, BlindedMessage, CheckStateRequest,
     CheckStateResponse, CurrencyUnit, Id, KeySet, Keys, KeysetResponse, MeltRequest, MintInfo,
@@ -36,9 +35,8 @@ use cdk_spilman::MintRequestError;
 use cdk_spilman::{
     complete_funding_swap, compute_channel_from_token, create_funding_swap, ChannelFunding,
     ChannelParameters, ChannelPolicy, ChannelState, CloseError, ClosingData, CommitmentOutputs,
-    DeterministicOutputsForOneContext, EstablishedChannel, FundingSpendKind, KeysetInfo,
-    PaymentProof, PreparedClose, SpilmanBridge, SpilmanChannelSender, SpilmanHost,
-    SpilmanKeysetRefresher, SpilmanMintClient,
+    DeterministicOutputsForOneContext, EstablishedChannel, FundingState, KeysetInfo, PaymentProof,
+    SpilmanBridge, SpilmanChannelSender, SpilmanHost, SpilmanKeysetRefresher, SpilmanMintClient,
 };
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -57,7 +55,7 @@ const REFUND_TEST_EXPIRY_DELAY_SECS: u64 = 10;
 const REFUND_TEST_EXPIRY_SLEEP_SECS: u64 = 12;
 
 #[tokio::test]
-async fn mint_attested_refund_excludes_every_journaled_close_message() -> anyhow::Result<()> {
+async fn refund_winner_recovers_value_regardless_of_extra_signatures() -> anyhow::Result<()> {
     for extra in [false, true] {
         let fixture = create_refund_fixture(unix_time() + 6).await?;
         let commitment = CommitmentOutputs::for_balance(5, &fixture.established.params)?;
@@ -75,7 +73,6 @@ async fn mint_attested_refund_excludes_every_journaled_close_message() -> anyhow
                 .params
                 .get_receiver_blinded_secret_key_for_stage1(&fixture.charlie_secret)?,
         )?;
-        let close_attempt = prepared_close_for_witness_test(&fixture.established, &close_swap)?;
         while unix_time() <= fixture.established.params.expiry_timestamp {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -85,19 +82,19 @@ async fn mint_attested_refund_excludes_every_journaled_close_message() -> anyhow
             fixture.established.params.keyset_info.clone(),
             [0; 32],
         )?;
-        let mut request = prepared.swap_request;
+        let mut request = prepared.swap_request.clone();
         if extra {
             request.sign_sig_all(cdk::nuts::SecretKey::generate())?;
         }
         fixture.mint.process_swap_request(request).await?;
-        let ys = fixture
-            .established
-            .funding_proofs
-            .iter()
-            .map(Proof::y)
-            .collect::<Result<Vec<_>, _>>()?;
-        let response = fixture.mint.check_state(&CheckStateRequest { ys }).await?;
-        assert!(response.states.iter().all(|s| s.state == State::Spent));
+        let connection = DirectMintConnection::new(fixture.mint.clone());
+        let inspection = fixture.established.inspect_funding(&connection).await?;
+        assert_eq!(inspection.state(), FundingState::Spent);
+        let response = inspection.response();
+        assert_eq!(
+            response.states.len(),
+            fixture.established.funding_proofs.len()
+        );
         let first_y = fixture.established.funding_proofs[0].y()?;
         let first = response.states.iter().position(|s| s.y == first_y).unwrap();
         let cdk::nuts::Witness::P2PKWitness(witness) =
@@ -106,39 +103,51 @@ async fn mint_attested_refund_excludes_every_journaled_close_message() -> anyhow
             panic!("P2PK witness")
         };
         assert_eq!(witness.signatures.len(), if extra { 2 } else { 1 });
-        assert_eq!(
-            fixture
-                .established
-                .classify_funding_spend_against_prepared_closes(&response, [&close_attempt])?,
-            FundingSpendKind::PostExpiryRefund
-        );
-        assert_ne!(
-            EstablishedChannel::classify_funding_spend_witness(&response.states[first]),
-            FundingSpendKind::RelayClose
-        );
-        let mut partial = response.clone();
-        partial.states.pop();
         assert!(fixture
-            .established
-            .classify_funding_spend_against_prepared_closes(&partial, [&close_attempt])
+            .mint
+            .process_swap_request(close_swap.clone())
+            .await
             .is_err());
-        let mut pending = response.clone();
-        pending.states[first].state = State::Pending;
+        let close_restore = fixture
+            .mint
+            .restore(RestoreRequest {
+                outputs: close_swap.outputs().clone(),
+            })
+            .await?;
+        assert!(close_restore.outputs.is_empty() && close_restore.signatures.is_empty());
+        let sender = SpilmanChannelSender::new(fixture.alice_secret, fixture.established);
+        let cdk_spilman::ChannelRecovery::Recovered { payout, .. } = sender
+            .recover_funds(
+                &connection,
+                std::slice::from_ref(&prepared),
+                std::slice::from_ref(&sender.channel.params.keyset_info),
+            )
+            .await?
+        else {
+            panic!("refund winner must recover verified value")
+        };
         assert_eq!(
-            fixture
-                .established
-                .classify_funding_spend_against_prepared_closes(&pending, [&close_attempt])?,
-            FundingSpendKind::Unknown
+            payout.source,
+            cdk_spilman::SenderRecoverySource::Refund { attempt_index: 0 }
         );
-        let mut malformed = response.clone();
-        malformed.states[first].witness =
-            Some(cdk::nuts::Witness::P2PKWitness(cdk::nuts::P2PKWitness {
-                signatures: vec!["bad".to_string()],
-            }));
-        assert!(fixture
-            .established
-            .classify_funding_spend_against_prepared_closes(&malformed, [&close_attempt])
-            .is_err());
+        assert_eq!(
+            payout
+                .proofs
+                .iter()
+                .map(|p| u64::from(p.amount))
+                .sum::<u64>(),
+            prepared.output_amount_raw
+        );
+        let fee = (payout.proofs.len() as u64 * DEFAULT_TEST_FEE_PPK).div_ceil(1000);
+        let (outputs, _) = create_test_blinded_messages(
+            &fixture.mint,
+            Amount::from(prepared.output_amount_raw - fee),
+        )
+        .await?;
+        fixture
+            .mint
+            .process_swap_request(SwapRequest::new(payout.proofs, outputs))
+            .await?;
     }
     Ok(())
 }
@@ -890,29 +899,6 @@ struct RefundFixture {
     established: EstablishedChannel,
 }
 
-fn prepared_close_for_witness_test(
-    established: &EstablishedChannel,
-    swap_request: &SwapRequest,
-) -> anyhow::Result<PreparedClose> {
-    let message = swap_request.sig_all_msg_to_sign();
-    Ok(PreparedClose {
-        channel_id: established.params.get_channel_id(),
-        balance: 5,
-        mint_url: established.params.mint.clone(),
-        swap_request: serde_json::to_value(swap_request)?,
-        sig_all_message_hash: hex::encode(sha256::Hash::hash(message.as_bytes()).to_byte_array()),
-        blinded_receiver_pubkey: established
-            .params
-            .get_receiver_blinded_pubkey_for_stage1()?
-            .to_hex(),
-        secrets_with_blinding: serde_json::json!([]),
-        output_keyset_info: serde_json::to_value(&established.params.keyset_info)?,
-        params_json: serde_json::to_string(&established.params)?,
-        keyset_info_json: serde_json::to_string(&established.params.keyset_info)?,
-        channel_secret: hex::encode(established.params.channel_secret),
-    })
-}
-
 async fn create_refund_fixture(expiry_timestamp: u64) -> anyhow::Result<RefundFixture> {
     let test_mint = TestMintHelper::new().await?;
     let mint = test_mint.mint().clone();
@@ -1052,14 +1038,11 @@ async fn test_sender_refund_after_expiry_succeeds_and_can_restore_outputs() -> a
     );
     assert!(proofs.iter().all(|proof| proof.p2pk_e.is_none()));
     assert!(proofs.iter().all(|proof| proof.keyset_id == rotated.id));
-    let funding_state = fixture
-        .established
-        .check_funding_token_state(&connection)
-        .await?;
-    assert_eq!(funding_state.state, State::Spent);
+    let funding_state = fixture.established.inspect_funding(&connection).await?;
+    assert_eq!(funding_state.state(), FundingState::Spent);
     assert_eq!(
-        EstablishedChannel::classify_funding_spend_witness(&funding_state),
-        FundingSpendKind::PostExpiryRefund
+        funding_state.response().states.len(),
+        fixture.established.funding_proofs.len()
     );
 
     // B is now inactive too; restore still uses the persisted B keys, not C.
@@ -1113,7 +1096,6 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
             .get_receiver_blinded_secret_key_for_stage1(&fixture.charlie_secret)?,
     )?;
     close_swap.sign_sig_all(cdk::nuts::SecretKey::generate())?;
-    let close_attempt = prepared_close_for_witness_test(&fixture.established, &close_swap)?;
     fixture.mint.process_swap_request(close_swap).await?;
     let ys = fixture
         .established
@@ -1129,8 +1111,10 @@ async fn test_sender_refund_spent_inputs_falls_back_to_sender_restore() -> anyho
     assert_eq!(
         fixture
             .established
-            .classify_funding_spend_against_prepared_closes(&funding_state, [&close_attempt])?,
-        FundingSpendKind::RelayClose
+            .inspect_funding(&connection)
+            .await?
+            .state(),
+        FundingState::Spent
     );
 
     tokio::time::sleep(Duration::from_secs(REFUND_TEST_EXPIRY_SLEEP_SECS)).await;

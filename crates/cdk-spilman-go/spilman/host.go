@@ -37,7 +37,7 @@ type SpilmanHost interface {
 	RecordPayment(channelId string, balance uint64, signature, contextJson string)
 
 	// GetChannelState returns the current state of a channel.
-	// Known states: "open", "closing", "closed", "sender_refunded_after_expiry".
+	// Known states: "open", "closing", "closed". Unsupported states return errors.
 	// Empty state with nil error means unknown. Lookup failures must return an error.
 	GetChannelState(channelId string) (string, error)
 

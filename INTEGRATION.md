@@ -489,24 +489,12 @@ successor with a fresh context, persist it, and submit it under its own retry
 budget. Do not mutate the old attempt or use a changed-request retry on an
 ambiguous timeout, empty restore, or invalid response.
 
-If funding was already spent, `channel.check_funding_token_state(&connection)`
-checks exactly the first funding proof's Y and rejects missing, extra, or
-mismatched states. Supported generated close/refund transactions spend all
-funding inputs atomically, so one representative suffices under that assumption;
-this is not a guarantee about arbitrary transactions. The first proof is used
-specifically because generated SIG_ALL transactions attach the witness only to
-the first input.
-
-`EstablishedChannel::classify_funding_spend_witness(&state)` is only an advisory
-witness-shape hint: one signature suggests a generated refund and two suggest a
-generated receiver close. An honest pinned mint can accept an unrelated extra
-signature on a valid receiver close, causing the exact-count classifier to return
-`Unknown`. The hint is neither cryptographic settlement proof nor a prerequisite
-for checked recovery. After exact persisted-refund restore, callers may fall back
-to checked sender-close discovery for `Unknown` as well as `RelayClose`. Do not
-convert invalid/partial restore errors to absence, infer failure from an empty
-restore, or import proofs solely from witness classification. Validated output
-recovery, not a recognized witness shape, is the basis for importing proofs.
+Use `channel.inspect_funding(&connection)` for full-token NUT-07 evidence, or
+`sender.recover_funds(...)` for the state-first refund/close fallback sequence.
+These validate every funding identity. Generated transactions normally spend all
+funding inputs atomically, but a partial post-expiry refund can produce mixed
+states. No witness-count or known-signature classification is used. Invalid restore
+responses remain errors, and verified expected outputs establish recovered value.
 
 For a receiver close, `SpilmanChannelSender::new(sender_secret, channel)` exposes
 `restore_sender_proofs(&connection)`. Its existing ascending-denomination,
@@ -551,10 +539,18 @@ Receiver callback contracts:
   unknown. The C callback returns JSON `{"Ok":null}`, `{"Ok":"open"}`, or
   `{"Err":"..."}`; a null pointer is an error, not an unknown channel.
 
-Known callback strings are `open`, `closing`, `closed`, and
-`sender_refunded_after_expiry`. Other strings are errors. SQLite preserves its
+Known callback strings are `open`, `closing`, and `closed`. Other strings, including
+the removed `sender_refunded_after_expiry`, are errors. SQLite preserves its
 existing state representation and schema, but rejects unrecognized stored states
 and propagates query errors rather than treating them as `Open`.
+
+The inferred refund terminal state and `SpilmanStorage::finish_sender_refund` have
+been removed. Existing `SenderRefundedAfterExpiry` database rows are unsupported:
+state lookup fails explicitly and leaves the data intact. There is no automatic
+conversion to `Closed` or `Closing`, migration, or deletion. Hosts abandoning
+collection should keep the channel `Closing` and record their policy in the
+application-owned close journal using the existing compare-and-swap operations.
+Retained attempts remain available for later explicit recovery.
 
 Update custom receiver hosts and rebuild bindings together. There is no database
 migration or reset. Client payment signing/recording, including cooperative balance

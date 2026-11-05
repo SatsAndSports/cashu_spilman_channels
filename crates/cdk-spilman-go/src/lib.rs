@@ -89,7 +89,7 @@ pub struct SpilmanHostCallbacks {
         signature: *const c_char,
         context_json: *const c_char,
     ),
-    /// Get receiver channel state (including sender_refunded_after_expiry).
+    /// Get receiver channel state (open, closing, or closed; unsupported states fail).
     /// JSON Result<Option<String>, String>: {"Ok":null}, {"Ok":"open"}, or {"Err":"..."}.
     /// A null pointer or malformed response is a lookup error.
     pub get_channel_state:

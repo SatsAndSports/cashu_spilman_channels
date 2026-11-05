@@ -131,6 +131,11 @@ or a zero-value close. See [the recovery contract](INTEGRATION.md#state-first-ch
 for outcomes, historical keys, and host responsibilities. These additive APIs are
 Rust-only; existing raw restore/completion primitives remain available.
 
+The obsolete first-proof check, `FundingSpendKind`, signature-based classifiers,
+and inferred receiver refund terminal state have been removed. Custom hosts must
+use `open`/`closing`/`closed`; unsupported stored refund states fail lookup without
+changing or deleting data. See the [state lookup contract](INTEGRATION.md#receiver-channel-state-lookup-breaking-api-update).
+
 ## Sender Refunds (Rust)
 
 After `now_seconds > expiry_timestamp`, use

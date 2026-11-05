@@ -30,7 +30,7 @@ func TestReceiverStateCallback(t *testing.T) {
 		{"", nil, "unknown_channel"},
 		{"closing", nil, "channel_closing"},
 		{"closed", nil, "channel_closed"},
-		{"sender_refunded_after_expiry", nil, "channel_closed"},
+		{"sender_refunded_after_expiry", nil, "internal"},
 		{"invalid", nil, "internal"},
 		{"", fmt.Errorf("storage unavailable"), "internal"},
 	} {

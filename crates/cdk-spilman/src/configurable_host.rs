@@ -171,14 +171,6 @@ pub struct KeysetCacheEntry {
 /// (`Send + Sync`). The default implementation is [`MemoryStorage`];
 /// [`SqliteStorage`] provides persistence across restarts.
 pub trait SpilmanStorage: Send + Sync {
-    /// Atomically persist terminal sender-refund evidence and its distinct state.
-    /// The caller validates mint evidence; this CAS never installs a close payout.
-    fn finish_sender_refund(
-        &self,
-        channel_id: &str,
-        expected: &str,
-        journal: &str,
-    ) -> Result<(), String>;
     /// Accept a payment only if the exact previously observed authorization is
     /// still current and the channel is Open. A rejected CAS grants no credit.
     fn compare_payment(
@@ -287,7 +279,6 @@ pub trait SpilmanStorage: Send + Sync {
 #[derive(Default)]
 pub struct MemoryStorage {
     close_gate: std::sync::Mutex<()>,
-    refunded: RwLock<std::collections::HashSet<ChannelId>>,
     close_journals: RwLock<HashMap<ChannelId, String>>,
     funding: RwLock<HashMap<ChannelId, ChannelFunding>>,
     balance: RwLock<HashMap<ChannelId, PaymentProof>>,
@@ -311,30 +302,6 @@ impl MemoryStorage {
 }
 
 impl SpilmanStorage for MemoryStorage {
-    fn finish_sender_refund(
-        &self,
-        channel_id: &str,
-        expected: &str,
-        journal: &str,
-    ) -> Result<(), String> {
-        let _guard = self.close_gate.lock().map_err(|_| "close gate")?;
-        let mut journals = self.close_journals.write().map_err(|_| "journal lock")?;
-        if journals.get(channel_id).map(String::as_str) != Some(expected)
-            || self.get_state(channel_id)? != Some(ChannelState::Closing)
-        {
-            return Err("sender refund journal conflict".to_string());
-        }
-        self.refunded
-            .write()
-            .map_err(|_| "refunded lock")?
-            .insert(channel_id.to_string());
-        self.closing
-            .write()
-            .map_err(|_| "closing lock")?
-            .remove(channel_id);
-        journals.insert(channel_id.to_string(), journal.to_string());
-        Ok(())
-    }
     fn compare_payment(
         &self,
         channel_id: &str,
@@ -486,14 +453,6 @@ impl SpilmanStorage for MemoryStorage {
     }
 
     fn get_state(&self, channel_id: &str) -> Result<Option<ChannelState>, String> {
-        if self
-            .refunded
-            .read()
-            .map_err(|_| "refunded lock poisoned".to_string())?
-            .contains(channel_id)
-        {
-            return Ok(Some(ChannelState::SenderRefundedAfterExpiry));
-        }
         if self
             .closed
             .read()
@@ -745,24 +704,6 @@ impl SqliteStorage {
 }
 
 impl SpilmanStorage for SqliteStorage {
-    fn finish_sender_refund(
-        &self,
-        channel_id: &str,
-        expected: &str,
-        journal: &str,
-    ) -> Result<(), String> {
-        let mut conn = self.conn.lock().map_err(|_| "sqlite lock")?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let changed = tx.execute("UPDATE spilman_close_journals SET journal=?3 WHERE channel_id=?1 AND journal=?2 AND EXISTS (SELECT 1 FROM spilman_channels WHERE channel_id=?1 AND state='Closing' AND closed_json IS NULL)", rusqlite::params![channel_id, expected, journal]).map_err(|e| e.to_string())?;
-        if changed != 1 {
-            return Err("sender refund journal conflict".to_string());
-        }
-        let changed = tx.execute("UPDATE spilman_channels SET state='SenderRefundedAfterExpiry', closing_json=NULL WHERE channel_id=?1 AND state='Closing' AND closed_json IS NULL", [channel_id]).map_err(|e| e.to_string())?;
-        if changed != 1 {
-            return Err("sender refund state conflict".to_string());
-        }
-        tx.commit().map_err(|e| e.to_string())
-    }
     fn compare_payment(
         &self,
         channel_id: &str,
@@ -1019,7 +960,6 @@ impl SpilmanStorage for SqliteStorage {
             Some("Open") => Ok(Some(ChannelState::Open)),
             Some("Closing") => Ok(Some(ChannelState::Closing)),
             Some("Closed") => Ok(Some(ChannelState::Closed)),
-            Some("SenderRefundedAfterExpiry") => Ok(Some(ChannelState::SenderRefundedAfterExpiry)),
             Some(_) => Err("invalid stored receiver channel state".to_string()),
         }
     }
@@ -1747,6 +1687,27 @@ mod tests {
                 },
             )
             .unwrap();
+        // Removed inferred terminal states fail closed without changing the row
+        // or discarding its funding/journal data.
+        storage.conn.lock().unwrap().execute(
+            "UPDATE spilman_channels SET state='SenderRefundedAfterExpiry' WHERE channel_id='channel'", [],
+        ).unwrap();
+        assert!(storage
+            .get_state("channel")
+            .unwrap_err()
+            .contains("invalid stored receiver channel state"));
+        let persisted: String = storage
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM spilman_channels WHERE channel_id='channel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, "SenderRefundedAfterExpiry");
+        assert!(storage.get_funding("channel").is_some());
         storage
             .conn
             .lock()
@@ -1890,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn sender_refund_terminal_cas_has_no_close_payout() {
+    fn abandoning_collection_preserves_closing_journal_without_close_payout() {
         for storage in [
             Box::new(MemoryStorage::new()) as Box<dyn SpilmanStorage>,
             Box::new(SqliteStorage::open_in_memory().unwrap()),
@@ -1924,30 +1885,27 @@ mod tests {
                 )
                 .unwrap();
             assert!(storage
-                .finish_sender_refund("refund", "wrong", "attested")
+                .advance_close("refund", "wrong", "abandoned", None)
                 .is_err());
             assert_eq!(
                 storage.get_state("refund").unwrap(),
                 Some(ChannelState::Closing)
             );
             storage
-                .finish_sender_refund("refund", "prepared", "attested")
+                .advance_close("refund", "prepared", "abandoned", None)
                 .unwrap();
             assert_eq!(
                 storage.get_state("refund").unwrap(),
-                Some(ChannelState::SenderRefundedAfterExpiry)
+                Some(ChannelState::Closing)
             );
             assert!(storage.get_closed_data("refund").is_none());
-            assert!(storage.get_closing_data("refund").is_none());
+            assert!(storage.get_closing_data("refund").is_some());
             assert_eq!(
                 storage.get_close_journal("refund").unwrap().as_deref(),
-                Some("attested")
+                Some("abandoned")
             );
             assert!(storage
-                .advance_close("refund", "attested", "other", None)
-                .is_err());
-            assert!(storage
-                .finish_sender_refund("refund", "attested", "other")
+                .advance_close("refund", "prepared", "other", None)
                 .is_err());
             assert!(storage
                 .update_balance(

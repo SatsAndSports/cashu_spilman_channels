@@ -401,8 +401,8 @@ identity, and recovered value. `inspect_funding` queries every funding Y once,
 checks exact identity coverage, retains complete NUT-07 evidence, and reports
 unspent, pending, spent, or mixed states. Generated transactions normally spend
 all funding inputs atomically; a partial post-expiry refund can produce mixed
-states. The older first-proof `check_funding_token_state` shortcut remains a
-low-level helper, not the basis of the new recovery flow.
+states. Funding inspection has one full-token API rather than a first-proof
+shortcut.
 
 `SpilmanChannelSender::recover_funds` and `SpilmanBridge::recover_close` use NUT-07
 before NUT-09. Only spent funding leads to output restoration. Alice restores
@@ -527,18 +527,21 @@ The caller owns private-directory permissions and process/database cleanup. Neve
 use this public fixed-seed fixture with real funds. Process restart tests must gate
 a completed HTTP response, not merely request arrival, before killing the mint.
 
-## Sender Refund Terminal State
+## Collection Policy And Recovered Value
 
-`SenderRefundedAfterExpiry` is distinct from `Closed` and has no `ClosedDataView`.
-Storage atomically CASes the application's close journal and terminal state.
-Existing contextual spend classifiers rely on their documented generated-request
-and retained-attempt assumptions. Witness counts or failure to match known close
-digests are not a general proof of refund: Alice can append an unrelated signature,
-and a verifier cannot identify a Schnorr signer without a candidate message.
-The state-first recovery APIs do not invoke these classifiers or install this
-terminal state. They return verified payouts or `SpentNoKnownPayout`; hosts must
-distinguish abandoning collection from proving a particular refund. Unknown spend
-is unresolved, not a zero-value close payout.
+Receiver states are `Open`, `Closing`, and `Closed`. No inferred sender-refund
+terminal state or signature-based spend classifier is provided. A verifier cannot
+identify a Schnorr signer without a candidate message; unrelated extra signatures
+also make witness-count inference unsuitable for recovery.
+
+State-first recovery returns verified payouts or `SpentNoKnownPayout`. Hosts own
+the decision to abandon collection while retaining `Closing` and their journal;
+abandonment is not proof of a particular refund or a zero-value close payout.
+Pure exact-restore/completion primitives and journal CAS operations remain available.
+Unsupported persisted terminal states fail lookup without conversion or deletion.
+Mint randomness `R`, when present, is issuance metadata rather than evidence that
+a two-party close occurred: a sender could rerandomize a refund too. The library's
+own refund construction remains ordinary.
 
 ## Output Keyset Expiry
 

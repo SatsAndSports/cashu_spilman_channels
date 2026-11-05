@@ -2,6 +2,20 @@
 
 ## 0.3.0 — Unreleased
 
+### Breaking recovery cleanup
+
+- Remove `FundingSpendKind`, both `EstablishedChannel::classify_funding_spend_*`
+  helpers, `PreparedClose::matches_spent_witness`, and the first-proof
+  `check_funding_token_state` shortcut. Use full-token `inspect_funding` and the
+  state-first `recover_funds` / `recover_close` operations.
+- Remove receiver `ChannelState::SenderRefundedAfterExpiry` and storage
+  `finish_sender_refund`. Host callbacks and persisted state decoding reject the
+  removed state; no migration, reinterpretation, or deletion occurs. Hosts retain
+  `Closing` and journal policy when abandoning collection.
+- Preserve real-mint close/refund and extra-signature scenarios with state and
+  verified-payout assertions. Exact restore/completion primitives and retry budgets
+  are unchanged. Downstream consumers must update before adopting this revision.
+
 ### Ordinary channel reconciliation (Rust)
 
 - Add identity-checked full-funding NUT-07 inspection and NUT-07-first sender and
