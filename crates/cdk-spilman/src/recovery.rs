@@ -200,23 +200,61 @@ impl SpilmanChannelSender {
             return Ok(ChannelRecovery::without_payout(funding));
         }
         let mut invalid_restore = None;
-        for (attempt_index, attempt) in refund_attempts.iter().enumerate() {
-            match self
-                .channel
-                .restore_prepared_sender_refund_outputs(attempt, &self.alice_secret, mint)
-                .await
-            {
-                Ok(Some(proofs)) => {
-                    return Ok(ChannelRecovery::Recovered {
-                        funding,
-                        payout: RecoveredSenderFunds {
-                            source: SenderRecoverySource::Refund { attempt_index },
-                            proofs,
-                        },
-                    })
-                }
-                Ok(None) => {}
+        for attempt in refund_attempts {
+            let response = mint
+                .post_restore(RestoreRequest {
+                    outputs: attempt
+                        .outputs
+                        .iter()
+                        .map(|o| o.blinded_message.clone())
+                        .collect(),
+                })
+                .await;
+            let mut response = match response {
+                Ok(response) => response,
                 Err(error) => {
+                    invalid_restore.get_or_insert(error);
+                    continue;
+                }
+            };
+            if response.outputs.len() != response.signatures.len() {
+                invalid_restore
+                    .get_or_insert_with(|| anyhow::anyhow!("invalid refund restore coverage"));
+                continue;
+            }
+            // NUT-09 can echo the queried ID while returning a different retained
+            // candidate's issuance for the same blinded points. Signature IDs
+            // route candidates; exact completion verifies the entire payout.
+            for (output, signature) in response.outputs.iter_mut().zip(&response.signatures) {
+                output.keyset_id = signature.keyset_id;
+            }
+            let mut candidate_error = None;
+            let mut empty = false;
+            for (attempt_index, candidate) in refund_attempts.iter().enumerate() {
+                match self.channel.complete_prepared_sender_refund_restore(
+                    candidate,
+                    &self.alice_secret,
+                    response.clone(),
+                ) {
+                    Ok(Some(proofs)) => {
+                        return Ok(ChannelRecovery::Recovered {
+                            funding,
+                            payout: RecoveredSenderFunds {
+                                source: SenderRecoverySource::Refund { attempt_index },
+                                proofs,
+                            },
+                        })
+                    }
+                    Ok(None) => {
+                        empty = true;
+                    }
+                    Err(error) => {
+                        candidate_error.get_or_insert(error);
+                    }
+                }
+            }
+            if !empty {
+                if let Some(error) = candidate_error {
                     invalid_restore.get_or_insert(error);
                 }
             }

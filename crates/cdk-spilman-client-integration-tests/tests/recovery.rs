@@ -372,6 +372,203 @@ async fn spend(f: &Fixture, proofs: Vec<Proof>, expected: u64) -> Result<()> {
     Ok(())
 }
 
+async fn rotate_refund_keys(f: &Fixture) -> Result<cdk_spilman::KeysetInfo> {
+    let rotated = f
+        .connection
+        .mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8, 16, 32, 64],
+            0,
+            true,
+            None,
+        )
+        .await?;
+    let keys = f
+        .connection
+        .mint
+        .keyset_pubkeys(&rotated.id)?
+        .keysets
+        .remove(0)
+        .keys;
+    Ok(cdk_spilman::KeysetInfo::new(
+        rotated.id,
+        CurrencyUnit::Sat,
+        keys,
+        0,
+        None,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keyset_only_refund_recovers_either_candidate_through_shared_points() -> Result<()> {
+    for http in [false, true] {
+        for winner in [0, 1] {
+            let mut f = Fixture::new(http).await?;
+            if winner == 0 {
+                f.connection
+                    .process_swap(f.refund.swap_request.clone())
+                    .await?;
+            }
+            let keys = rotate_refund_keys(&f).await?;
+            let b = f
+                .refund
+                .with_output_keyset(&f.sender.channel, &f.sender.alice_secret, keys)?;
+            let candidates = [f.refund.clone(), b];
+            if winner == 1 {
+                f.connection.lose_swap_reply.store(true, Ordering::SeqCst);
+                assert!(f
+                    .connection
+                    .process_swap(candidates[1].swap_request.clone())
+                    .await
+                    .is_err());
+            }
+            let ChannelRecovery::Recovered { payout, .. } = f
+                .sender
+                .recover_funds(&f.connection, &candidates, &[])
+                .await?
+            else {
+                panic!("missing refund payout")
+            };
+            assert_eq!(
+                payout.source,
+                SenderRecoverySource::Refund {
+                    attempt_index: winner
+                }
+            );
+            for proof in &payout.proofs {
+                proof.verify_dleq(
+                    candidates[winner]
+                        .output_keyset
+                        .active_keys
+                        .amount_key(proof.amount)
+                        .unwrap(),
+                )?;
+            }
+            // Spend recovered ordinary proofs into currently active keys.
+            let outputs = payout
+                .proofs
+                .iter()
+                .map(|p| {
+                    let (point, _) = blind_message(&Secret::generate().to_bytes(), None).unwrap();
+                    BlindedMessage::new(p.amount, candidates[1].output_keyset.keyset_id, point)
+                })
+                .collect();
+            f.connection
+                .process_swap(SwapRequest::new(payout.proofs, outputs))
+                .await?;
+            f.connection.stop().await?;
+        }
+    }
+    Ok(())
+}
+
+// Submission reaches the adapter but is held before mint execution, allowing
+// Charlie to commit. This is a controlled race, not two successful spends.
+struct HoldRefund<'a> {
+    inner: &'a Connection,
+    entered: tokio::sync::Notify,
+}
+#[async_trait]
+impl MintConnection for HoldRefund<'_> {
+    async fn process_swap(&self, _: SwapRequest) -> Result<SwapResponse> {
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse> {
+        self.inner.post_restore(request).await
+    }
+    async fn check_state(&self, ys: Vec<PublicKey>) -> Result<CheckStateResponse> {
+        self.inner.check_state(ys).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn close_wins_after_alice_submits_one_or_two_refund_candidates() -> Result<()> {
+    for http in [false, true] {
+        for two in [false, true] {
+            let f = Fixture::new(http).await?;
+            let gate = HoldRefund {
+                inner: &f.connection,
+                entered: tokio::sync::Notify::new(),
+            };
+            let a = gate.process_swap(f.refund.swap_request.clone());
+            tokio::pin!(a);
+            tokio::select! { _ = &mut a => panic!("held A returned"), _ = gate.entered.notified() => {} }
+            let mut candidates = vec![f.refund.clone()];
+            let mut close = f.close.clone();
+            if two {
+                let keys = rotate_refund_keys(&f).await?;
+                // The exact A replay reaches the real mint and loses to rotation.
+                assert!(f
+                    .connection
+                    .process_swap(f.refund.swap_request.clone())
+                    .await
+                    .is_err());
+                candidates.push(f.refund.with_output_keyset(
+                    &f.sender.channel,
+                    &f.sender.alice_secret,
+                    keys.clone(),
+                )?);
+                close = f.receiver.prepare_close_for_closing_channel_with_output_keyset(
+                    &f.sender.channel_id(), SelectedOutputKeyset { id: keys.keyset_id.to_string(),
+                        info_json: serde_json::json!({"keysetId":keys.keyset_id.to_string(),"unit":"sat","keys":keys.active_keys,"inputFeePpk":0}).to_string() }
+                ).map_err(|e| anyhow::anyhow!(e.reason))?;
+            }
+            let b = gate.process_swap(candidates.last().unwrap().swap_request.clone());
+            tokio::pin!(b);
+            if two {
+                tokio::select! { _ = &mut b => panic!("held B returned"), _ = gate.entered.notified() => {} }
+            }
+            f.connection
+                .process_swap(serde_json::from_value(close.swap_request.clone())?)
+                .await?;
+            for candidate in &candidates {
+                assert!(f
+                    .connection
+                    .process_swap(candidate.swap_request.clone())
+                    .await
+                    .is_err());
+            }
+            let close_keys = parse_keyset_info_from_json(&close.output_keyset_info.to_string())
+                .map_err(anyhow::Error::msg)?;
+            let ChannelRecovery::Recovered { payout, .. } = f
+                .sender
+                .recover_funds(
+                    &f.connection,
+                    &candidates,
+                    std::slice::from_ref(&close_keys),
+                )
+                .await?
+            else {
+                panic!("missing close share")
+            };
+            assert_eq!(payout.source, SenderRecoverySource::ReceiverClose);
+            let sum = payout
+                .proofs
+                .iter()
+                .map(|p| u64::from(p.amount))
+                .sum::<u64>();
+            assert!(sum > 0 && sum < f.refund.output_amount_raw);
+            let outputs = payout
+                .proofs
+                .iter()
+                .map(|p| {
+                    let (point, _) = blind_message(&Secret::generate().to_bytes(), None).unwrap();
+                    BlindedMessage::new(p.amount, close_keys.keyset_id, point)
+                })
+                .collect();
+            f.connection
+                .process_swap(SwapRequest::new(payout.proofs, outputs))
+                .await?;
+            // Gate futures only borrow the connection; shut down the mint after
+            // this scope via its shared handle.
+            f.connection.mint.stop().await?;
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn close_wins_refund_falls_back_and_both_payouts_are_spendable() -> Result<()> {
     for http in [false, true] {

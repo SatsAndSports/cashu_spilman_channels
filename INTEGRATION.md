@@ -616,3 +616,28 @@ Neither successful discovery nor policy selection grants support for unknown
 cryptography. Fixed presets never gain V3 when the library is upgraded. Rust's
 `KeysetVersions::library_supported()` and Go's `LibrarySupportedKeysetVersions()`
 are explicit opt-ins to following future implemented versions.
+# Keyset-only sender refund candidates
+
+`PreparedSenderRefund::with_output_keyset(&channel, &sender_secret, keys)` creates
+a validated replacement candidate without signing or submitting. It retains the
+original funding inputs, witnesses, output amounts, secrets, blindings, and blinded
+points. Only output keyset IDs and signing-key metadata change. SIG_ALL excludes
+keyset IDs, so Alice's existing signature remains valid. Replacement keys must
+have the same unit and support every retained denomination; the host selects
+active keys and owns refresh, rejection authority, candidate limits and retries.
+
+Prepared refunds now require `derivation_keyset`, the original full keyset metadata
+used for deterministic secret/blinding and denomination derivation. `output_keyset`
+is the current candidate's signing keyset. Initial preparations set both alike;
+successors retain the derivation metadata. This is a breaking Rust/JSON format
+change: records missing the field reject, with no migration or automatic deletion.
+The secret derivation algorithm remains version 1.
+
+Pass retained candidates to `SpilmanChannelSender::recover_funds`. Recovery checks
+all funding identities with NUT-07 first, then routes NUT-09 issuance by signature
+keyset IDs and verifies the complete payout against a retained candidate. Echoed
+query IDs can differ from issued signature IDs for shared blinded points. The
+returned refund source identifies the winning attempt index. Valid empty refund
+restores still permit receiver-close discovery; invalid or unavailable evidence
+remains unresolved unless another retained refund verifies. Preserve finalization
+and candidate history durably before exposing recovered funds.

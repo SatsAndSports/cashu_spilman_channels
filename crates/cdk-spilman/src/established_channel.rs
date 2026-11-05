@@ -70,9 +70,12 @@ pub struct PreparedSenderRefund {
     pub unit: cashu::nuts::CurrencyUnit,
     /// Historical output keys and metadata, independent of the funding keyset.
     pub output_keyset: KeysetInfo,
+    /// Immutable original output metadata used to derive secrets and denominations.
+    /// Required on disk; keyset-only successors retain it unchanged.
+    pub derivation_keyset: KeysetInfo,
     /// Output derivation format. Currently 1; unknown versions are rejected.
     pub derivation_version: u32,
-    /// Caller-chosen attempt context. Use a fresh value for each successor request.
+    /// Caller-chosen context for the original preparation; retained by successors.
     pub derivation_context: [u8; 32],
     /// Total value expected from the refund outputs after input fees.
     pub output_amount_raw: u64,
@@ -286,6 +289,7 @@ impl EstablishedChannel {
             channel_id: self.params.get_channel_id(),
             mint: self.params.mint.clone(),
             unit: self.params.unit.clone(),
+            derivation_keyset: output_keyset.clone(),
             output_keyset,
             derivation_version: 1,
             derivation_context,
@@ -492,6 +496,79 @@ impl EstablishedChannel {
 }
 
 impl PreparedSenderRefund {
+    /// Construct a keyset-only candidate without signing or submitting. The host
+    /// owns refresh, active-key selection, successor authority and retry budgets.
+    /// Every output amount must be supported by the replacement keyset.
+    pub fn with_output_keyset(
+        &self,
+        channel: &EstablishedChannel,
+        sender_secret: &SecretKey,
+        output_keyset: KeysetInfo,
+    ) -> anyhow::Result<Self> {
+        self.verify(channel, sender_secret)?;
+        anyhow::ensure!(
+            self.output_keyset.keyset_id != output_keyset.keyset_id,
+            "refund successor requires a different output keyset"
+        );
+        let mut successor = self.clone();
+        successor.replace_output_keyset(output_keyset)?;
+        anyhow::ensure!(
+            self.swap_request.sig_all_msg_to_sign() == successor.swap_request.sig_all_msg_to_sign(),
+            "refund successor changed SIG_ALL"
+        );
+        successor.verify(channel, sender_secret)?;
+        Ok(successor)
+    }
+
+    fn replace_output_keyset(&mut self, keyset: KeysetInfo) -> anyhow::Result<()> {
+        anyhow::ensure!(keyset.unit == self.unit, "refund output unit mismatch");
+        let expected_id = match keyset.keyset_id.get_version() {
+            cashu::nuts::nut02::KeySetVersion::Version00 => {
+                cashu::nuts::Id::v1_from_keys(&keyset.active_keys)
+            }
+            cashu::nuts::nut02::KeySetVersion::Version01 => cashu::nuts::Id::v2_from_data(
+                &keyset.active_keys,
+                &keyset.unit,
+                keyset.input_fee_ppk,
+                keyset.final_expiry,
+            ),
+        };
+        let canonical = KeysetInfo::new(
+            keyset.keyset_id,
+            keyset.unit.clone(),
+            keyset.active_keys.clone(),
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+        anyhow::ensure!(
+            expected_id == keyset.keyset_id
+                && canonical.amounts_largest_first == keyset.amounts_largest_first
+                && !canonical.amounts_largest_first.contains(&0),
+            "invalid refund output keyset"
+        );
+        for output in &mut self.outputs {
+            anyhow::ensure!(
+                keyset
+                    .active_keys
+                    .amount_key(output.amount.into())
+                    .is_some(),
+                "replacement keyset lacks refund denomination"
+            );
+            output.blinded_message.keyset_id = keyset.keyset_id;
+        }
+        // Preserve the complete signed inputs and all other request fields.
+        let mut request = serde_json::to_value(&self.swap_request)?;
+        let outputs = request["outputs"]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("missing refund outputs"))?;
+        for output in outputs {
+            output["id"] = serde_json::to_value(keyset.keyset_id)?;
+        }
+        self.swap_request = serde_json::from_value(request)?;
+        self.output_keyset = keyset;
+        Ok(())
+    }
+
     /// Pure validation of persisted metadata, deterministic outputs, exact inputs
     /// and the sender's SIG_ALL authorization. Does not consult time or the mint.
     pub fn verify(
@@ -507,11 +584,12 @@ impl PreparedSenderRefund {
             sender_secret.public_key() == channel.params.sender_pubkey,
             "incorrect sender secret"
         );
-        let expected = channel.prepare_unsigned_sender_refund(
+        let mut expected = channel.prepare_unsigned_sender_refund(
             sender_secret,
-            self.output_keyset.clone(),
+            self.derivation_keyset.clone(),
             self.derivation_context,
         )?;
+        expected.replace_output_keyset(self.output_keyset.clone())?;
         let mut actual = self.clone();
         let msg = actual.swap_request.sig_all_msg_to_sign();
         let input = actual
@@ -837,7 +915,7 @@ mod tests {
             |p| p.derivation_version += 1,
             |p| p.derivation_context[0] ^= 1,
             |p| p.output_amount_raw += 1,
-            |p| p.output_keyset.input_fee_ppk += 1,
+            |p| p.derivation_keyset.input_fee_ppk += 1,
             |p| p.output_keyset.amounts_largest_first.push(0),
             |p| p.output_keyset.active_keys = keyset(&SecretKey::generate()).active_keys,
             |p| p.outputs[0].amount += 1,
@@ -854,6 +932,40 @@ mod tests {
             mutate(&mut bad);
             assert!(bad.verify(&channel, &sender).is_err(), "mutation {index}");
         }
+    }
+
+    #[test]
+    fn refund_keyset_successor_preserves_authorization_and_rejects_missing_denominations() {
+        let (channel, sender, output, _) = fixture();
+        let a = channel
+            .prepare_sender_refund_after_expiry(sender.clone(), 101, output, [9; 32])
+            .unwrap();
+        let b = a
+            .with_output_keyset(&channel, &sender, keyset(&SecretKey::generate()))
+            .unwrap();
+        assert!(a.swap_request.inputs() == b.swap_request.inputs());
+        assert!(a.swap_request.sig_all_msg_to_sign() == b.swap_request.sig_all_msg_to_sign());
+        for (a, b) in a.outputs.iter().zip(&b.outputs) {
+            assert!(a.secret == b.secret && a.blinding_factor == b.blinding_factor);
+            assert_eq!(
+                a.blinded_message.blinded_secret,
+                b.blinded_message.blinded_secret
+            );
+        }
+        b.verify(&channel, &sender).unwrap();
+        let mut json = serde_json::to_value(&a).unwrap();
+        json.as_object_mut().unwrap().remove("derivation_keyset");
+        assert!(PreparedSenderRefund::from_json(&json.to_string()).is_err());
+        let keys = Keys::new(
+            [(Amount::from(1024), SecretKey::generate().public_key())]
+                .into_iter()
+                .collect(),
+        );
+        let unsupported =
+            KeysetInfo::new(Id::v1_from_keys(&keys), CurrencyUnit::Sat, keys, 0, None);
+        assert!(a
+            .with_output_keyset(&channel, &sender, unsupported)
+            .is_err());
     }
 
     #[test]
