@@ -44,12 +44,7 @@ pub(crate) fn sig_all_message_hash_hex<T>(value: &T) -> String
 where
     T: SpendingConditionVerification,
 {
-    use bitcoin::hashes::{sha256, Hash};
-
-    let msg = value.sig_all_msg_to_sign();
-    let hash = sha256::Hash::hash(msg.as_bytes());
-
-    cashu::util::hex::encode(hash.to_byte_array())
+    cashu::util::hex::encode(value.sig_all_message_hash())
 }
 
 pub(crate) fn attach_signature_to_first_input(

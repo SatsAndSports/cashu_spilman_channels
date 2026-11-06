@@ -2,6 +2,18 @@
 
 ## 0.3.0 — Unreleased
 
+### Checked rerandomized swap primitives (Rust)
+
+- Add pure `swap_completion` digest, restore-query and complete-response/restore
+  APIs for ordinary and rerandomized swaps. Verify original output bindings,
+  issued-point DLEQs and effective-blinding proof DLEQs before returning a batch.
+- Repin the existing CDK v0.18.1 backport to its additive canonical SIG_ALL digest
+  API, shared by native signing and verification; external signers sign the final
+  digest directly. Existing channel IDs, payment signatures and ordinary closes
+  remain unchanged. Dual-mode channel parameters/TLV encoding are design-only.
+- Exercise production completion alongside independent transcript/tweak math,
+  direct/HTTP mint spending and lost-response NUT-07/NUT-09 recovery.
+
 ### Breaking recovery cleanup
 
 - Remove `FundingSpendKind`, both `EstablishedChannel::classify_funding_spend_*`

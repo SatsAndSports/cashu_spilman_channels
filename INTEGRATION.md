@@ -616,7 +616,7 @@ Neither successful discovery nor policy selection grants support for unknown
 cryptography. Fixed presets never gain V3 when the library is upgraded. Rust's
 `KeysetVersions::library_supported()` and Go's `LibrarySupportedKeysetVersions()`
 are explicit opt-ins to following future implemented versions.
-# Keyset-only sender refund candidates
+## Keyset-only sender refund candidates
 
 `PreparedSenderRefund::with_output_keyset(&channel, &sender_secret, keys)` creates
 a validated replacement candidate without signing or submitting. It retains the
@@ -641,3 +641,43 @@ returned refund source identifies the winning attempt index. Valid empty refund
 restores still permit receiver-close discovery; invalid or unavailable evidence
 remains unresolved unless another retained refund verifies. Preserve finalization
 and candidate history durably before exposing recovered funds.
+
+## Checked swap completion primitives
+
+The Rust-only `cdk_spilman::swap_completion` module provides:
+
+- `swap_authorization_digest(&SwapRequest) -> [u8; 32]`: Cashu's canonical digest,
+  selected by the request's rerandomization flag. Sign directly using BIP-340;
+  do not SHA-256 the returned bytes again. This does not validate authorization.
+- `PreparedSwapOutput`: the original blinded message, secret and blinding factor.
+  `Debug` is redacted. Treat these values as confidential journal material.
+- `complete_swap_response(request, prepared_outputs, response, historical_keyset)`:
+  verifies exact output count/order, amount/keyset, original secret/point binding,
+  derived-point DLEQ, and resulting proof DLEQ. Returns a complete proof batch or
+  an error, never a partial payout.
+- `swap_restore_request(request, committed_r)`: constructs ordinary or derived
+  NUT-09 points. The request must have nonempty, unique output points.
+- `complete_swap_restore(request, prepared_outputs, committed_r, response, keys)`:
+  validates and canonicalizes complete output/signature pairs. Only paired empty
+  arrays mean absence. Partial, duplicate or unknown outputs reject.
+
+Ordinary requests require absent `R`; rerandomized requests require `R`. Derived
+outputs use `B' = B + t(R)G`; unblinding uses the effective scalar `r + t(R)` modulo
+the curve order. Degenerate points/scalars reject without panicking. Returned
+proofs keep the original secret; their DLEQ `r` is the effective scalar, not the
+original one. For fixed secret and mint key the unblinded `C` is unchanged, but the
+full proof serialization (including DLEQ) need not match an ordinary issuance.
+
+The primitives assume one authenticated historical output keyset for the batch.
+They do not check mint activity/current expiry, contact the mint, inspect input
+states, choose candidates, persist records, or attach channel-specific stage-2
+witnesses. The host authenticates its retained request and obtains `R` from a
+successful response or validated committed funding evidence. `R` alone never
+proves a receiver close. Missing DLEQ is an error, including on restored signatures.
+Host recovery must retain custody on errors/absence according to its own journal.
+
+The workspace pin includes [CDK fork PR #6](https://github.com/SatsAndSports/cdk/pull/6),
+an additive digest API atop the existing v0.18.1 backport. All CDK/Cashu crates use
+that same source. This does not enable rerandomized channels or choose a default
+channel mode; no parameter encoding, channel ID, journal format or binding API is
+changed by this milestone.

@@ -13,7 +13,7 @@ close/recovery APIs are later milestones.
   `365959807dd93703abc65597fba73eac7d41ef57`.
 - Base CDK release: v0.18.1 (`a056e0f0`).
 - Backport: [SatsAndSports/cdk at
-  `da5cf282dd070772af830fa5215630f059e5f1ad`](https://github.com/SatsAndSports/cdk/commit/da5cf282dd070772af830fa5215630f059e5f1ad).
+  `5b762529fc93746f06477670b7a830685d0336a4`](https://github.com/SatsAndSports/cdk/commit/5b762529fc93746f06477670b7a830685d0336a4).
 
 All workspace CDK/Cashu crates use that same immutable fork revision. The
 pin applies to the library as well as its tests; it is not a test-only override.

@@ -114,6 +114,23 @@ struct Prepared {
     rs: Vec<SecretKey>,
 }
 
+impl Prepared {
+    fn material(&self) -> Vec<cdk_spilman::swap_completion::PreparedSwapOutput> {
+        self.outputs
+            .iter()
+            .zip(&self.secrets)
+            .zip(&self.rs)
+            .map(
+                |((output, secret), r)| cdk_spilman::swap_completion::PreparedSwapOutput {
+                    blinded_message: output.clone(),
+                    secret: secret.clone(),
+                    blinding_factor: r.clone(),
+                },
+            )
+            .collect()
+    }
+}
+
 fn outputs(id: Id, secrets: Vec<Secret>) -> Result<Prepared> {
     let mut result = Prepared {
         outputs: Vec::new(),
@@ -142,6 +159,11 @@ fn request(
     let mut request = SwapRequest::new(inputs, outputs);
     let signature = if rerandomize {
         request = request.with_rerandomization();
+        ensure!(
+            cdk_spilman::swap_completion::swap_authorization_digest(&request)
+                == crypto::digest(request.inputs(), request.outputs(), false),
+            "production digest differs from independent transcript"
+        );
         crypto::sign_digest(
             crypto::digest(request.inputs(), request.outputs(), false),
             signer,
@@ -231,15 +253,141 @@ async fn ordinary(
     );
     http.state(&original, "SPENT", None).await?;
     let result: SwapResponse = serde_json::from_value(result)?;
-    Ok(construct_proofs(
-        result.signatures,
-        prepared.rs,
-        prepared.secrets,
-        keys,
-    )?)
+    let actual = production_completion(&prepared, &result, keys, false)?;
+    let expected = construct_proofs(result.signatures, prepared.rs, prepared.secrets, keys)?;
+    ensure!(actual == expected, "ordinary completion changed");
+    Ok(actual)
+}
+
+fn production_completion(
+    prepared: &Prepared,
+    response: &SwapResponse,
+    keys: &Keys,
+    rerandomize: bool,
+) -> Result<Proofs> {
+    use cdk_spilman::swap_completion::{
+        complete_swap_response, complete_swap_restore, swap_restore_request,
+    };
+    let mut request = SwapRequest::new(vec![], prepared.outputs.clone());
+    if rerandomize {
+        request = request.with_rerandomization();
+    }
+    let material = prepared.material();
+    let info = cdk_spilman::KeysetInfo::new(
+        prepared.outputs[0].keyset_id,
+        cashu::nuts::CurrencyUnit::Sat,
+        keys.clone(),
+        0,
+        None,
+    );
+    let result = complete_swap_response(&request, &material, response.clone(), &info)
+        .map_err(anyhow::Error::msg)?;
+    if rerandomize {
+        let mut wrong = result[0].clone();
+        wrong
+            .dleq
+            .as_mut()
+            .ok_or_else(|| anyhow!("missing proof DLEQ"))?
+            .r = prepared.rs[0].clone();
+        ensure!(
+            wrong
+                .verify_dleq(
+                    keys.amount_key(wrong.amount)
+                        .ok_or_else(|| anyhow!("missing key"))?
+                )
+                .is_err(),
+            "unadjusted proof DLEQ blinding accepted"
+        );
+    }
+    let r = response.rerandomization_r;
+    let restore = swap_restore_request(&request, r).map_err(anyhow::Error::msg)?;
+    if let Some(r) = r {
+        ensure!(
+            restore.outputs == crypto::derived(&r.0, &prepared.outputs)?,
+            "production derived points differ"
+        );
+    }
+    let mut restored = RestoreResponse {
+        outputs: restore.outputs,
+        signatures: response.signatures.clone(),
+    };
+    restored.outputs.reverse();
+    restored.signatures.reverse();
+    let recovered = complete_swap_restore(&request, &material, r, restored.clone(), &info)
+        .map_err(anyhow::Error::msg)?;
+    ensure!(
+        recovered.as_ref() == Some(&result),
+        "restore completion differs"
+    );
+    for mutation in 0..3 {
+        let mut bad = restored.clone();
+        match mutation {
+            0 => {
+                bad.outputs.push(bad.outputs[0].clone());
+                bad.signatures.push(bad.signatures[0].clone());
+            }
+            1 => bad.outputs[0].blinded_secret = SecretKey::generate().public_key(),
+            _ => bad.outputs[0].amount = 999.into(),
+        }
+        ensure!(
+            complete_swap_restore(&request, &material, r, bad, &info).is_err(),
+            "invalid restored identities accepted"
+        );
+    }
+    for mutation in 0..7 {
+        let mut bad = response.clone();
+        match mutation {
+            0 => {
+                bad.rerandomization_r = if rerandomize {
+                    None
+                } else {
+                    Some(cashu::nuts::nut03::RerandomizationR([42; 32]))
+                }
+            }
+            1 => bad.rerandomization_r = Some(cashu::nuts::nut03::RerandomizationR([43; 32])),
+            2 => {
+                bad.signatures.pop();
+            }
+            3 => bad.signatures[0].dleq = None,
+            4 => bad.signatures[0].keyset_id = "001234567890abcd".parse()?,
+            5 => bad.signatures[0].amount = 999.into(),
+            _ => bad.signatures[0].c = SecretKey::generate().public_key(),
+        }
+        ensure!(
+            complete_swap_response(&request, &material, bad, &info).is_err(),
+            "invalid swap completion accepted"
+        );
+    }
+    let mut wrong_material = material.clone();
+    wrong_material[0].secret = Secret::new("not-the-prepared-secret".to_string());
+    ensure!(
+        complete_swap_response(&request, &wrong_material, response.clone(), &info).is_err(),
+        "unbound secrets accepted"
+    );
+    restored.signatures.pop();
+    ensure!(
+        complete_swap_restore(&request, &material, r, restored, &info).is_err(),
+        "partial restore accepted"
+    );
+    let empty = RestoreResponse {
+        outputs: vec![],
+        signatures: vec![],
+    };
+    ensure!(
+        complete_swap_restore(&request, &material, r, empty, &info)
+            .map_err(anyhow::Error::msg)?
+            .is_none(),
+        "empty restore is not absence"
+    );
+    ensure!(
+        !format!("{:?}", material[0]).contains(&prepared.secrets[0].to_string()),
+        "secret-bearing Debug"
+    );
+    Ok(result)
 }
 
 fn unblind(prepared: Prepared, response: SwapResponse, keys: &Keys) -> Result<Proofs> {
+    let actual = production_completion(&prepared, &response, keys, true)?;
     let r = response
         .rerandomization_r
         .ok_or_else(|| anyhow!("missing committed R"))?
@@ -272,7 +420,11 @@ fn unblind(prepared: Prepared, response: SwapResponse, keys: &Keys) -> Result<Pr
                 .ok_or_else(|| anyhow!("missing key"))?,
         )?;
     }
-    Ok(proofs)
+    ensure!(
+        actual == proofs,
+        "production completion differs from independent adjusted blinding"
+    );
+    Ok(actual)
 }
 
 fn recovery_r(states: &Value, inputs: &[Proof]) -> Result<String> {
@@ -715,6 +867,12 @@ async fn scenarios() -> Result<()> {
     }
     let r: cashu::nuts::nut03::RerandomizationR = serde_json::from_value(json!(committed_r))?;
     let derived = crypto::derived(&r.0, &prepared.outputs)?;
+    let query = cdk_spilman::swap_completion::swap_restore_request(&good, Some(r))
+        .map_err(anyhow::Error::msg)?;
+    ensure!(
+        query.outputs == derived,
+        "restore query differs from independent derivation"
+    );
     let originals: RestoreResponse = serde_json::from_value(
         http.post("/v1/restore", json!({"outputs":prepared.outputs}))
             .await?,
@@ -723,17 +881,34 @@ async fn scenarios() -> Result<()> {
         originals.signatures.is_empty(),
         "mint stored originals rather than derived outputs"
     );
-    let restored: RestoreResponse =
-        serde_json::from_value(http.post("/v1/restore", json!({"outputs":derived})).await?)?;
+    let restored: RestoreResponse = serde_json::from_value(
+        http.post("/v1/restore", serde_json::to_value(query)?)
+            .await?,
+    )?;
     ensure!(
         restored.outputs == derived && restored.signatures.len() == 2,
         "restore identity/order mismatch"
     );
+    let info =
+        cdk_spilman::KeysetInfo::new(id, cashu::nuts::CurrencyUnit::Sat, keys.clone(), 0, None);
+    let recovered = cdk_spilman::swap_completion::complete_swap_restore(
+        &good,
+        &prepared.material(),
+        Some(r),
+        restored.clone(),
+        &info,
+    )
+    .map_err(anyhow::Error::msg)?
+    .ok_or_else(|| anyhow!("missing restored payout"))?;
     let result = SwapResponse {
         signatures: restored.signatures,
         rerandomization_r: Some(r),
     };
-    spend(&http, unblind(prepared, result, &keys)?, id, &keys).await?;
+    ensure!(
+        recovered == unblind(prepared, result, &keys)?,
+        "production restore disagrees with independent completion"
+    );
+    spend(&http, recovered, id, &keys).await?;
     server.stop().await?;
     Ok(())
 }
