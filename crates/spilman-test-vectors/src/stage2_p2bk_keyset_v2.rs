@@ -113,7 +113,22 @@ fn derive_one(
     amount: u64,
     index: usize,
 ) -> Stage2P2bkReference {
-    let channel = spilman_test_vector_channel_id_keysetv2();
+    derive_stage2_for_channel(
+        spilman_test_vector_channel_id_keysetv2(),
+        context,
+        recipient_pubkey,
+        amount,
+        index,
+    )
+}
+
+pub(crate) fn derive_stage2_for_channel(
+    channel: crate::channel_id::ChannelIdTestVector,
+    context: &'static str,
+    recipient_pubkey: &'static str,
+    amount: u64,
+    index: usize,
+) -> Stage2P2bkReference {
     let channel_id = hex::encode(channel.channel_id);
     let suffix = format!("{channel_id}|{context}|{amount}|{index}");
     let mut ephemeral_message = EPHEMERAL_PREFIX.to_vec();

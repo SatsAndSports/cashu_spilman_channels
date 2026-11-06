@@ -3807,6 +3807,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "bip39",
+ "bitcoin",
  "cashu",
  "cdk",
  "cdk-common",
@@ -3816,6 +3817,7 @@ dependencies = [
  "hmac",
  "k256",
  "lightning",
+ "serde_json",
  "sha2",
  "tokio",
 ]

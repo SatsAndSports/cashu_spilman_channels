@@ -103,6 +103,100 @@ fn channel_parameters(vector: ChannelIdTestVector) -> ChannelParameters {
 }
 
 #[test]
+fn spilman_test_vector_rerandomized_keysetv2() {
+    use cashu::nuts::{P2PKWitness, Proof, SwapResponse, Witness};
+    let reference = spilman_test_vectors::rerandomized::vectors();
+    let params = channel_parameters(get_channel_id_test_vector_details())
+        .with_commitment_mode(cdk_spilman::CommitmentMode::Rerandomized);
+    assert_eq!(
+        params.get_channel_id(),
+        reference["channel_id"].as_str().unwrap()
+    );
+    let funding = DeterministicOutputsForOneContext::new("funding".to_owned(), 100, params.clone())
+        .unwrap()
+        .get_secrets_with_blinding()
+        .unwrap();
+    let mut inputs = Vec::new();
+    for (output, expected) in funding.iter().zip(reference["funding"].as_array().unwrap()) {
+        assert_eq!(
+            output.secret.to_string(),
+            expected["secret"].as_str().unwrap()
+        );
+        assert_eq!(
+            output.blinding_factor.to_secret_hex(),
+            expected["blinding"].as_str().unwrap()
+        );
+        let message = output
+            .to_blinded_message(output.amount.into(), params.keyset_info.keyset_id)
+            .unwrap();
+        assert_eq!(
+            message.blinded_secret.to_hex(),
+            expected["B"].as_str().unwrap()
+        );
+        inputs.push(serde_json::from_value::<Proof>(serde_json::json!({"amount":output.amount,"id":params.keyset_info.keyset_id,"secret":output.secret.to_string(),"C":expected["C"]})).unwrap());
+    }
+    let commitment = CommitmentOutputs::for_balance(50, &params).unwrap();
+    let mut request = commitment.create_swap_request(inputs, None).unwrap();
+    assert_eq!(
+        hex::encode(request.sig_all_message_hash()),
+        reference["digest"].as_str().unwrap()
+    );
+    request.inputs_mut()[0].witness = Some(Witness::P2PKWitness(P2PKWitness {
+        signatures: reference["signatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect(),
+    }));
+    request.verify_full_sig_all_check().unwrap();
+    let randomness = cashu::nuts::nut03::RerandomizationR([0x42; 32]);
+    let derived =
+        cdk_spilman::swap_completion::swap_restore_request(&request, Some(randomness)).unwrap();
+    let expected_outputs = reference["outputs"].as_array().unwrap();
+    for ((original, issued), expected) in request
+        .outputs()
+        .iter()
+        .zip(&derived.outputs)
+        .zip(expected_outputs)
+    {
+        assert_eq!(
+            original.blinded_secret.to_hex(),
+            expected["B"].as_str().unwrap()
+        );
+        assert_eq!(
+            issued.blinded_secret.to_hex(),
+            expected["issued_B"].as_str().unwrap()
+        );
+    }
+    let signatures = expected_outputs.iter().map(|o| serde_json::from_value(serde_json::json!({"amount":o["amount"],"id":params.keyset_info.keyset_id,"C_":o["C_blind"],"dleq":o["dleq"]})).unwrap()).collect();
+    let completed = commitment
+        .complete_swap_response(
+            SwapResponse {
+                signatures,
+                rerandomization_r: Some(randomness),
+            },
+            &params.keyset_info,
+        )
+        .unwrap();
+    for (completed, expected) in completed.iter().zip(expected_outputs) {
+        assert_eq!(
+            completed.proof.secret.to_string(),
+            expected["secret"].as_str().unwrap()
+        );
+        assert_eq!(completed.proof.c.to_hex(), expected["C"].as_str().unwrap());
+        assert_eq!(
+            completed.proof.dleq.as_ref().unwrap().r.to_secret_hex(),
+            expected["effective_blinding"].as_str().unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&completed.proof).unwrap()["p2pk_e"],
+            expected["p2pk_e"]
+        );
+    }
+}
+
+#[test]
 fn spilman_test_vector_channel_id_keysetv2() {
     let vector = get_channel_id_test_vector_details();
     let parameters = channel_parameters(vector);
