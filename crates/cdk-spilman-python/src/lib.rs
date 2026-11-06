@@ -1498,16 +1498,20 @@ impl ClientBridge {
     ///     host: Python object implementing SpilmanClientHost methods
     ///           (also implements the four documented mint networking callbacks)
     #[new]
-    #[pyo3(signature = (host))]
-    fn new(host: Py<PyAny>) -> Self {
+    #[pyo3(signature = (host, commitment_mode = "ordinary"))]
+    fn new(host: Py<PyAny>, commitment_mode: &str) -> PyResult<Self> {
+        let mode = commitment_mode
+            .parse::<spilman_core::CommitmentMode>()
+            .map_err(PyValueError::new_err)?;
         Python::attach(|py| {
             let py_host = PySpilmanClientHost {
                 py_host: host.clone_ref(py),
             };
             let py_networking = PySpilmanClientNetworking { py_host: host };
-            let inner = RustSpilmanClientBridge::new(py_host, py_networking);
+            let inner =
+                RustSpilmanClientBridge::new(py_host, py_networking).with_commitment_mode(mode);
 
-            ClientBridge { inner }
+            Ok(ClientBridge { inner })
         })
     }
 

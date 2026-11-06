@@ -919,6 +919,20 @@ pub struct WasmSpilmanClientBridge {
 
 #[wasm_bindgen]
 impl WasmSpilmanClientBridge {
+    /// Construct a bridge selecting the mode of newly opened channels. Existing
+    /// stored channels always retain their authenticated mode.
+    #[wasm_bindgen(js_name = withCommitmentMode)]
+    pub fn with_commitment_mode(
+        js_host: JsSpilmanClientHost,
+        mode: &str,
+    ) -> Result<WasmSpilmanClientBridge, JsValue> {
+        let mode = mode
+            .parse::<cdk_spilman::CommitmentMode>()
+            .map_err(JsValue::from_str)?;
+        let mut bridge = Self::new(js_host);
+        bridge.bridge = bridge.bridge.with_commitment_mode(mode);
+        Ok(bridge)
+    }
     #[wasm_bindgen(constructor)]
     pub fn new(js_host: JsSpilmanClientHost) -> WasmSpilmanClientBridge {
         // Clone the JsValue for use in the proxy

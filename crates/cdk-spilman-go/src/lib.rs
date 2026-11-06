@@ -1484,6 +1484,21 @@ pub struct ClientBridgeInstance {
 pub unsafe extern "C" fn spilman_client_bridge_new(
     callbacks: SpilmanClientHostCallbacks,
 ) -> *mut ClientBridgeInstance {
+    spilman_client_bridge_new_with_mode(callbacks, 0)
+}
+
+/// Create a bridge for new ordinary (0) or rerandomized (1) channels.
+/// Unknown modes return null before any callbacks are invoked.
+#[no_mangle]
+pub unsafe extern "C" fn spilman_client_bridge_new_with_mode(
+    callbacks: SpilmanClientHostCallbacks,
+    mode: u8,
+) -> *mut ClientBridgeInstance {
+    let mode = match mode {
+        0 => cdk_spilman::CommitmentMode::Ordinary,
+        1 => cdk_spilman::CommitmentMode::Rerandomized,
+        _ => return std::ptr::null_mut(),
+    };
     // We need to create two separate copies of the callbacks pointer for host and networking
     // Since the callbacks struct contains the same user_data, both will work with the same Go object
     let host_callbacks = SpilmanClientHostCallbacks {
@@ -1536,7 +1551,7 @@ pub unsafe extern "C" fn spilman_client_bridge_new(
     let networking = CGoSpilmanClientNetworking {
         callbacks: networking_callbacks,
     };
-    let bridge = SpilmanClientBridge::new(host, networking);
+    let bridge = SpilmanClientBridge::new(host, networking).with_commitment_mode(mode);
     Box::into_raw(Box::new(ClientBridgeInstance { bridge }))
 }
 

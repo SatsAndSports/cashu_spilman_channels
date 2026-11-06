@@ -50,8 +50,8 @@ use super::balance_update::{BalanceUpdateMessage, UnsignedBalanceUpdate};
 #[cfg(feature = "wallet")]
 use super::bindings::{
     complete_funding_restore, complete_funding_swap_for_outputs, complete_plain_change_restore,
-    compute_channel_from_proofs_with_input_keysets_and_funding_amount, compute_channel_from_token,
-    compute_channel_from_token_with_input_keysets, create_funding_restore_request,
+    compute_channel_from_proofs_with_mode, compute_channel_from_token_with_input_keysets_and_mode,
+    compute_channel_from_token_with_mode, create_funding_restore_request,
     create_funding_swap_with_plain_change, create_plain_change_restore_request,
     parse_keyset_info_from_json,
 };
@@ -633,6 +633,7 @@ pub struct SpilmanClientBridge<H: SpilmanClientHost, N: SpilmanClientNetworking>
     host: H,
     #[allow(dead_code)] // Used only with "wallet" feature for open_channel_from_token
     networking: N,
+    opening_commitment_mode: crate::CommitmentMode,
 }
 
 /// Build keyset info JSON from the responses of `/v1/keysets` and `/v1/keys/{id}`.
@@ -865,7 +866,18 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
     /// to the host. The caller passes `sender_pubkey_hex` per channel when
     /// opening channels.
     pub fn new(host: H, networking: N) -> Self {
-        Self { host, networking }
+        Self {
+            host,
+            networking,
+            opening_commitment_mode: crate::CommitmentMode::Ordinary,
+        }
+    }
+
+    /// Select the commitment mode for newly sized openings. Existing channels,
+    /// retained opening attempts and precomputed parameters remain authoritative.
+    pub fn with_commitment_mode(mut self, mode: crate::CommitmentMode) -> Self {
+        self.opening_commitment_mode = mode;
+        self
     }
 
     /// Fetch keyset info from a mint for a specific keyset.
@@ -1364,7 +1376,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
 
-        let compute_result = compute_channel_from_token_with_input_keysets(
+        let compute_result = compute_channel_from_token_with_input_keysets_and_mode(
             token_string,
             receiver_pubkey_hex,
             sender_pubkey_hex,
@@ -1374,6 +1386,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             input_keysets_json,
             max_amount,
             None,
+            self.opening_commitment_mode,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1624,7 +1637,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
 
-        let compute_result = compute_channel_from_token(
+        let compute_result = compute_channel_from_token_with_mode(
             token_string,
             receiver_pubkey_hex,
             sender_pubkey_hex,
@@ -1633,6 +1646,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             keyset_info_json,
             max_amount,
             None,
+            self.opening_commitment_mode,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 
@@ -1671,7 +1685,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             .map_err(|e| {
                 OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e)
             })?;
-        let compute_result = compute_channel_from_proofs_with_input_keysets_and_funding_amount(
+        let compute_result = compute_channel_from_proofs_with_mode(
             mint_url,
             unit,
             input_proofs_json,
@@ -1684,6 +1698,7 @@ impl<H: SpilmanClientHost, N: SpilmanClientNetworking> SpilmanClientBridge<H, N>
             max_amount,
             requested_capacity,
             requested_funding_token_amount,
+            self.opening_commitment_mode,
         )
         .map_err(|e| OpenChannelError::new(OpenChannelFailureStage::BeforeOpeningSaved, None, e))?;
 

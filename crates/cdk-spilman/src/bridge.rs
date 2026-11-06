@@ -944,6 +944,28 @@ pub fn unblind_and_verify_stage1_response(
     output_keyset_info: &KeysetInfo,
     balance: u64,
 ) -> Result<UnblindResult, BridgeError> {
+    unblind_and_verify_stage1_swap_response(
+        cashu::nuts::SwapResponse {
+            signatures: blind_signatures,
+            rerandomization_r: None,
+        },
+        secrets_with_blinding,
+        params,
+        output_keyset_info,
+        balance,
+    )
+}
+
+/// Verify a complete commitment response in the mode authenticated by the channel.
+/// Rerandomized responses require mint randomness and adjusted proof blindings.
+pub fn unblind_and_verify_stage1_swap_response(
+    response: cashu::nuts::SwapResponse,
+    secrets_with_blinding: Vec<(DeterministicSecretWithBlinding, bool)>,
+    params: &ChannelParameters,
+    output_keyset_info: &KeysetInfo,
+    balance: u64,
+) -> Result<UnblindResult, BridgeError> {
+    let blind_signatures = &response.signatures;
     if blind_signatures.len() != secrets_with_blinding.len() {
         return Err(BridgeError::Internal(
             "Length mismatch between signatures and secrets".into(),
@@ -959,7 +981,7 @@ pub fn unblind_and_verify_stage1_response(
             Some(swb.blinding_factor.clone()),
         )
         .map_err(|e| BridgeError::Internal(e.to_string()))?;
-        expected.push(crate::bindings::PreparedOutput {
+        expected.push(crate::swap_completion::PreparedSwapOutput {
             blinded_message: cashu::nuts::BlindedMessage::new(
                 swb.amount.into(),
                 output_keyset_info.keyset_id,
@@ -972,11 +994,22 @@ pub fn unblind_and_verify_stage1_response(
         amount_index_pairs.push((swb.amount, swb.index));
     }
 
-    let proofs = crate::bindings::complete_exact_signatures(
-        blind_signatures,
-        expected,
+    let request = SwapRequest::new(
+        vec![],
+        expected
+            .iter()
+            .map(|output| output.blinded_message.clone())
+            .collect(),
+    );
+    let request = match params.commitment_mode {
+        crate::CommitmentMode::Ordinary => request,
+        crate::CommitmentMode::Rerandomized => request.with_rerandomization(),
+    };
+    let proofs = crate::swap_completion::complete_swap_response(
+        &request,
+        &expected,
+        response,
         output_keyset_info,
-        None,
     )
     .map_err(BridgeError::ValidationFailed)?;
 
@@ -1068,7 +1101,6 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         payment: &PaymentProof,
         receiver: &PublicKey,
     ) -> Result<(), CloseError> {
-        use cashu::nuts::nut10::SpendingConditionVerification;
         let invalid = || CloseError::unblind_failed("Invalid immutable close binding");
         if prepared.balance != payment.balance
             || prepared.params_json != funding.params_json
@@ -1146,11 +1178,14 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if signatures.len() != 2 || signatures[0].to_string() != payment.signature {
             return Err(invalid());
         }
-        params
-            .get_receiver_blinded_pubkey_for_stage1()
-            .map_err(|_| invalid())?
-            .verify(request.sig_all_msg_to_sign().as_bytes(), &signatures[1])
-            .map_err(|_| invalid())?;
+        super::balance_update::verify_swap_signature(
+            &request,
+            &params
+                .get_receiver_blinded_pubkey_for_stage1()
+                .map_err(|_| invalid())?,
+            &signatures[1],
+        )
+        .map_err(|_| invalid())?;
         let mut expected_request: SwapRequest =
             serde_json::from_value(expected.swap_request).map_err(|_| invalid())?;
         // Only the two first-input signatures vary between preparations.
@@ -2266,18 +2301,36 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         resp_json: &str,
         prep: &PreparedClose,
     ) -> Result<Option<CompletedClose>, CloseError> {
+        self.complete_prepared_close_restore_with_randomness(resp_json, prep, None)
+    }
+
+    /// Complete NUT-09 issuance using randomness from identity-checked, uniformly
+    /// spent funding evidence. The caller authenticates that evidence and the
+    /// retained preparation; randomness alone never proves a close occurred.
+    pub fn complete_prepared_close_restore_with_randomness(
+        &self,
+        resp_json: &str,
+        prep: &PreparedClose,
+        randomness: Option<cashu::nuts::nut03::RerandomizationR>,
+    ) -> Result<Option<CompletedClose>, CloseError> {
         let response: cashu::nuts::RestoreResponse = serde_json::from_str(resp_json)
             .map_err(|_| CloseError::unblind_failed("Invalid close restore response"))?;
         let request: SwapRequest = serde_json::from_value(prep.swap_request.clone())
             .map_err(|_| CloseError::unblind_failed("Invalid prepared close request"))?;
+        let restore = crate::swap_completion::swap_restore_request(&request, randomness)
+            .map_err(CloseError::unblind_failed)?;
         if response.outputs.is_empty() && response.signatures.is_empty() {
             return Ok(None);
         }
         let signatures =
-            crate::bindings::match_restore_response(response, request.outputs(), "close")
+            crate::bindings::match_restore_response(response, &restore.outputs, "close")
                 .map_err(CloseError::unblind_failed)?;
         self.complete_prepared_close(
-            &serde_json::json!({ "signatures": signatures }).to_string(),
+            &serde_json::to_string(&cashu::nuts::SwapResponse {
+                signatures,
+                rerandomization_r: randomness,
+            })
+            .map_err(|_| CloseError::unblind_failed("Invalid restored swap response"))?,
             prep,
         )
         .map(Some)
@@ -2293,14 +2346,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         use cashu::nuts::SecretKey;
         use cashu::secret::Secret;
 
-        let resp: serde_json::Value = serde_json::from_str(resp_json)
+        let response: cashu::nuts::SwapResponse = serde_json::from_str(resp_json)
             .map_err(|_| CloseError::unblind_failed("Invalid close swap response"))?;
-        let sigs_value = resp
-            .get("signatures")
-            .ok_or_else(|| CloseError::UnblindFailed {
-                reason: "Missing signatures".into(),
-                status: 500,
-            })?;
 
         // Parse inputs for the internal unblind function
         let keyset_info = parse_keyset_info_from_json(&prep.keyset_info_json)
@@ -2329,8 +2376,6 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
             status: 500,
         })?;
 
-        let blind_signatures: Vec<BlindSignature> = serde_json::from_value(sigs_value.clone())
-            .map_err(|_| CloseError::unblind_failed("Invalid close signatures"))?;
         let swb_raw: Vec<serde_json::Value> =
             serde_json::from_str(&prep.secrets_with_blinding.to_string()).map_err(|e| {
                 CloseError::UnblindFailed {
@@ -2440,7 +2485,10 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
         let request: SwapRequest = serde_json::from_value(prep.swap_request.clone())
             .map_err(|_| CloseError::unblind_failed("Invalid prepared close request"))?;
-        if request.outputs().len() != secrets_with_blinding.len() {
+        if request.is_rerandomized()
+            != (params.commitment_mode == crate::CommitmentMode::Rerandomized)
+            || request.outputs().len() != secrets_with_blinding.len()
+        {
             return Err(CloseError::unblind_failed(
                 "Prepared close output count mismatch",
             ));
@@ -2464,8 +2512,8 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         }
 
         // Unblind and verify (returns enriched proofs with amount/index metadata)
-        let result = unblind_and_verify_stage1_response(
-            blind_signatures,
+        let result = unblind_and_verify_stage1_swap_response(
+            response,
             secrets_with_blinding,
             &params,
             &output_keyset_info,

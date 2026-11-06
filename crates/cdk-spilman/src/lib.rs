@@ -59,13 +59,17 @@ pub use bindings::{
     create_funding_swap_with_plain_change, create_plain_blinded_messages,
     create_plain_change_restore_request, mint_proofs_from_mint,
 };
+pub use bindings::{
+    compute_channel_from_proofs_with_mode, compute_channel_from_token_with_input_keysets_and_mode,
+    compute_channel_from_token_with_mode,
+};
 pub use bridge::{
-    unblind_and_verify_stage1_response, BridgeError, BridgeErrorResponse, ChannelFunding,
-    ChannelPolicy, ChannelState, CloseData, CloseError, ClosePreparationError, CloseSuccess,
-    ClosingData, CompletedClose, FundChannelResult, Payment, PaymentProof, PaymentSuccess,
-    PaymentValidationResult, PreparedClose, PreparedCloseTransition, SpilmanAsyncKeysetRefresher,
-    SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost, SpilmanKeysetRefresher, SpilmanMintClient,
-    UnblindResult, ValidatedNewChannel,
+    unblind_and_verify_stage1_response, unblind_and_verify_stage1_swap_response, BridgeError,
+    BridgeErrorResponse, ChannelFunding, ChannelPolicy, ChannelState, CloseData, CloseError,
+    ClosePreparationError, CloseSuccess, ClosingData, CompletedClose, FundChannelResult, Payment,
+    PaymentProof, PaymentSuccess, PaymentValidationResult, PreparedClose, PreparedCloseTransition,
+    SpilmanAsyncKeysetRefresher, SpilmanAsyncMintClient, SpilmanBridge, SpilmanHost,
+    SpilmanKeysetRefresher, SpilmanMintClient, UnblindResult, ValidatedNewChannel,
 };
 pub use client_bridge::{
     base64_decode, build_keyset_info_from_responses, ClientChannelInfo, OpenChannelError,
@@ -97,7 +101,7 @@ pub use keyset_versions::{
     KeysetSelectionPolicy, KeysetVersion, KeysetVersions, SkippedKeysetVersion,
 };
 pub use keysets_and_amounts::{KeysetInfo, OrderedListOfAmounts};
-pub use params::{compute_channel_secret, ChannelId, ChannelParameters};
+pub use params::{compute_channel_secret, ChannelId, ChannelParameters, CommitmentMode};
 pub use recovery::{
     ChannelRecovery, FundingInspection, FundingState, RecoveredSenderFunds, SenderRecoverySource,
 };

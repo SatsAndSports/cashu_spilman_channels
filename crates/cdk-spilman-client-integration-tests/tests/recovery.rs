@@ -1,4 +1,4 @@
-//! Ordinary channel reconciliation: real mint races, direct and over HTTP.
+//! Channel reconciliation: real mint races, direct and over HTTP.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -15,9 +15,9 @@ use cashu::nuts::{
 use cashu::secret::Secret;
 use cdk_spilman::{
     parse_keyset_info_from_json, ChannelFunding, ChannelParameters, ChannelRecovery, ChannelState,
-    DeterministicOutputsForOneContext, EstablishedChannel, FundingState, MintConnection,
-    PaymentProof, PreparedClose, PreparedSenderRefund, SelectedOutputKeyset, SenderRecoverySource,
-    SpilmanBridge, SpilmanChannelSender, SpilmanHost,
+    CommitmentMode, DeterministicOutputsForOneContext, EstablishedChannel, FundingState,
+    MintConnection, PaymentProof, PreparedClose, PreparedSenderRefund, SelectedOutputKeyset,
+    SenderRecoverySource, SpilmanBridge, SpilmanChannelSender, SpilmanHost,
 };
 use cdk_spilman_test_mint::{build_router, TestMintHelper, TestServerHost};
 
@@ -221,6 +221,10 @@ fn now() -> u64 {
 
 impl Fixture {
     async fn new(http: bool) -> Result<Self> {
+        Self::with_mode(http, CommitmentMode::Ordinary).await
+    }
+
+    async fn with_mode(http: bool, mode: CommitmentMode) -> Result<Self> {
         let helper = TestMintHelper::new().await?;
         let connection = Connection::new(helper.mint(), http).await?;
         let keyset_json = helper.keyset_info_json()?;
@@ -242,7 +246,8 @@ impl Fixture {
             keyset.clone(),
             8,
             &alice,
-        )?;
+        )?
+        .with_commitment_mode(mode);
         let outputs =
             DeterministicOutputsForOneContext::new("funding".to_string(), 32, params.clone())?;
         let funding = connection
@@ -571,8 +576,10 @@ async fn close_wins_after_alice_submits_one_or_two_refund_candidates() -> Result
 
 #[tokio::test(flavor = "multi_thread")]
 async fn close_wins_refund_falls_back_and_both_payouts_are_spendable() -> Result<()> {
-    for http in [false, true] {
-        let mut f = Fixture::new(http).await?;
+    for (http, mode) in [false, true].into_iter().flat_map(|http| {
+        [CommitmentMode::Ordinary, CommitmentMode::Rerandomized].map(|mode| (http, mode))
+    }) {
+        let mut f = Fixture::with_mode(http, mode).await?;
         // Both requests are prepared. Charlie wins; the successful reply is discarded.
         f.connection.lose_swap_reply.store(true, Ordering::SeqCst);
         assert!(f
@@ -618,8 +625,11 @@ async fn close_wins_refund_falls_back_and_both_payouts_are_spendable() -> Result
 
 #[tokio::test(flavor = "multi_thread")]
 async fn refund_wins_even_with_an_extra_signature() -> Result<()> {
-    for http in [false, true] {
-        let mut f = Fixture::new(http).await?;
+    for (http, mode) in [false, true].into_iter().flat_map(|http| {
+        [CommitmentMode::Ordinary, CommitmentMode::Rerandomized].map(|mode| (http, mode))
+    }) {
+        let mut f = Fixture::with_mode(http, mode).await?;
+        assert!(!f.refund.swap_request.is_rerandomized());
         let mut awkward = f.refund.swap_request.clone();
         awkward.sign_sig_all(SecretKey::generate())?;
         f.connection.lose_swap_reply.store(true, Ordering::SeqCst);
@@ -645,11 +655,16 @@ async fn refund_wins_even_with_an_extra_signature() -> Result<()> {
         );
         spend(&f, payout.proofs, 32).await?;
         f.connection.reset_calls();
-        assert!(matches!(
-            f.charlie().await?,
-            ChannelRecovery::SpentNoKnownPayout(_)
-        ));
-        f.connection.assert_state_before_restore();
+        if mode == CommitmentMode::Ordinary {
+            assert!(matches!(
+                f.charlie().await?,
+                ChannelRecovery::SpentNoKnownPayout(_)
+            ));
+            f.connection.assert_state_before_restore();
+        } else {
+            assert!(f.charlie().await.is_err());
+            f.connection.assert_state_only();
+        }
         f.connection.stop().await?;
     }
     Ok(())
@@ -800,85 +815,132 @@ async fn partial_post_expiry_spend_is_mixed_not_a_classified_refund() -> Result<
 
 #[tokio::test(flavor = "multi_thread")]
 async fn historical_close_attempts_and_sender_discovery_use_verified_output_keys() -> Result<()> {
-    let mut f = Fixture::new(false).await?;
-    let rotated = f
-        .connection
-        .mint
-        .rotate_keyset(
-            CurrencyUnit::Sat,
-            vec![1, 2, 4, 8, 16, 32, 64],
-            0,
-            true,
-            None,
-        )
-        .await?;
-    let keys = f
-        .connection
-        .mint
-        .keyset_pubkeys(&rotated.id)?
-        .keysets
-        .remove(0)
-        .keys;
-    let info = serde_json::json!({"keysetId": rotated.id.to_string(), "unit":"sat", "keys":keys, "inputFeePpk":0}).to_string();
-    let successor = f
-        .receiver
-        .prepare_close_for_closing_channel_with_output_keyset(
-            &f.sender.channel_id(),
-            SelectedOutputKeyset {
-                id: rotated.id.to_string(),
-                info_json: info.clone(),
-            },
-        )
-        .map_err(|e| anyhow::anyhow!(e.reason))?;
-    f.connection
-        .process_swap(serde_json::from_value(successor.swap_request.clone())?)
-        .await?;
+    for mode in [CommitmentMode::Ordinary, CommitmentMode::Rerandomized] {
+        let mut f = Fixture::with_mode(false, mode).await?;
+        let rotated = f
+            .connection
+            .mint
+            .rotate_keyset(
+                CurrencyUnit::Sat,
+                vec![1, 2, 4, 8, 16, 32, 64],
+                0,
+                true,
+                None,
+            )
+            .await?;
+        let keys = f
+            .connection
+            .mint
+            .keyset_pubkeys(&rotated.id)?
+            .keysets
+            .remove(0)
+            .keys;
+        let info = serde_json::json!({"keysetId": rotated.id.to_string(), "unit":"sat", "keys":keys, "inputFeePpk":0}).to_string();
+        let mut successor = f
+            .receiver
+            .prepare_close_for_closing_channel_with_output_keyset(
+                &f.sender.channel_id(),
+                SelectedOutputKeyset {
+                    id: rotated.id.to_string(),
+                    info_json: info.clone(),
+                },
+            )
+            .map_err(|e| anyhow::anyhow!(e.reason))?;
+        assert_eq!(f.close.sig_all_message_hash, successor.sig_all_message_hash);
+        // A keyset-only successor can reuse *both* original authorizations.
+        successor.swap_request["inputs"][0]["witness"] =
+            f.close.swap_request["inputs"][0]["witness"].clone();
+        let response = f
+            .connection
+            .process_swap(serde_json::from_value(successor.swap_request.clone())?)
+            .await?;
+        let commitment = cdk_spilman::CommitmentOutputs::for_balance(7, &f.sender.channel.params)?;
+        if mode == CommitmentMode::Ordinary {
+            let proofs = commitment.unblind_all(response.signatures, &keys)?;
+            assert_eq!(proofs.iter().map(|p| p.amount).sum::<u64>(), 32);
+        } else {
+            let info = parse_keyset_info_from_json(&info).map_err(anyhow::Error::msg)?;
+            let proofs = commitment.complete_swap_response(response, &info)?;
+            assert_eq!(proofs.iter().map(|p| p.amount).sum::<u64>(), 32);
+        }
+        f.connection.reset_calls();
+        // Restore may find the same point issued under the successor's keys. It is
+        // invalid for the predecessor but must be tried against the retained successor.
+        let attempts = [f.close.clone(), successor];
+        let ChannelRecovery::Recovered { payout, .. } = f
+            .receiver
+            .recover_close(&f.sender.channel_id(), &attempts, &f.connection)
+            .await?
+        else {
+            panic!("successor not restored")
+        };
+        assert_eq!((payout.receiver_sum, payout.sender_sum), (7, 25));
+        f.connection.assert_state_before_restore();
+        let keysets = [
+            f.sender.channel.params.keyset_info.clone(),
+            parse_keyset_info_from_json(&info).map_err(anyhow::Error::msg)?,
+        ];
+        let ChannelRecovery::Recovered { payout, .. } = f
+            .sender
+            .recover_funds(&f.connection, std::slice::from_ref(&f.refund), &keysets)
+            .await?
+        else {
+            panic!("sender discovery failed")
+        };
+        assert_eq!(payout.source, SenderRecoverySource::ReceiverClose);
+        assert!(payout.proofs.iter().all(|p| p.keyset_id == rotated.id));
+        assert_eq!(
+            payout
+                .proofs
+                .iter()
+                .map(|p| u64::from(p.amount))
+                .sum::<u64>(),
+            25
+        );
+        // A malformed nonempty close restore is unresolved, not absence or a refund.
+        f.connection.restore_fault = Some(RestoreFault::Partial);
+        assert!(f
+            .receiver
+            .recover_close(&f.sender.channel_id(), &attempts, &f.connection)
+            .await
+            .is_err());
+        assert!(f
+            .sender
+            .recover_funds(&f.connection, std::slice::from_ref(&f.refund), &keysets)
+            .await
+            .is_err());
+        f.connection.stop().await?;
+    }
+    Ok(())
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn rerandomized_refund_randomness_is_not_evidence_of_a_close() -> Result<()> {
+    let mut f = Fixture::with_mode(true, CommitmentMode::Rerandomized).await?;
+    let mut refund = f.refund.swap_request.clone().with_rerandomization();
+    for input in refund.inputs_mut() {
+        input.witness = None;
+    }
+    refund.sign_sig_all(
+        f.sender
+            .channel
+            .params
+            .get_sender_blinded_secret_key_for_stage1_refund(&f.sender.alice_secret)?,
+    )?;
+    let response = f.connection.process_swap(refund).await?;
+    assert!(response.rerandomization_r.is_some());
     f.connection.reset_calls();
-    // Restore may find the same point issued under the successor's keys. It is
-    // invalid for the predecessor but must be tried against the retained successor.
-    let attempts = [f.close.clone(), successor];
-    let ChannelRecovery::Recovered { payout, .. } = f
-        .receiver
-        .recover_close(&f.sender.channel_id(), &attempts, &f.connection)
-        .await?
-    else {
-        panic!("successor not restored")
-    };
-    assert_eq!((payout.receiver_sum, payout.sender_sum), (7, 25));
+    assert!(matches!(
+        f.charlie().await?,
+        ChannelRecovery::SpentNoKnownPayout(_)
+    ));
     f.connection.assert_state_before_restore();
-    let keysets = [
-        f.sender.channel.params.keyset_info.clone(),
-        parse_keyset_info_from_json(&info).map_err(anyhow::Error::msg)?,
-    ];
-    let ChannelRecovery::Recovered { payout, .. } = f
-        .sender
-        .recover_funds(&f.connection, std::slice::from_ref(&f.refund), &keysets)
-        .await?
-    else {
-        panic!("sender discovery failed")
-    };
-    assert_eq!(payout.source, SenderRecoverySource::ReceiverClose);
-    assert!(payout.proofs.iter().all(|p| p.keyset_id == rotated.id));
     assert_eq!(
-        payout
-            .proofs
-            .iter()
-            .map(|p| u64::from(p.amount))
-            .sum::<u64>(),
-        25
+        f.receiver
+            .host()
+            .get_channel_state(&f.sender.channel_id())
+            .unwrap(),
+        Some(ChannelState::Closing)
     );
-    // A malformed nonempty close restore is unresolved, not absence or a refund.
-    f.connection.restore_fault = Some(RestoreFault::Partial);
-    assert!(f
-        .receiver
-        .recover_close(&f.sender.channel_id(), &attempts, &f.connection)
-        .await
-        .is_err());
-    assert!(f
-        .sender
-        .recover_funds(&f.connection, std::slice::from_ref(&f.refund), &keysets)
-        .await
-        .is_err());
     f.connection.stop().await?;
     Ok(())
 }

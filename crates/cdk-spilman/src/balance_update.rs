@@ -47,6 +47,22 @@ where
     cashu::util::hex::encode(value.sig_all_message_hash())
 }
 
+pub(crate) fn verify_swap_signature(
+    request: &SwapRequest,
+    pubkey: &cashu::nuts::PublicKey,
+    signature: &Signature,
+) -> anyhow::Result<()> {
+    let key = bitcoin::secp256k1::PublicKey::from_slice(&pubkey.to_bytes())?
+        .x_only_public_key()
+        .0;
+    bitcoin::secp256k1::Secp256k1::verification_only().verify_schnorr(
+        signature,
+        &bitcoin::secp256k1::Message::from_digest(request.sig_all_message_hash()),
+        &key,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn attach_signature_to_first_input(
     swap_request: &mut SwapRequest,
     sig_hex: &str,
@@ -124,17 +140,12 @@ impl BalanceUpdateMessage {
         let swap_request =
             commitment_outputs.create_swap_request(channel.funding_proofs.clone(), None)?;
 
-        // Extract the SIG_ALL message from the swap request
-        let msg_to_sign = swap_request.sig_all_msg_to_sign();
-
         // Verify the signature using Alice's BLINDED pubkey
         // Alice signs with her blinded secret key (the funding token uses blinded pubkeys for privacy)
         let blinded_sender_pubkey = channel.params.get_sender_blinded_pubkey_for_stage1()?;
-        blinded_sender_pubkey
-            .verify(msg_to_sign.as_bytes(), &self.signature)
-            .map_err(|_| {
-                anyhow::anyhow!("Invalid signature: Alice did not authorize this balance update")
-            })?;
+        verify_swap_signature(&swap_request, &blinded_sender_pubkey, &self.signature).map_err(
+            |_| anyhow::anyhow!("Invalid signature: Alice did not authorize this balance update"),
+        )?;
 
         Ok(())
     }
