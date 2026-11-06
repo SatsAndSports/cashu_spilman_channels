@@ -91,9 +91,16 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
 The Rust `cdk_spilman::swap_completion` module now supplies pure checked completion
 and restore-point derivation for ordinary and rerandomized swaps, plus a canonical
 external-signer digest. It verifies both blind-signature and unblinded-proof DLEQs.
-These are low-level primitives: existing channels still use ordinary commitments.
+The Rust channel core also accepts
+`params.with_commitment_mode(CommitmentMode::Rerandomized)` before funding derivation.
+Use `CommitmentOutputs::complete_swap_response` with the full mint response to
+retain mint randomness during completion. Existing constructors select ordinary
+mode. To open new rerandomized channels with the Rust client bridge, construct it
+with `.with_commitment_mode(CommitmentMode::Rerandomized)`. See
+[channel-mode integration](INTEGRATION.md#channel-commitment-mode) for opening,
+binding and recovery APIs.
 See [primitive API](INTEGRATION.md#checked-swap-completion-primitives) and the
-[proposed dual-mode design](ARCHITECTURE.md#proposed-dual-mode-channels).
+[dual-mode design](ARCHITECTURE.md#dual-mode-channels).
 
 The test mint now supports the opt-in V2 swap primitive proposed in
 [NUT PR #463](https://github.com/cashubtc/nuts/pull/463), alongside ordinary swaps.

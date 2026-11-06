@@ -2,6 +2,18 @@
 
 ## 0.3.0 — Unreleased
 
+### Dual-mode channels
+
+- Add authenticated ordinary/rerandomized commitment modes (TLV 26/value 01 for
+  rerandomized; ordinary IDs and vectors unchanged), mode-aware payment/close
+  authorization, checked full-response completion and NUT-07-first recovery.
+- Expose opt-in in both opening-sizing paths and Rust/Python/Go/WASM client bridges.
+  Existing constructors retain ordinary behavior. Rust parameter struct literals
+  require the new field; native/WASM binding artifacts must be rebuilt together.
+- Add independent rerandomized channel vectors, deterministic DLEQs, and production
+  compatibility checks; extend real-mint direct/HTTP close/refund/recovery tests.
+- Coordinate protocol changes with NUTs #296; MONAD adoption/default policy deferred.
+
 ### Checked rerandomized swap primitives (Rust)
 
 - Add pure `swap_completion` digest, restore-query and complete-response/restore
