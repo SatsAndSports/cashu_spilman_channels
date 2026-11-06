@@ -543,6 +543,41 @@ Mint randomness `R`, when present, is issuance metadata rather than evidence tha
 a two-party close occurred: a sender could rerandomize a refund too. The library's
 own refund construction remains ordinary.
 
+## Proposed Dual-Mode Channels
+
+This is the next-step design, not an implemented channel mode. Ordinary channel
+behavior and its vectors remain unchanged by the swap-primitive milestone.
+
+Proposed `CommitmentMode::{Ordinary,Rerandomized}` belongs in authenticated channel
+parameters, selected before channel-ID/funding derivation. The current ID TLV
+assignments end at 24. Proposed type 26 with value `01` selects rerandomization;
+ordinary omits the record, preserving existing IDs. Corresponding parameter JSON
+would use `commitment_mode: "rerandomized"`; omission denotes ordinary and unknown
+values reject. This assignment still requires a coordinated specification update.
+
+Both opening sizing APIs must thread the mode into parameters. The shared
+commitment builder sets the request flag from those stored parameters; callers
+must not supply an independent close-time mode override. Alice's balance updates
+and Charlie's closing signature sign the SAME mode-selected digest over original
+deterministic outputs. Neither signer needs mint randomness at signing time.
+Rerandomized commitment closes must not silently downgrade to ordinary ones.
+Opening swaps, Alice's expiry refunds and second-stage swaps remain ordinary for
+both kinds of channel. Choosing application defaults is separate work.
+
+The current primitive module delegates digest computation to Cashu's public
+`SpendingConditionVerification::sig_all_message_hash`, also used by Cashu swap
+signing and condition verification. Ordinary hashing remains SHA-256 of the legacy
+message; rerandomized hashing is the existing tagged original-output transcript.
+External signing receives the final 32-byte digest, avoiding double hashing.
+
+Pure swap completion derives issued points and effective blindings from `R`, then
+uses existing exact-signature/DLEQ completion and verifies the final proof DLEQs.
+The independent test implementation still constructs its own transcript/tweak and
+effective blindings; direct/HTTP tests compare it with the production primitives
+and spend the resulting outputs at a real mint. Future channel recovery will add
+complete NUT-07 evidence validation, mode-aware discovery, and durable retention of
+the actual winner's `R` without treating randomness as a spend classifier.
+
 ## Output Keyset Expiry
 
 New close and automatic opening output selectors skip expired active keysets and

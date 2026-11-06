@@ -88,6 +88,13 @@ must implement the new journal methods; see [INTEGRATION.md](INTEGRATION.md#exac
 
 ## Experimental test-mint rerandomization
 
+The Rust `cdk_spilman::swap_completion` module now supplies pure checked completion
+and restore-point derivation for ordinary and rerandomized swaps, plus a canonical
+external-signer digest. It verifies both blind-signature and unblinded-proof DLEQs.
+These are low-level primitives: existing channels still use ordinary commitments.
+See [primitive API](INTEGRATION.md#checked-swap-completion-primitives) and the
+[proposed dual-mode design](ARCHITECTURE.md#proposed-dual-mode-channels).
+
 The test mint now supports the opt-in V2 swap primitive proposed in
 [NUT PR #463](https://github.com/cashubtc/nuts/pull/463), alongside ordinary swaps.
 This is mint-side test infrastructure; existing Spilman channels still use their
