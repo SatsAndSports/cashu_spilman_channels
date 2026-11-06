@@ -38,6 +38,7 @@ pub use mint_outcome::{MintRejection, MintRequestError, MintResponse};
 mod params;
 mod recovery;
 mod sender_and_receiver;
+pub mod swap_completion;
 
 pub use balance_update::{
     get_signatures_from_swap_request, BalanceUpdateMessage, UnsignedBalanceUpdate,
