@@ -1,4 +1,4 @@
-//! State-first reconciliation of ordinary channel funding spends.
+//! State-first reconciliation of channel funding spends.
 //!
 //! These operations only inspect and recover. Hosts retain immutable attempts,
 //! own durable finalization, and decide when to submit, replay, or stop collecting.
@@ -33,6 +33,35 @@ pub struct FundingInspection {
 }
 
 impl FundingInspection {
+    /// Consistent committed issuance metadata across every funding identity.
+    /// This authorizes point derivation only, never classification as a close.
+    pub(crate) fn close_randomness(
+        &self,
+        mode: crate::CommitmentMode,
+    ) -> Result<Option<cashu::nuts::nut03::RerandomizationR>> {
+        ensure!(
+            self.state == FundingState::Spent,
+            "funding is not fully spent"
+        );
+        let first = self
+            .response
+            .states
+            .first()
+            .context("empty funding evidence")?
+            .rerandomization_r;
+        ensure!(
+            self.response
+                .states
+                .iter()
+                .all(|state| state.rerandomization_r == first),
+            "inconsistent committed mint randomness"
+        );
+        ensure!(
+            first.is_some() == (mode == crate::CommitmentMode::Rerandomized),
+            "close mode/committed randomness mismatch"
+        );
+        Ok(first)
+    }
     /// Aggregate state. Mixed/pending evidence does not authorize recovery or replay.
     pub fn state(&self) -> FundingState {
         self.state
@@ -171,7 +200,7 @@ impl EstablishedChannel {
 }
 
 impl SpilmanChannelSender {
-    /// Reconcile Alice's ordinary channel without submitting anything. Inspect
+    /// Reconcile Alice's channel without submitting anything. Inspect
     /// NUT-07 first; if spent, try every maybe-submitted refund before discovering
     /// her share of a receiver close. Refund attempts are authenticated against
     /// this channel and sender before mint I/O. Historical close output keys must
@@ -263,7 +292,11 @@ impl SpilmanChannelSender {
             return Err(error.context("refund recovery unresolved"));
         }
         let proofs = self
-            .restore_sender_proofs_with_keysets(mint, close_output_keysets)
+            .restore_sender_proofs_with_keysets_and_randomness(
+                mint,
+                close_output_keysets,
+                funding.close_randomness(self.channel.params.commitment_mode)?,
+            )
             .await?;
         if proofs.is_empty() {
             Ok(ChannelRecovery::SpentNoKnownPayout(funding))
@@ -280,7 +313,7 @@ impl SpilmanChannelSender {
 }
 
 impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
-    /// Reconcile Charlie's retained ordinary close attempts for a channel in
+    /// Reconcile Charlie's retained close attempts for a channel in
     /// `Closing`. Authenticates each request against stored funding and the fixed
     /// closing payment, then inspects NUT-07 before any NUT-09 requests. Does not
     /// submit, replay, select keys, classify witnesses, or mutate host storage.
@@ -338,17 +371,23 @@ impl<H: SpilmanHost<C>, C> SpilmanBridge<H, C> {
         if funding.state != FundingState::Spent {
             return Ok(ChannelRecovery::without_payout(funding));
         }
+        let randomness = funding.close_randomness(channel.params.commitment_mode)?;
         let mut invalid_restore = None;
         for attempt in attempts {
             let request: SwapRequest = serde_json::from_value(attempt.swap_request.clone())?;
             let result = async {
                 let response = mint
-                    .post_restore(RestoreRequest {
-                        outputs: request.outputs().clone(),
-                    })
+                    .post_restore(
+                        crate::swap_completion::swap_restore_request(&request, randomness)
+                            .map_err(anyhow::Error::msg)?,
+                    )
                     .await?;
-                self.complete_prepared_close_restore(&serde_json::to_string(&response)?, attempt)
-                    .map_err(anyhow::Error::from)
+                self.complete_prepared_close_restore_with_randomness(
+                    &serde_json::to_string(&response)?,
+                    attempt,
+                    randomness,
+                )
+                .map_err(anyhow::Error::from)
             }
             .await;
             match result {

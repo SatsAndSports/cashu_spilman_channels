@@ -1895,3 +1895,98 @@ async fn test_sqlite_client_storage_persists_channel_and_payments() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_opening_paths_preserve_mode_through_direct_close() {
+    use cdk_spilman::CommitmentMode;
+    for mode in [CommitmentMode::Ordinary, CommitmentMode::Rerandomized] {
+        for token_input in [false, true] {
+            let helper = TestMintHelper::new().await.unwrap();
+            let info = helper.keyset_info_json().unwrap();
+            let alice = SecretKey::generate();
+            let charlie = SecretKey::generate();
+            let mut host = ConfigurableClientHost::new_in_memory();
+            host.add_key(alice.clone());
+            let client = SpilmanClientBridge::new(host, InMemoryMintNetworking::new(helper.mint()))
+                .with_commitment_mode(mode);
+            let server_host = TestServerHost::new(charlie.clone());
+            server_host.add_keyset("https://test-mint", helper.keyset_id(), info.clone());
+            let server = SpilmanBridge::new(server_host);
+            let proofs = serde_json::to_string(&helper.mint_proofs(100).await.unwrap()).unwrap();
+            let opening = if token_input {
+                let token = build_cashu_b_token("https://test-mint", "sat", &proofs).unwrap();
+                client
+                    .open_channel_from_token(
+                        &token,
+                        &charlie.public_key().to_hex(),
+                        &alice.public_key().to_hex(),
+                        now_seconds() + 3600,
+                        &info,
+                        64,
+                    )
+                    .unwrap()
+            } else {
+                client
+                    .open_channel_from_proofs(
+                        "https://test-mint",
+                        "sat",
+                        &proofs,
+                        &charlie.public_key().to_hex(),
+                        &alice.public_key().to_hex(),
+                        now_seconds() + 3600,
+                        &info,
+                        64,
+                        Some(80),
+                    )
+                    .unwrap()
+            };
+            // A new-opening preference must never override stored channel mode.
+            let client = client.with_commitment_mode(if mode == CommitmentMode::Ordinary {
+                CommitmentMode::Rerandomized
+            } else {
+                CommitmentMode::Ordinary
+            });
+            let registration = client
+                .sign_channel_registration(&opening.channel_id)
+                .unwrap();
+            assert_eq!(
+                registration
+                    .params
+                    .as_ref()
+                    .unwrap()
+                    .get("commitment_mode")
+                    .and_then(|v| v.as_str()),
+                if mode == CommitmentMode::Rerandomized {
+                    Some("rerandomized")
+                } else {
+                    None
+                }
+            );
+            process_payment(&server, &registration);
+            let request = client
+                .sign_cooperative_close_request(&opening.channel_id, 0)
+                .unwrap();
+            let transition = server
+                .prepare_cooperative_close_transition(&serde_json::to_string(&request).unwrap())
+                .unwrap();
+            let swap: cashu::nuts::SwapRequest =
+                serde_json::from_value(transition.prepared_close.swap_request.clone()).unwrap();
+            assert_eq!(swap.is_rerandomized(), mode == CommitmentMode::Rerandomized);
+            server.mark_prepared_close_closing(&transition).unwrap();
+            let response = helper.mint().process_swap_request(swap).await.unwrap();
+            assert_eq!(
+                response.rerandomization_r.is_some(),
+                mode == CommitmentMode::Rerandomized
+            );
+            let completed = server
+                .complete_prepared_close(
+                    &serde_json::to_string(&response).unwrap(),
+                    &transition.prepared_close,
+                )
+                .unwrap();
+            assert_eq!(completed.sender_sum, 100);
+            assert_eq!(completed.receiver_sum, 0);
+            server.mark_completed_close(&completed).unwrap();
+            helper.mint().stop().await.unwrap();
+        }
+    }
+}

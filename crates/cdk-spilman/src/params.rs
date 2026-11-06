@@ -143,9 +143,41 @@ impl Stage2Role {
     }
 }
 
+/// Authorization and issuance mode of the channel's commitment close only.
+/// Opening, expiry refund and stage-2 spending remain ordinary swaps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitmentMode {
+    /// Existing NUT-11 SIG_ALL commitment.
+    #[default]
+    Ordinary,
+    /// Mint-rerandomized NUT-03 commitment; both parties use its tagged digest.
+    Rerandomized,
+}
+
+impl CommitmentMode {
+    fn is_ordinary(&self) -> bool {
+        *self == Self::Ordinary
+    }
+}
+
+impl std::str::FromStr for CommitmentMode {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "ordinary" => Ok(Self::Ordinary),
+            "rerandomized" => Ok(Self::Rerandomized),
+            _ => Err("invalid commitment_mode"),
+        }
+    }
+}
+
 /// Parameters for a Spilman payment channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelParameters {
+    /// Committed by TLV type 26 when rerandomized. Select before deriving funding.
+    #[serde(default, skip_serializing_if = "CommitmentMode::is_ordinary")]
+    pub commitment_mode: CommitmentMode,
     /// Alice's public key (sender)
     pub sender_pubkey: cashu::nuts::PublicKey,
     /// Charlie's public key (receiver)
@@ -338,6 +370,7 @@ impl ChannelParameters {
         }
 
         Ok(Self {
+            commitment_mode: CommitmentMode::Ordinary,
             sender_pubkey,
             receiver_pubkey,
             mint,
@@ -472,6 +505,11 @@ impl ChannelParameters {
         let json: serde_json::Value =
             serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
 
+        let mode = match json.get("commitment_mode") {
+            None => CommitmentMode::Ordinary,
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|_| anyhow::anyhow!("invalid commitment_mode"))?,
+        };
         // Parse keyset_id and input_fee_ppk first to validate against keyset_info
         let keyset_id_str = json["keyset_id"]
             .as_str()
@@ -563,6 +601,16 @@ impl ChannelParameters {
             maximum_amount_for_one_output,
             channel_secret,
         )
+        .map(|params| params.with_commitment_mode(mode))
+    }
+
+    /// Select the commitment-close mode.
+    ///
+    /// This constructor modifier changes the channel identity. Use it only before
+    /// deriving funding outputs or signing any payment.
+    pub fn with_commitment_mode(mut self, mode: CommitmentMode) -> Self {
+        self.commitment_mode = mode;
+        self
     }
 
     /// Get channel capacity
@@ -590,6 +638,9 @@ impl ChannelParameters {
         append_tlv_record(&mut stream, 20, &tu64_bytes(self.setup_timestamp));
         append_tlv_record(&mut stream, 22, &tu64_bytes(self.expiry_timestamp));
         append_tlv_record(&mut stream, 24, &self.channel_secret);
+        if self.commitment_mode == CommitmentMode::Rerandomized {
+            append_tlv_record(&mut stream, 26, &[1]);
+        }
         stream
     }
 
@@ -613,7 +664,7 @@ impl ChannelParameters {
     /// Get a JSON string representation of the data that contributes to the channel ID
     /// This includes all parameters that define the channel unique identity.
     pub fn get_channel_id_params_json(&self) -> String {
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "mint": self.mint,
             "unit": self.unit_name(),
             "capacity": self.capacity,
@@ -625,8 +676,11 @@ impl ChannelParameters {
             "sender_pubkey": self.sender_pubkey.to_hex(),
             "receiver_pubkey": self.receiver_pubkey.to_hex(),
             "expiry_timestamp": self.expiry_timestamp
-        })
-        .to_string()
+        });
+        if self.commitment_mode == CommitmentMode::Rerandomized {
+            json["commitment_mode"] = serde_json::json!("rerandomized");
+        }
+        json.to_string()
     }
 
     /// Derive a blinding scalar for P2BK
@@ -1964,6 +2018,7 @@ mod tests {
         let keyset = mock_keyset_info(vec![1, 2, 4, 8, 16], 0);
 
         let params = ChannelParameters {
+            commitment_mode: CommitmentMode::Ordinary,
             sender_pubkey: alice_sk.public_key(),
             receiver_pubkey: charlie_sk.public_key(),
             mint: "https://mint.host".to_string(),

@@ -362,7 +362,11 @@ impl CommitmentOutputs {
         outputs.sort_by_key(|bm| u64::from(bm.amount));
 
         // Create swap request with all funding proofs as inputs
-        Ok(cashu::nuts::SwapRequest::new(funding_proofs, outputs))
+        let request = cashu::nuts::SwapRequest::new(funding_proofs, outputs);
+        Ok(match self.receiver_outputs.params.commitment_mode {
+            crate::CommitmentMode::Ordinary => request,
+            crate::CommitmentMode::Rerandomized => request.with_rerandomization(),
+        })
     }
 
     /// Unblind all outputs from a swap response
@@ -377,6 +381,33 @@ impl CommitmentOutputs {
         blind_signatures: Vec<BlindSignature>,
         active_keys: &cashu::nuts::Keys,
     ) -> Result<Vec<ProofWithMetadata>, anyhow::Error> {
+        let mut keyset = self.receiver_outputs.params.keyset_info.clone();
+        keyset.active_keys = active_keys.clone();
+        // This legacy API accepts caller-supplied historical keys, including a
+        // rotated output keyset. Exact completion checks every signature ID.
+        if let Some(signature) = blind_signatures.first() {
+            keyset.keyset_id = signature.keyset_id;
+        }
+        self.complete_swap_response(
+            cashu::nuts::SwapResponse {
+                signatures: blind_signatures,
+                rerandomization_r: None,
+            },
+            &keyset,
+        )
+    }
+
+    /// Verify and complete every commitment output, including mint-rerandomized
+    /// issuance. The original channel parameters determine authorization mode.
+    pub fn complete_swap_response(
+        &self,
+        response: cashu::nuts::SwapResponse,
+        output_keyset: &crate::KeysetInfo,
+    ) -> Result<Vec<ProofWithMetadata>, anyhow::Error> {
+        if output_keyset.unit != self.receiver_outputs.params.unit {
+            anyhow::bail!("commitment output keyset unit mismatch");
+        }
+        let blind_signatures = &response.signatures;
         // Assert the number of signatures matches the expected number of outputs
         let expected_count =
             self.receiver_outputs.ordered_amounts.len() + self.sender_outputs.ordered_amounts.len();
@@ -413,35 +444,25 @@ impl CommitmentOutputs {
             );
         }
 
-        // Extract secrets and blinding factors in sorted order
-        let sorted_secrets: Vec<_> = all_outputs.iter().map(|(o, _)| o.secret.clone()).collect();
-        let sorted_blinding: Vec<_> = all_outputs
+        let request = self.create_swap_request(vec![], Some(output_keyset.keyset_id))?;
+        let prepared: Vec<_> = all_outputs
             .iter()
-            .map(|(o, _)| o.blinding_factor.clone())
+            .zip(request.outputs())
+            .map(
+                |((output, _), message)| crate::swap_completion::PreparedSwapOutput {
+                    blinded_message: message.clone(),
+                    secret: output.secret.clone(),
+                    blinding_factor: output.blinding_factor.clone(),
+                },
+            )
             .collect();
-
-        if sorted_secrets.len() != blind_signatures.len() {
-            anyhow::bail!(
-                "Internal mismatch: derived {} secrets for {} blind signatures",
-                sorted_secrets.len(),
-                blind_signatures.len()
-            );
-        }
-        if sorted_blinding.len() != blind_signatures.len() {
-            anyhow::bail!(
-                "Internal mismatch: derived {} blinding factors for {} blind signatures",
-                sorted_blinding.len(),
-                blind_signatures.len()
-            );
-        }
-
-        // Unblind all proofs in sorted order
-        let all_proofs = cashu::dhke::construct_proofs(
-            blind_signatures,
-            sorted_blinding,
-            sorted_secrets,
-            active_keys,
-        )?;
+        let all_proofs = crate::swap_completion::complete_swap_response(
+            &request,
+            &prepared,
+            response,
+            output_keyset,
+        )
+        .map_err(anyhow::Error::msg)?;
 
         if all_proofs.len() != all_outputs.len() {
             anyhow::bail!(
@@ -494,41 +515,34 @@ impl CommitmentOutputs {
     where
         M: MintConnection + ?Sized,
     {
-        // Get all blinded messages in the same order as create_swap_request
-        // (receiver first, then sender)
-        let mut all_outputs = self.receiver_outputs.get_blinded_messages(None)?;
-        let sender_outputs = self.sender_outputs.get_blinded_messages(None)?;
-        all_outputs.extend(sender_outputs);
+        Ok(self
+            .restore_swap_response(mint_connection, None)
+            .await?
+            .signatures)
+    }
 
-        // Sort by amount (stable) for privacy - matches create_swap_request ordering
-        all_outputs.sort_by_key(|bm| u64::from(bm.amount));
-
-        // Create restore request
-        let restore_request = RestoreRequest {
-            outputs: all_outputs,
-        };
-
-        // Call mint restore endpoint
-        let restore_response = mint_connection
-            .post_restore(restore_request)
-            .await
-            .map_err(|e| anyhow::anyhow!("Restore failed: {}", e))?;
-
-        // Extract blind signatures from the response
-        let blind_signatures: Vec<BlindSignature> = restore_response.signatures;
-
-        // Verify we got the expected number of signatures
-        let expected_count =
-            self.receiver_outputs.ordered_amounts.len() + self.sender_outputs.ordered_amounts.len();
-        if blind_signatures.len() != expected_count {
-            anyhow::bail!(
-                "Restore returned {} blind signatures but expected {}",
-                blind_signatures.len(),
-                expected_count
-            );
-        }
-
-        Ok(blind_signatures)
+    /// Restore exact commitment points using caller-authenticated committed mint
+    /// randomness. This matches the response but does not verify its DLEQs: call
+    /// `complete_swap_response` before importing or spending any restored value.
+    pub async fn restore_swap_response<M>(
+        &self,
+        mint_connection: &M,
+        randomness: Option<cashu::nuts::nut03::RerandomizationR>,
+    ) -> Result<cashu::nuts::SwapResponse, anyhow::Error>
+    where
+        M: MintConnection + ?Sized,
+    {
+        let request = self.create_swap_request(vec![], None)?;
+        let restore = crate::swap_completion::swap_restore_request(&request, randomness)
+            .map_err(anyhow::Error::msg)?;
+        let response = mint_connection.post_restore(restore.clone()).await?;
+        let signatures =
+            crate::bindings::match_restore_response(response, &restore.outputs, "commitment")
+                .map_err(anyhow::Error::msg)?;
+        Ok(cashu::nuts::SwapResponse {
+            signatures,
+            rerandomization_r: randomness,
+        })
     }
 }
 

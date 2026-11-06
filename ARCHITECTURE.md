@@ -416,7 +416,7 @@ Recovery neither submits transactions nor mutates storage. Existing successful
 response completion and offline finalization remain independent of state queries.
 Hosts own retry budgets, time/expiry policy, keyset refresh, immutable attempt
 journals, proof custody, and durable finalization. The operations preserve funding
-evidence for future issuance metadata without implementing rerandomized channels.
+evidence including committed randomness for mode-aware issuance recovery.
 See the [recovery contract](INTEGRATION.md#state-first-channel-recovery-rust).
 
 The implementation handles mint keyset rotation using a **Persistent Cache** strategy:
@@ -512,8 +512,7 @@ selects a separately tagged authorization over original outputs. The backend
 reserves/signs derived additive points and atomically persists the shared mint
 randomness with signatures and spent-input state. HTTP NUT-07/NUT-17 expose only
 committed randomness; NUT-09 restores derived points. Ordinary requests retain
-their prior authorization, issuance and recovery behavior. This milestone adds
-no channel-mode field or channel-level rerandomized signing/closing behavior;
+their prior authorization, issuance and recovery behavior. For mint details,
 see the [test-mint guide](crates/cdk-spilman-test-mint/README.md).
 The dependency pin is workspace-wide, not test-only. Functional tests use the
 existing in-memory mint builder directly and through its HTTP router, including
@@ -543,19 +542,21 @@ Mint randomness `R`, when present, is issuance metadata rather than evidence tha
 a two-party close occurred: a sender could rerandomize a refund too. The library's
 own refund construction remains ordinary.
 
-## Proposed Dual-Mode Channels
+## Dual-Mode Channels
 
-This is the next-step design, not an implemented channel mode. Ordinary channel
-behavior and its vectors remain unchanged by the swap-primitive milestone.
+The Rust channel core implements mode binding, commitment signing, checked
+completion and state-first recovery. Both opening-sizing paths and the Python,
+Go and WASM client bridges accept explicit opt-in. Ordinary channel IDs and their
+published vectors are unchanged; a separate independently derived rerandomized
+family covers downstream derivations, signatures, issuance and proof DLEQs.
 
-Proposed `CommitmentMode::{Ordinary,Rerandomized}` belongs in authenticated channel
-parameters, selected before channel-ID/funding derivation. The current ID TLV
-assignments end at 24. Proposed type 26 with value `01` selects rerandomization;
+`CommitmentMode::{Ordinary,Rerandomized}` belongs in authenticated channel
+parameters, selected before channel-ID/funding derivation. Type 26 with value `01` selects rerandomization;
 ordinary omits the record, preserving existing IDs. Corresponding parameter JSON
-would use `commitment_mode: "rerandomized"`; omission denotes ordinary and unknown
-values reject. This assignment still requires a coordinated specification update.
+uses `commitment_mode: "rerandomized"`; omission denotes ordinary and unknown
+values reject. The assignment is coordinated with NUTs PR #296.
 
-Both opening sizing APIs must thread the mode into parameters. The shared
+Both opening sizing APIs thread the mode into parameters. The shared
 commitment builder sets the request flag from those stored parameters; callers
 must not supply an independent close-time mode override. Alice's balance updates
 and Charlie's closing signature sign the SAME mode-selected digest over original
@@ -574,9 +575,11 @@ Pure swap completion derives issued points and effective blindings from `R`, the
 uses existing exact-signature/DLEQ completion and verifies the final proof DLEQs.
 The independent test implementation still constructs its own transcript/tweak and
 effective blindings; direct/HTTP tests compare it with the production primitives
-and spend the resulting outputs at a real mint. Future channel recovery will add
-complete NUT-07 evidence validation, mode-aware discovery, and durable retention of
-the actual winner's `R` without treating randomness as a spend classifier.
+and spend the resulting outputs at a real mint. Channel recovery validates complete
+NUT-07 identity coverage and consistent committed randomness before querying derived
+close points. Alice first tries retained ordinary refunds. Missing or inconsistent
+close randomness remains unresolved. Hosts retain the actual response/evidence and
+durably finalize verified payouts; randomness is never a spend classifier.
 
 ## Output Keyset Expiry
 

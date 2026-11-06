@@ -15,6 +15,7 @@ SpilmanClientHostCallbacks fill_client_callbacks(void* user_data);
 
 // From Rust FFI (cdk-spilman-go/src/lib.rs)
 void* spilman_client_bridge_new(SpilmanClientHostCallbacks callbacks);
+void* spilman_client_bridge_new_with_mode(SpilmanClientHostCallbacks callbacks, uint8_t mode);
 void spilman_client_bridge_free(void* ptr);
 void spilman_client_bridge_close_channel(void* ptr, const char* channel_id);
 void spilman_client_bridge_mark_channel_unusable(void* ptr, const char* channel_id);
@@ -46,10 +47,25 @@ type ClientBridge struct {
 // The bridge is stateless and keyless — it delegates all key operations
 // to the host. The caller passes senderPubkeyHex per channel when opening channels.
 func NewClientBridge(host SpilmanClientHost) (*ClientBridge, error) {
+	return NewClientBridgeWithCommitmentMode(host, "ordinary")
+}
+
+// NewClientBridgeWithCommitmentMode selects "ordinary" or "rerandomized" for
+// newly opened channels. Stored channels retain their authenticated mode.
+func NewClientBridgeWithCommitmentMode(host SpilmanClientHost, mode string) (*ClientBridge, error) {
+	var encoded C.uint8_t
+	switch mode {
+	case "ordinary":
+		encoded = 0
+	case "rerandomized":
+		encoded = 1
+	default:
+		return nil, errors.New("invalid commitment_mode")
+	}
 	handle := cgo.NewHandle(host)
 	callbacks := C.fill_client_callbacks(unsafe.Pointer(handle)) //nolint:govet
 
-	ptr := C.spilman_client_bridge_new(callbacks)
+	ptr := C.spilman_client_bridge_new_with_mode(callbacks, encoded)
 	if ptr == nil {
 		handle.Delete()
 		return nil, errors.New("failed to create client bridge")

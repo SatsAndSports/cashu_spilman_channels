@@ -525,6 +525,32 @@ pub fn compute_channel_from_token(
     maximum_amount_for_one_output: u64,
     requested_capacity: Option<u64>,
 ) -> Result<String, String> {
+    compute_channel_from_token_with_mode(
+        token_string,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info_json,
+        maximum_amount_for_one_output,
+        requested_capacity,
+        crate::CommitmentMode::Ordinary,
+    )
+}
+
+/// Compute token-funded parameters with an explicit authenticated close mode.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_token_with_mode(
+    token_string: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    keyset_info_json: &str,
+    maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
+    commitment_mode: crate::CommitmentMode,
+) -> Result<String, String> {
     // Parse the token
     let token: Token = token_string
         .parse()
@@ -577,6 +603,7 @@ pub fn compute_channel_from_token(
         maximum_amount_for_one_output,
         requested_capacity,
         None,
+        commitment_mode,
     )
 }
 
@@ -612,6 +639,34 @@ pub fn compute_channel_from_token_with_input_keysets(
     maximum_amount_for_one_output: u64,
     requested_capacity: Option<u64>,
 ) -> Result<String, String> {
+    compute_channel_from_token_with_input_keysets_and_mode(
+        token_string,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        keyset_info_json,
+        input_keysets_json,
+        maximum_amount_for_one_output,
+        requested_capacity,
+        crate::CommitmentMode::Ordinary,
+    )
+}
+
+/// Compute mixed-keyset token funding with explicit commitment mode.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_token_with_input_keysets_and_mode(
+    token_string: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    keyset_info_json: &str,
+    input_keysets_json: &str,
+    maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
+    commitment_mode: crate::CommitmentMode,
+) -> Result<String, String> {
     let token: Token = token_string
         .parse()
         .map_err(|e| format!("Failed to parse token: {e}"))?;
@@ -642,6 +697,7 @@ pub fn compute_channel_from_token_with_input_keysets(
         maximum_amount_for_one_output,
         requested_capacity,
         None,
+        commitment_mode,
     )
 }
 
@@ -744,6 +800,41 @@ pub fn compute_channel_from_proofs_with_input_keysets_and_funding_amount(
     requested_capacity: Option<u64>,
     requested_funding_token_amount: Option<u64>,
 ) -> Result<String, String> {
+    compute_channel_from_proofs_with_mode(
+        mint_url,
+        unit,
+        input_proofs_json,
+        input_keysets_json,
+        receiver_pubkey_hex,
+        sender_pubkey_hex,
+        channel_secret_hex,
+        expiry_timestamp,
+        output_keyset_info_json,
+        maximum_amount_for_one_output,
+        requested_capacity,
+        requested_funding_token_amount,
+        crate::CommitmentMode::Ordinary,
+    )
+}
+
+/// Compute proof-funded parameters, including exact capacity/funding sizing and
+/// the authenticated commitment mode, before deriving any funding output.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_channel_from_proofs_with_mode(
+    mint_url: &str,
+    unit: &str,
+    input_proofs_json: &str,
+    input_keysets_json: &str,
+    receiver_pubkey_hex: &str,
+    sender_pubkey_hex: &str,
+    channel_secret_hex: &str,
+    expiry_timestamp: u64,
+    output_keyset_info_json: &str,
+    maximum_amount_for_one_output: u64,
+    requested_capacity: Option<u64>,
+    requested_funding_token_amount: Option<u64>,
+    commitment_mode: crate::CommitmentMode,
+) -> Result<String, String> {
     let proofs: Vec<Proof> = serde_json::from_str(input_proofs_json)
         .map_err(|e| format!("Failed to parse input proofs: {e}"))?;
     let unit = CurrencyUnit::from_str(unit).unwrap_or_else(|_| CurrencyUnit::custom(unit));
@@ -767,6 +858,7 @@ pub fn compute_channel_from_proofs_with_input_keysets_and_funding_amount(
         maximum_amount_for_one_output,
         requested_capacity,
         requested_funding_token_amount,
+        commitment_mode,
     )
 }
 
@@ -786,6 +878,7 @@ fn compute_channel_from_proofs_inner(
     maximum_amount_for_one_output: u64,
     requested_capacity: Option<u64>,
     requested_funding_token_amount: Option<u64>,
+    commitment_mode: crate::CommitmentMode,
 ) -> Result<String, String> {
     if keyset_info.unit != unit {
         return Err(format!(
@@ -863,7 +956,8 @@ fn compute_channel_from_proofs_inner(
         max_amt,
         channel_secret,
     )
-    .map_err(|e| format!("Failed to create channel params: {}", e))?;
+    .map_err(|e| format!("Failed to create channel params: {}", e))?
+    .with_commitment_mode(commitment_mode);
 
     // Serialize proofs
     let proofs_json =

@@ -390,8 +390,9 @@ be completed/finalized without requiring a fresh online NUT-07 query. Charlie's
 host can abandon further collection after expiry, but must distinguish that policy
 from a factual claim that Alice refunded; first recover any known earlier close.
 Raw NUT-09 helpers and pure response-completion APIs retain their narrower contracts
-and do not themselves enforce the new orchestration order. Ordinary channels only:
-this PR does not add rerandomized signing or restore-point derivation.
+and do not themselves enforce the orchestration order. Both modes are supported;
+rerandomized close discovery requires consistent committed randomness across all
+spent funding identities before any derived-point query.
 
 Run `cargo test -p cdk-spilman-client-integration-tests --test recovery` for direct
 and loopback HTTP real-mint races, lost successful replies, independently spendable
@@ -678,6 +679,46 @@ Host recovery must retain custody on errors/absence according to its own journal
 
 The workspace pin includes [CDK fork PR #6](https://github.com/SatsAndSports/cdk/pull/6),
 an additive digest API atop the existing v0.18.1 backport. All CDK/Cashu crates use
-that same source. This does not enable rerandomized channels or choose a default
-channel mode; no parameter encoding, channel ID, journal format or binding API is
-changed by this milestone.
+that same source.
+
+## Channel Commitment Mode
+
+Choose mode **before deriving the channel ID or funding outputs**:
+
+- Rust parameters: `params.with_commitment_mode(CommitmentMode::Rerandomized)`.
+- Rust client: `SpilmanClientBridge::new(host, networking).with_commitment_mode(CommitmentMode::Rerandomized)`.
+  This selects the mode for newly sized openings, including retries. Stored channels,
+  retained preparations and explicitly precomputed opening parameters remain authoritative.
+- Pure Rust sizing: `compute_channel_from_token_with_mode`,
+  `compute_channel_from_token_with_input_keysets_and_mode`, and
+  `compute_channel_from_proofs_with_mode` accept an explicit final mode argument.
+  The proof variant supports both requested capacity and requested funding amount.
+- Python: `ClientBridge(host, commitment_mode="rerandomized")`.
+- WASM/JavaScript: `WasmSpilmanClientBridge.withCommitmentMode(host, "rerandomized")`.
+- Go: `NewClientBridgeWithCommitmentMode(host, "rerandomized")`.
+
+Existing constructors retain ordinary behavior. Invalid mode names reject. New
+rerandomized parameters serialize `commitment_mode: "rerandomized"` and commit
+TLV type 26/value `01`; ordinary serialization omits both. Rust struct literals
+must now supply `commitment_mode`. Old ordinary parameter JSON still parses;
+implementations unaware of the new mode must not accept rerandomized channels.
+Rebuild language bindings together with their native/WASM artifacts. No database
+reset or migration is required for ordinary records.
+
+The commitment builder selects the request flag from authenticated parameters.
+Alice and Charlie sign the same canonical final digest; no close-time override is
+provided. Opening, expiry refund and stage-2 swaps remain ordinary in either mode.
+
+Preserve the **whole** close response, including `rerandomization_r`, in durable
+response journals. Use `CommitmentOutputs::complete_swap_response` or
+`SpilmanBridge::complete_prepared_close`; signature-only legacy completion rejects
+rerandomized channels. `recover_funds` and `recover_close` obtain consistent `R`
+from complete NUT-07 evidence. Pure callers may use
+`complete_prepared_close_restore_with_randomness` after authenticating their own
+funding evidence. Host journals must retain that evidence or the verified winning
+completion so recovery/finalization can resume; MONAD journal adoption is separate.
+
+`R` never classifies a spend. Missing/inconsistent `R` leaves a rerandomized close
+unresolved; a rerandomized malicious refund with consistent `R` still yields no
+verified close payout. Alice restores retained ordinary refunds first. Historical
+output-keyset changes preserve original points and both commitment authorizations.

@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use cashu::nuts::{P2PKWitness, Proof, PublicKey, RestoreRequest, SecretKey, SwapRequest, Witness};
+use cashu::nuts::{P2PKWitness, Proof, PublicKey, SecretKey, SwapRequest, Witness};
 use cashu::util::hex;
 use cashu::Amount;
 
@@ -438,6 +438,30 @@ impl SpilmanChannelSender {
         mint_connection: &M,
         output_keysets: &[super::KeysetInfo],
     ) -> anyhow::Result<Vec<Proof>> {
+        let randomness = match self.channel.params.commitment_mode {
+            crate::CommitmentMode::Ordinary => None,
+            crate::CommitmentMode::Rerandomized => self
+                .channel
+                .inspect_funding(mint_connection)
+                .await?
+                .close_randomness(self.channel.params.commitment_mode)?,
+        };
+        self.restore_sender_proofs_with_keysets_and_randomness(
+            mint_connection,
+            output_keysets,
+            randomness,
+        )
+        .await
+    }
+
+    pub(crate) async fn restore_sender_proofs_with_keysets_and_randomness<
+        M: MintConnection + ?Sized,
+    >(
+        &self,
+        mint_connection: &M,
+        output_keysets: &[super::KeysetInfo],
+        randomness: Option<cashu::nuts::nut03::RerandomizationR>,
+    ) -> anyhow::Result<Vec<Proof>> {
         let params = &self.channel.params;
         let keyset_id = params.keyset_info.keyset_id;
         let max_amount = params.maximum_amount_for_one_output;
@@ -468,11 +492,16 @@ impl SpilmanChannelSender {
                     det_output.to_blinded_message(Amount::from(amount), keyset_id)?;
 
                 // Try to restore this single output
-                let restore_request = RestoreRequest {
-                    outputs: vec![blinded_message.clone()],
+                let request = cashu::nuts::SwapRequest::new(vec![], vec![blinded_message.clone()]);
+                let request = match params.commitment_mode {
+                    crate::CommitmentMode::Ordinary => request,
+                    crate::CommitmentMode::Rerandomized => request.with_rerandomization(),
                 };
+                let restore_request =
+                    crate::swap_completion::swap_restore_request(&request, randomness)
+                        .map_err(anyhow::Error::msg)?;
 
-                let restore_response = mint_connection
+                let mut restore_response = mint_connection
                     .post_restore(restore_request)
                     .await
                     .map_err(|error| {
@@ -494,36 +523,34 @@ impl SpilmanChannelSender {
                     .iter()
                     .find(|keyset| keyset.keyset_id == signature_id && keyset.unit == params.unit)
                     .ok_or(SenderCloseKeysetMissing)?;
-                // Mints may echo the request's ID or report the stored output ID.
-                // The blinded point and amount must still match exactly, and the
-                // signature is verified under its actual historical keyset.
-                let mut restore_expected = blinded_message.clone();
-                if restore_response
-                    .outputs
-                    .first()
-                    .is_some_and(|output| output.keyset_id == signature_id)
-                {
-                    restore_expected.keyset_id = signature_id;
+                // Accept echoed query IDs or actual issuance IDs, then verify
+                // complete point/amount/DLEQ binding under the historical key.
+                for output in &mut restore_response.outputs {
+                    anyhow::ensure!(
+                        output.keyset_id == keyset_id || output.keyset_id == signature_id,
+                        "unexpected restored sender keyset"
+                    );
+                    output.keyset_id = signature_id;
                 }
-                let signatures = crate::bindings::match_restore_response(
-                    restore_response,
-                    std::slice::from_ref(&restore_expected),
-                    "sender close",
-                )
-                .map_err(anyhow::Error::msg)?;
                 let mut blinded_message = blinded_message;
                 blinded_message.keyset_id = signature_id;
-                let mut proofs = crate::bindings::complete_exact_signatures(
-                    signatures,
-                    vec![crate::bindings::PreparedOutput {
+                let mut request = request;
+                for output in request.outputs_mut() {
+                    output.keyset_id = signature_id;
+                }
+                let mut proofs = crate::swap_completion::complete_swap_restore(
+                    &request,
+                    &[crate::swap_completion::PreparedSwapOutput {
                         blinded_message,
                         blinding_factor: det_output.blinding_factor.clone(),
                         secret: det_output.secret.clone(),
                     }],
+                    randomness,
+                    restore_response,
                     output_keyset,
-                    None,
                 )
-                .map_err(anyhow::Error::msg)?;
+                .map_err(anyhow::Error::msg)?
+                .ok_or_else(|| anyhow::anyhow!("sender restore unexpectedly empty"))?;
                 let proof = proofs
                     .pop()
                     .ok_or_else(|| anyhow::anyhow!("construct_proofs returned no proofs"))?;
@@ -552,7 +579,8 @@ mod tests {
     use crate::deterministic::DeterministicSecretWithBlinding;
     use crate::params::mock_keyset_info;
     use cashu::nuts::{
-        BlindSignature, CheckStateResponse, CurrencyUnit, Id, Keys, RestoreResponse, SwapResponse,
+        BlindSignature, CheckStateResponse, CurrencyUnit, Id, Keys, RestoreRequest,
+        RestoreResponse, SwapResponse,
     };
 
     fn mint_funding_proof(

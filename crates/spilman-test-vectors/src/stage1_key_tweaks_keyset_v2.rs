@@ -67,7 +67,12 @@ pub struct Stage1KeyTweakReference {
 ///
 /// Panics only if fixed fixture inputs are malformed or no valid scalar exists.
 pub fn derive_stage1_key_tweaks_reference() -> Vec<Stage1KeyTweakReference> {
-    let channel = spilman_test_vector_channel_id_keysetv2();
+    derive_stage1_for_channel(spilman_test_vector_channel_id_keysetv2())
+}
+
+pub(crate) fn derive_stage1_for_channel(
+    channel: crate::channel_id::ChannelIdTestVector,
+) -> Vec<Stage1KeyTweakReference> {
     let channel_id = hex::encode(channel.channel_id);
     spilman_test_vector_stage1_key_tweaks_keysetv2()
         .into_iter()
